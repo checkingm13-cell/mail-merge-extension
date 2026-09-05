@@ -435,6 +435,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   async function loadCampaigns() {
     try {
+      // Request any open Gmail tabs to sync their local campaigns to background store
+      try {
+        if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
+          const gmailTabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
+          for (const t of gmailTabs) {
+            chrome.tabs.sendMessage(t.id, { action: 'REQUEST_CAMPAIGN_SYNC' }).catch(() => {});
+          }
+        }
+      } catch (_) {}
+
       if (window.IDBStore) {
         allCampaigns = await window.IDBStore.getCampaigns();
       } else {

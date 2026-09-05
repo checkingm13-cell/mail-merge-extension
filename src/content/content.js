@@ -48,6 +48,24 @@
     checkAndInjectContinue();
   }, 1000);
 
+  // Synchronize any campaigns created in Gmail's local origin up to the central extension store
+  async function syncCampaignsToBackground() {
+    try {
+      if (!root.IDBStore || typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) return;
+      const localCampaigns = await root.IDBStore.getCampaigns();
+      if (Array.isArray(localCampaigns) && localCampaigns.length > 0) {
+        chrome.runtime.sendMessage({
+          action: 'SYNC_CAMPAIGNS',
+          campaigns: localCampaigns
+        }).catch(() => {});
+      }
+    } catch (_) {}
+  }
+
+  // Run immediately and periodically
+  syncCampaignsToBackground();
+  setInterval(syncCampaignsToBackground, 10000);
+
   // =========================================================================
   // INJECTION LOGIC
   // =========================================================================
@@ -345,20 +363,21 @@
         await root.IDBStore.saveCampaign(campaign);
         await root.IDBStore.addLog(campaign.id, 'INFO', 'Scheduled native mail merge for ' + new Date(scheduledTime).toLocaleString());
 
-        // Register alarm with background service worker
-        try {
-          if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id && typeof chrome.runtime.sendMessage === 'function') {
-            chrome.runtime.sendMessage({
+        // Register alarm and persist campaign into central background database
+        if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
+          try {
+            await chrome.runtime.sendMessage({
               action: 'REGISTER_SCHEDULED_ALARM',
               campaignId: campaign.id,
               campaign: campaign,
               scheduledTime: scheduledTime
-            }).catch((err) => {
-              console.warn('[MailMerge ContentScript] Background alarm message warning:', err?.message);
             });
+          } catch (commErr) {
+            console.warn('[MailMerge ContentScript] Background registration communication note:', commErr?.message);
+            if (commErr && commErr.message && commErr.message.includes('Extension context invalidated')) {
+              throw new Error('Extension was updated in Chrome. Please press F5 to refresh this Gmail tab and click Schedule again.');
+            }
           }
-        } catch (commErr) {
-          console.warn('[MailMerge ContentScript] Runtime message skipped:', commErr?.message);
         }
 
         closePopover();
@@ -509,6 +528,11 @@ function getComposeDialog() {
 
       if (message.action === 'PING') {
         sendResponse({ success: true, ready: true });
+        return true;
+      }
+
+      if (message.action === 'REQUEST_CAMPAIGN_SYNC') {
+        syncCampaignsToBackground().then(() => sendResponse({ success: true }));
         return true;
       }
 

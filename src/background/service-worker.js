@@ -419,6 +419,35 @@ async function handleRuntimeMessage(message, sender) {
       return { success: true };
     }
 
+    case 'SYNC_CAMPAIGNS': {
+      if (Array.isArray(message.campaigns) && self.IDBStore) {
+        let addedCount = 0;
+        for (const camp of message.campaigns) {
+          try {
+            const existing = await self.IDBStore.getCampaignById(camp.id);
+            if (!existing) {
+              await self.IDBStore.saveCampaign(camp);
+              addedCount++;
+              if (camp.status === 'QUEUED' && camp.scheduledAt) {
+                const schedTime = new Date(camp.scheduledAt).getTime();
+                if (schedTime > Date.now()) {
+                  chrome.alarms.create(`CAMPAIGN_${camp.id}`, { when: schedTime });
+                  console.log(`[ServiceWorker] Synced alarm created for ${camp.id} at ${camp.scheduledAt}`);
+                }
+              }
+            }
+          } catch (syncErr) {
+            console.warn('[ServiceWorker] Campaign sync item note:', syncErr.message);
+          }
+        }
+        if (addedCount > 0) {
+          console.log(`[ServiceWorker] Synced ${addedCount} campaign(s) from Gmail tab.`);
+          await refreshBadge();
+        }
+      }
+      return { success: true };
+    }
+
     case 'REFRESH_BADGE': {
       await refreshBadge();
       return { success: true };
