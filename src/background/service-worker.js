@@ -399,6 +399,13 @@ async function handleRuntimeMessage(message, sender) {
     }
 
     case 'REGISTER_SCHEDULED_ALARM': {
+      if (message.campaign && self.IDBStore) {
+        try {
+          await self.IDBStore.saveCampaign(message.campaign);
+        } catch (dbErr) {
+          console.warn('[ServiceWorker] Note on saving campaign in central store:', dbErr.message);
+        }
+      }
       if (message.campaignId && message.scheduledTime) {
         if (message.scheduledTime <= Date.now() + 5000) {
           console.log(`[ServiceWorker] Campaign ${message.campaignId} is due immediately. Executing check...`);

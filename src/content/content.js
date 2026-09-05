@@ -346,12 +346,19 @@
         await root.IDBStore.addLog(campaign.id, 'INFO', 'Scheduled native mail merge for ' + new Date(scheduledTime).toLocaleString());
 
         // Register alarm with background service worker
-        if (chrome.runtime && chrome.runtime.sendMessage) {
-          chrome.runtime.sendMessage({
-            action: 'REGISTER_SCHEDULED_ALARM',
-            campaignId: campaign.id,
-            scheduledTime: scheduledTime
-          }).catch(() => {});
+        try {
+          if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.id && typeof chrome.runtime.sendMessage === 'function') {
+            chrome.runtime.sendMessage({
+              action: 'REGISTER_SCHEDULED_ALARM',
+              campaignId: campaign.id,
+              campaign: campaign,
+              scheduledTime: scheduledTime
+            }).catch((err) => {
+              console.warn('[MailMerge ContentScript] Background alarm message warning:', err?.message);
+            });
+          }
+        } catch (commErr) {
+          console.warn('[MailMerge ContentScript] Runtime message skipped:', commErr?.message);
         }
 
         closePopover();
@@ -363,10 +370,16 @@
         showToast('✅ Campaign scheduled for ' + new Date(scheduledTime).toLocaleString() + '. Draft safely saved.');
       } catch (err) {
         console.error('[MailMerge ContentScript] Failed to schedule:', err);
-        alertBox.textContent = 'Error: ' + err.message;
+        if (err && err.message && err.message.includes('Extension context invalidated')) {
+          alertBox.textContent = '⚠️ Extension was updated. Please press F5 to refresh this Gmail tab and click Schedule again.';
+          alertBox.style.background = '#feefe3';
+          alertBox.style.color = '#b06000';
+        } else {
+          alertBox.textContent = 'Error: ' + (err?.message || err);
+          alertBox.style.background = '#fce8e6';
+          alertBox.style.color = '#c5221f';
+        }
         alertBox.style.display = 'block';
-        alertBox.style.background = '#fce8e6';
-        alertBox.style.color = '#c5221f';
         confirmBtn.disabled = false;
         confirmBtn.textContent = 'Schedule & Save Draft';
       }
