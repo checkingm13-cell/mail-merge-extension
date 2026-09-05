@@ -260,7 +260,15 @@
         '</div>' +
       '</div>';
 
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', 'Schedule Mail Merge');
     document.body.appendChild(overlay);
+
+    setTimeout(() => {
+      const input = overlay.querySelector('#mmDateTimeInput');
+      if (input) input.focus();
+    }, 100);
 
     // Quick time button handlers
     overlay.querySelectorAll('.mm-quick-time').forEach((btn) => {
@@ -280,7 +288,12 @@
       });
     });
 
-    const closePopover = () => overlay.remove();
+    const closePopover = () => {
+      if (anchorElement && typeof anchorElement.focus === 'function') {
+        try { anchorElement.focus(); } catch (_) {}
+      }
+      overlay.remove();
+    };
     overlay.querySelector('#mmPopoverClose').addEventListener('click', closePopover);
     overlay.querySelector('#mmPopoverCancel').addEventListener('click', closePopover);
     overlay.addEventListener('click', (e) => {
