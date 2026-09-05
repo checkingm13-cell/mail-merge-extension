@@ -1,0 +1,40 @@
+
+﻿
+0/manifest.json:1 Manifest: property 'migrate_from' ignored, manifest must specify an 'id' property in order to receive a migration.
+
+0/data?token=%5B%22c…t=ji&di=0&dbv=112:1 An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing.
+7
+Deprecated API for given entry type.
+m=ebdd,sps,nsYuae,Lk…nc?cb=6181f589:4246 Unrecognized feature: 'attribution-reporting'.
+VM169:1 The powerPreference option is currently ignored when calling requestAdapter() on Windows. See https://crbug.com/369219127
+0/#inbox:1 No available adapters.
+cb=gapi.loaded_0?le=scs:99 [Violation] Permissions policy violation: unload is not allowed in this document.
+m=SxFs5c,FY4xZc,k2nH…GUb?cb=6181f589:738 Unrecognized feature: 'speaker'.
+VM575:1 The powerPreference option is currently ignored when calling requestAdapter() on Windows. See https://crbug.com/369219127
+0/#inbox:1 No available adapters.
+The service worker navigation preload request was cancelled before 'preloadResponse' settled. If you intend to use 'preloadResponse', use waitUntil() or respondWith() to wait for the promise to settle.
+The FetchEvent for "https://mail.google.com/mail/u/0/#inbox?compose=DmwnWsCZDHDthgwGpMXSvpKCrPDZtVjLvBjTWxMQqCMkQDgPhmnvWjgthQWczwGzSrPMFGjgXkjL" resulted in a network error response: the promise was rejected.
+sw.js?sr_asci=1&offline_allowed=1:1 Uncaught (in promise) 
+kg {message: 'Error from fetchhandler.js URL - https://mail.goog…ZtVjLvBjTWxMQqCMkQDgPhmnvWjgthQWczwGzSrPMFGjgXkjL', stack: 'Error: Error from fetchhandler.js URL - https://ma…ail/u/0/sw.js?sr_asci=1&offline_allowed=1:201:337'}
+The FetchEvent for "https://meet.google.com/_/frame?authuser=0&frameType=1&origin=https%3A%2F%2Fmail.google.com&dip=1#cb=pip_frame" resulted in a network error response: the promise was rejected.
+m=base:752 
+ Uncaught (in promise) TypeError: Failed to fetch
+    at GT (m=base:752:519)
+    at HT (m=base:753:160)
+    at KT.handleEvent (m=base:755:16)
+    at m=base:570:625
+    at VA (m=base:337:321)
+    at pk (m=base:335:340)
+    at KA (m=base:335:81)
+    at KQ.j (m=base:570:599)
+The FetchEvent for "https://meet.google.com/call?authuser=0&hl=en-GB&mc=KAIwAZoBFDoScGludG9fOHF…IAAqATDCAQIgAdgBAQ&origin=https%3A%2F%2Fmail.google.com&iilm=1788586261393" resulted in a network error response: the promise was rejected.
+m=base:752 
+ Uncaught (in promise) TypeError: Failed to fetch
+    at GT (m=base:752:519)
+    at HT (m=base:753:160)
+    at KT.handleEvent (m=base:755:16)
+    at m=base:570:625
+    at VA (m=base:337:321)
+    at pk (m=base:335:340)
+    at KA (m=base:335:81)
+    at KQ.j (m=base:570:599)

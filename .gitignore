@@ -1,0 +1,17 @@
+# Playwright & Browser test profiles
+.*-profile/
+.live-profile/
+.test-profile/
+.diag-profile/
+test-results/
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS Files
+.DS_Store
+Thumbs.db

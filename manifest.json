@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0aTa+CHQe1at3JauHCbjL/7k6KDLwNUaAUYI1/WzE3XhrDR5fZsrTciRIV5IEpUF9A1acD6Oz15dOjw6FHjT5AxeW6lBMK14c+kfcb+l4rS1mOfaUNf0txWbzDGRXA3yh7eOhekbeXY5WEhEg9nWl2UcIRmlMV7HxxBWYZrfmAIIFML54ahvz0iFwVzdoxufj5EIYHkfto6TJtirfzn6DTvrNtLEgOhbUl+SspKr6oFOWsFiiSJUVI8QjiwtHYbfS2gHKJtcDq9YhP8S1jHhdHvw/P3EAzMINiLVQFc8t9IUNo+obIwe0EPUd53sOAgfQ3vEbAG5p9hCLVZNP/5UXQIDAQAB",
+  "name": "Gmail Native Mail Merge & Scheduler",
+  "version": "1.0.0",
+  "description": "Automate and schedule Gmail native Mail Merge campaigns with local database storage.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting",
+    "unlimitedStorage"
+  ],
+  "host_permissions": [
+    "https://mail.google.com/*",
+    "https://docs.google.com/*"
+  ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "options_ui": {
+    "page": "src/dashboard/dashboard.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mail.google.com/*"
+      ],
+      "js": [
+        "src/db/idb-store.js",
+        "src/content/gmail-automator.js",
+        "src/content/compose-injector.js",
+        "src/content/content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/dashboard/dashboard.html",
+        "src/dashboard/*",
+        "icons/*"
+      ],
+      "matches": [
+        "https://mail.google.com/*"
+      ]
+    }
+  ]
+}
