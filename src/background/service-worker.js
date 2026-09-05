@@ -91,6 +91,17 @@ injectIntoExistingGmailTabs().catch(() => {});
 
 // Alarm Listener
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  console.log("[ServiceWorker] Alarm triggered: " + alarm.name);
+  if (alarm.name.startsWith("CAMPAIGN_")) {
+    const campaignId = alarm.name.replace("CAMPAIGN_", "");
+    if (self.IDBStore) {
+      const campaign = await self.IDBStore.getCampaignById(campaignId);
+      if (campaign && (campaign.status === "QUEUED" || campaign.status === "DRAFT")) {
+        await executeCampaign(campaign);
+        return;
+      }
+    }
+  }
   console.log(`[ServiceWorker] Alarm triggered: "${alarm.name}". Checking due campaigns...`);
   await checkAndExecuteDueCampaigns();
 });
@@ -167,6 +178,28 @@ async function executeCampaign(campaign) {
     }
 
     // 4. Send message to content script with retry mechanism
+    // For native scheduled merge drafts, attempt message or script injection
+    if (campaign.draftId || campaign.isNative) {
+      console.log("[ServiceWorker] Executing native scheduled campaign for draft " + campaign.draftId);
+      if (chrome.scripting) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: gmailTab.id },
+            func: async (camp) => {
+              if (window.GmailAutomator && (camp.draftId || camp.isNative)) {
+                return await window.GmailAutomator.executeScheduledNativeMerge(camp.draftId, camp);
+              }
+              return { success: false, error: "GmailAutomator not available" };
+            },
+            args: [campaign]
+          });
+          console.log("[ServiceWorker] Native script execution dispatched for campaign " + campaign.id);
+        } catch (scriptErr) {
+          console.warn("[ServiceWorker] Script injection error, falling back to message:", scriptErr.message);
+        }
+      }
+    }
+
     const sent = await sendMessageWithRetry(gmailTab.id, {
       action: 'EXECUTE_CAMPAIGN',
       campaign
