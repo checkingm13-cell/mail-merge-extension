@@ -539,7 +539,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             ${escapeHtml(camp.subject || 'Untitled Subject')}
           </div>
           <div style="font-size: 10px; color: var(--text-muted); margin-top: 2px;">
-            Sender: ${escapeHtml(camp.senderEmail || 'Default Profile')}
+            Sender: ${escapeHtml(camp.accountEmail || camp.senderEmail || ('Gmail ' + (camp.userIndex && camp.userIndex !== '0' ? 'Account #' + camp.userIndex : 'Primary')))}
           </div>
         </td>
         <td style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">

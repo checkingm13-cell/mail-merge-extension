@@ -1,5 +1,5 @@
 === GMAIL NATIVE MAIL MERGE & SCHEDULER EXTENSION CODEBASE ===
-Generated at: 2026-09-05T09:15:37.176Z
+Generated at: 2026-09-05T09:30:27.709Z
 
 
 ================================================================================
@@ -238,14 +238,17 @@ async function executeCampaign(campaign) {
       `Scheduler initiated campaign "${campaign.name || campaign.id}".`
     );
 
-    // 2. Find an existing Gmail tab
-    let gmailTab = await findGmailTab();
+    // 2. Find an existing Gmail tab matching the account
+    let gmailTab = await findGmailTab(campaign);
 
-    // 3. If no Gmail tab exists, open one in the background
+    // 3. If no Gmail tab exists, open one in the background for the specific account
     if (!gmailTab) {
-      console.log('[ServiceWorker] No active Gmail tab found. Creating background tab...');
+      const targetUrl = (campaign && campaign.accountUrl)
+        ? campaign.accountUrl
+        : ((campaign && campaign.userIndex !== undefined) ? `https://mail.google.com/mail/u/${campaign.userIndex}/` : 'https://mail.google.com/');
+      console.log(`[ServiceWorker] No Gmail tab found for account. Creating background tab for ${targetUrl}...`);
       gmailTab = await chrome.tabs.create({
-        url: 'https://mail.google.com/',
+        url: targetUrl,
         active: false
       });
 
@@ -298,15 +301,26 @@ async function executeCampaign(campaign) {
 }
 
 /**
- * Finds the most suitable open Gmail tab.
+ * Finds the most suitable open Gmail tab, prioritizing the account the campaign was scheduled in.
+ * @param {Object} [campaign]
  * @returns {Promise<chrome.tabs.Tab|null>}
  */
-async function findGmailTab() {
+async function findGmailTab(campaign) {
   const tabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
   if (!tabs || tabs.length === 0) {
     return null;
   }
-  // Prefer active tab if one of them is active
+
+  // 1. If campaign specifies a user index (/u/0/, /u/1/, etc.), find that exact account tab
+  if (campaign && campaign.userIndex !== undefined) {
+    const targetPath = `/mail/u/${campaign.userIndex}/`;
+    const accountTab = tabs.find((t) => t.url && t.url.includes(targetPath));
+    if (accountTab) {
+      return accountTab;
+    }
+  }
+
+  // 2. Fallback: Prefer active tab if one of them is active
   const activeTab = tabs.find((t) => t.active);
   return activeTab || tabs[0];
 }
@@ -2668,10 +2682,27 @@ FILE: src/content/content.js
           throw new Error('IDBStore is not available');
         }
 
+        // Detect current user account index (/u/0/, /u/1/, etc.) from URL
+        const userMatch = /\/u\/(\d+)/.exec(window.location.pathname);
+        const userIndex = userMatch ? userMatch[1] : '0';
+
+        // Detect current account email if available from header avatar or title
+        let accountEmail = '';
+        try {
+          const accountEl = document.querySelector('header a[aria-label*="@"], div[aria-label*="@"], a[aria-label*="Google Account"]');
+          if (accountEl) {
+            const emailMatch = /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/.exec(accountEl.getAttribute('aria-label') || '');
+            if (emailMatch) accountEmail = emailMatch[0];
+          }
+        } catch (_) {}
+
         const campaign = {
           id: 'camp_' + Date.now(),
           draftId: draftId,
           subject: subject,
+          userIndex: userIndex,
+          accountEmail: accountEmail,
+          accountUrl: window.location.origin + (userMatch ? `/mail/u/${userIndex}/` : '/mail/u/0/'),
           scheduledAt: new Date(scheduledTime).toISOString(),
           status: 'QUEUED',
           isNative: true,
@@ -4444,7 +4475,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             ${escapeHtml(camp.subject || 'Untitled Subject')}
           </div>
           <div style="font-size: 10px; color: var(--text-muted); margin-top: 2px;">
-            Sender: ${escapeHtml(camp.senderEmail || 'Default Profile')}
+            Sender: ${escapeHtml(camp.accountEmail || camp.senderEmail || ('Gmail ' + (camp.userIndex && camp.userIndex !== '0' ? 'Account #' + camp.userIndex : 'Primary')))}
           </div>
         </td>
         <td style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">

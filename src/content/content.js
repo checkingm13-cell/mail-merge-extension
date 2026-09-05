@@ -350,10 +350,27 @@
           throw new Error('IDBStore is not available');
         }
 
+        // Detect current user account index (/u/0/, /u/1/, etc.) from URL
+        const userMatch = /\/u\/(\d+)/.exec(window.location.pathname);
+        const userIndex = userMatch ? userMatch[1] : '0';
+
+        // Detect current account email if available from header avatar or title
+        let accountEmail = '';
+        try {
+          const accountEl = document.querySelector('header a[aria-label*="@"], div[aria-label*="@"], a[aria-label*="Google Account"]');
+          if (accountEl) {
+            const emailMatch = /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/.exec(accountEl.getAttribute('aria-label') || '');
+            if (emailMatch) accountEmail = emailMatch[0];
+          }
+        } catch (_) {}
+
         const campaign = {
           id: 'camp_' + Date.now(),
           draftId: draftId,
           subject: subject,
+          userIndex: userIndex,
+          accountEmail: accountEmail,
+          accountUrl: window.location.origin + (userMatch ? `/mail/u/${userIndex}/` : '/mail/u/0/'),
           scheduledAt: new Date(scheduledTime).toISOString(),
           status: 'QUEUED',
           isNative: true,

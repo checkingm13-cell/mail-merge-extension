@@ -160,14 +160,17 @@ async function executeCampaign(campaign) {
       `Scheduler initiated campaign "${campaign.name || campaign.id}".`
     );
 
-    // 2. Find an existing Gmail tab
-    let gmailTab = await findGmailTab();
+    // 2. Find an existing Gmail tab matching the account
+    let gmailTab = await findGmailTab(campaign);
 
-    // 3. If no Gmail tab exists, open one in the background
+    // 3. If no Gmail tab exists, open one in the background for the specific account
     if (!gmailTab) {
-      console.log('[ServiceWorker] No active Gmail tab found. Creating background tab...');
+      const targetUrl = (campaign && campaign.accountUrl)
+        ? campaign.accountUrl
+        : ((campaign && campaign.userIndex !== undefined) ? `https://mail.google.com/mail/u/${campaign.userIndex}/` : 'https://mail.google.com/');
+      console.log(`[ServiceWorker] No Gmail tab found for account. Creating background tab for ${targetUrl}...`);
       gmailTab = await chrome.tabs.create({
-        url: 'https://mail.google.com/',
+        url: targetUrl,
         active: false
       });
 
@@ -220,15 +223,26 @@ async function executeCampaign(campaign) {
 }
 
 /**
- * Finds the most suitable open Gmail tab.
+ * Finds the most suitable open Gmail tab, prioritizing the account the campaign was scheduled in.
+ * @param {Object} [campaign]
  * @returns {Promise<chrome.tabs.Tab|null>}
  */
-async function findGmailTab() {
+async function findGmailTab(campaign) {
   const tabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
   if (!tabs || tabs.length === 0) {
     return null;
   }
-  // Prefer active tab if one of them is active
+
+  // 1. If campaign specifies a user index (/u/0/, /u/1/, etc.), find that exact account tab
+  if (campaign && campaign.userIndex !== undefined) {
+    const targetPath = `/mail/u/${campaign.userIndex}/`;
+    const accountTab = tabs.find((t) => t.url && t.url.includes(targetPath));
+    if (accountTab) {
+      return accountTab;
+    }
+  }
+
+  // 2. Fallback: Prefer active tab if one of them is active
   const activeTab = tabs.find((t) => t.active);
   return activeTab || tabs[0];
 }
