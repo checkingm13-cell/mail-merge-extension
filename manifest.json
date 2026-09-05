@@ -43,7 +43,6 @@
       "js": [
         "src/db/idb-store.js",
         "src/content/gmail-automator.js",
-        "src/content/compose-injector.js",
         "src/content/content.js"
       ],
       "run_at": "document_idle"

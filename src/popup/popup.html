@@ -12,79 +12,62 @@
     <header class="header">
       <div class="brand">
         <img src="../../icons/icon-48.png" alt="Logo" class="brand-icon" onerror="this.style.display='none'">
-        <span class="brand-title">Gmail Mail Merge</span>
-        <span class="brand-badge">PRO</span>
+        <div class="brand-info">
+          <span class="brand-title">Mail Merge</span>
+          <span class="brand-sub">Native Scheduler</span>
+        </div>
       </div>
-      <div class="status-pill" id="statusPill" title="Background Scheduler Status">
-        <span class="status-dot" id="statusDot"></span>
-        <span id="statusText">Active</span>
+      <div class="header-controls">
+        <label class="switch" title="Toggle Background Scheduler">
+          <input type="checkbox" id="schedulerToggle" checked>
+          <span class="slider"></span>
+        </label>
+        <button id="btnRefresh" class="btn-icon" title="Refresh & sync campaigns">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+          </svg>
+        </button>
       </div>
     </header>
 
-    <!-- Content -->
+    <!-- Filter Pills Bar -->
+    <nav class="filter-bar">
+      <button class="filter-pill active" data-filter="ALL">
+        All <span class="pill-count" id="countAll">0</span>
+      </button>
+      <button class="filter-pill" data-filter="QUEUED">
+        Queued <span class="pill-count" id="countQueued">0</span>
+      </button>
+      <button class="filter-pill" data-filter="COMPLETED">
+        Completed <span class="pill-count" id="countCompleted">0</span>
+      </button>
+      <button class="filter-pill" data-filter="FAILED">
+        Failed <span class="pill-count" id="countFailed">0</span>
+      </button>
+    </nav>
+
+    <!-- Main Content / Campaigns List -->
     <main class="content">
-      <!-- Section 1: Quick Status Bar -->
-      <section class="status-card">
-        <div class="scheduler-row">
-          <div class="scheduler-info">
-            <span class="scheduler-label">Background Scheduler</span>
-            <span class="scheduler-state" id="schedulerStateLabel">Active & Polling</span>
-          </div>
-          <label class="switch" title="Toggle Background Execution">
-            <input type="checkbox" id="schedulerToggle" checked>
-            <span class="slider"></span>
-          </label>
+      <div class="campaigns-list" id="campaignsList">
+        <!-- Dynamic campaign cards rendered here by popup.js -->
+        <div class="empty-state" id="emptyState">
+          <svg class="empty-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"></path>
+          </svg>
+          <div class="empty-title">No campaigns found</div>
+          <div class="empty-desc">Schedule a mail merge draft directly inside Gmail Compose!</div>
         </div>
-
-        <!-- Counts: Queued, Processing, Completed -->
-        <div class="stats-grid">
-          <div class="stat-box queued">
-            <div class="stat-value" id="countQueued">0</div>
-            <div class="stat-label">Queued</div>
-          </div>
-          <div class="stat-box processing">
-            <div class="stat-value" id="countProcessing">0</div>
-            <div class="stat-label">Processing</div>
-          </div>
-          <div class="stat-box completed">
-            <div class="stat-value" id="countCompleted">0</div>
-            <div class="stat-label">Completed</div>
-          </div>
-        </div>
-      </section>
-
-      <!-- Section 2: Queued Campaigns List -->
-      <section class="queue-section">
-        <div class="section-header">
-          <span class="section-title">
-            Pending Queue
-            <span class="badge-count" id="queueBadgeCount">0</span>
-          </span>
-          <span id="nextPollTime" class="scheduled-time" style="font-size: 10px;"></span>
-        </div>
-
-        <div class="campaigns-list" id="campaignsList">
-          <!-- Populated by popup.js -->
-          <div class="empty-state" id="emptyState">
-            <svg class="empty-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"></path>
-            </svg>
-            <div class="empty-title">No campaigns queued</div>
-            <div class="empty-desc">Open Gmail Compose or use Dashboard to schedule your first mail merge!</div>
-          </div>
-        </div>
-      </section>
+      </div>
     </main>
 
     <!-- Footer -->
     <footer class="footer">
-      <button id="btnOpenDashboard" class="btn-primary" title="Open full management dashboard">
-        <span>🚀 Open Full Dashboard</span>
-      </button>
-      <button id="btnRefresh" class="btn-icon-only" title="Refresh queue">
-        <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-        </svg>
+      <div class="status-indicator">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Scheduler Active</span>
+      </div>
+      <button id="btnOpenDashboard" class="btn-link" title="Open full diagnostics & logs">
+        <span>Diagnostics ↗</span>
       </button>
     </footer>
   </div>

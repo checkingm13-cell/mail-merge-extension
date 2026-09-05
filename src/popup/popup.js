@@ -1,35 +1,53 @@
 /**
- * Popup Script for Gmail Mail Merge & Scheduler
- * Interacts directly with IDBStore and coordinates with Background Service Worker
+ * All-in-One Popup Script for Gmail Native Mail Merge & Scheduler
+ * Provides complete campaign browsing, status filtering, multi-account awareness, and direct controls.
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // DOM Elements
+  // DOM Elements - Header & Filter
   const statusDot = document.getElementById('statusDot');
   const statusText = document.getElementById('statusText');
   const schedulerToggle = document.getElementById('schedulerToggle');
-  const schedulerStateLabel = document.getElementById('schedulerStateLabel');
-  const countQueued = document.getElementById('countQueued');
-  const countProcessing = document.getElementById('countProcessing');
-  const countCompleted = document.getElementById('countCompleted');
-  const queueBadgeCount = document.getElementById('queueBadgeCount');
-  const nextPollTime = document.getElementById('nextPollTime');
+  const btnRefresh = document.getElementById('btnRefresh');
+  const btnOpenDashboard = document.getElementById('btnOpenDashboard');
   const campaignsList = document.getElementById('campaignsList');
   const emptyState = document.getElementById('emptyState');
-  const btnOpenDashboard = document.getElementById('btnOpenDashboard');
-  const btnRefresh = document.getElementById('btnRefresh');
   const toast = document.getElementById('toast');
 
+  // Filter counts
+  const countAll = document.getElementById('countAll');
+  const countQueued = document.getElementById('countQueued');
+  const countCompleted = document.getElementById('countCompleted');
+  const countFailed = document.getElementById('countFailed');
+  const filterPills = document.querySelectorAll('.filter-pill');
+
+  // State
+  let allCampaigns = [];
+  let currentFilter = 'ALL';
   let isRefreshing = false;
 
-  // Initialize and load UI
+  // Initialize
   await initDB();
+  setupEventListeners();
   await loadState();
 
-  // Event Listeners
-  schedulerToggle.addEventListener('change', handleSchedulerToggle);
-  btnRefresh.addEventListener('click', handleManualRefresh);
-  btnOpenDashboard.addEventListener('click', openFullDashboard);
+  function setupEventListeners() {
+    schedulerToggle.addEventListener('change', handleSchedulerToggle);
+    btnRefresh.addEventListener('click', handleManualRefresh);
+    if (btnOpenDashboard) {
+      btnOpenDashboard.addEventListener('click', openFullDashboard);
+    }
+
+    // Filter pill tabs
+    filterPills.forEach((pill) => {
+      pill.addEventListener('click', () => {
+        filterPills.forEach((p) => p.classList.remove('active'));
+        pill.classList.add('active');
+        currentFilter = pill.dataset.filter || 'ALL';
+        renderCampaigns();
+      });
+    });
+  }
 
   /**
    * Initializes IDBStore safely
@@ -40,14 +58,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         await window.IDBStore.init();
       }
     } catch (err) {
-      console.warn('[Popup] IDBStore init issue:', err);
+      console.warn('[Popup] IDBStore init note:', err);
     }
   }
 
   /**
-   * Loads full state from service worker and IndexedDB
+   * Loads full state from background worker and IndexedDB
    */
   async function loadState() {
+    // 1. Sync from open Gmail tabs so any recent draft appears immediately
+    await syncFromGmailTabs();
+
+    // 2. Query campaigns and scheduler status
     await Promise.all([
       updateSchedulerStatus(),
       loadCampaigns()
@@ -55,121 +77,114 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   /**
-   * Queries the background worker or chrome.alarms for scheduler health
+   * Requests any open Gmail tabs to sync their local campaigns to background
+   */
+  async function syncFromGmailTabs() {
+    try {
+      if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
+        const gmailTabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
+        for (const t of gmailTabs) {
+          chrome.tabs.sendMessage(t.id, { action: 'REQUEST_CAMPAIGN_SYNC' }).catch(() => {});
+        }
+      }
+    } catch (_) {}
+  }
+
+  /**
+   * Updates scheduler toggle & status indicator
    */
   async function updateSchedulerStatus() {
     try {
       const response = await chrome.runtime.sendMessage({ action: 'GET_SCHEDULER_STATUS' });
       if (response && response.success && response.status) {
-        const { alarmActive, nextScheduledPoll } = response.status;
-        applySchedulerUI(alarmActive, nextScheduledPoll);
+        const { alarmActive } = response.status;
+        applySchedulerUI(alarmActive);
         return;
       }
-    } catch (err) {
-      console.warn('[Popup] Could not reach background service worker via message, checking chrome.alarms:', err);
-    }
+    } catch (_) {}
 
-    // Fallback: check chrome.alarms directly
+    // Fallback: direct alarm check
     try {
       const alarm = await chrome.alarms.get('POLL_CAMPAIGNS_ALARM');
-      applySchedulerUI(!!alarm, alarm ? new Date(alarm.scheduledTime).toISOString() : null);
-    } catch (alarmErr) {
-      console.error('[Popup] Failed to inspect alarms:', alarmErr);
-      applySchedulerUI(false, null);
+      applySchedulerUI(!!alarm);
+    } catch (_) {
+      applySchedulerUI(true);
     }
   }
 
-  /**
-   * Updates scheduler toggles, dots, and labels
-   */
-  function applySchedulerUI(isActive, nextPoll) {
+  function applySchedulerUI(isActive) {
     schedulerToggle.checked = isActive;
     if (isActive) {
       statusDot.className = 'status-dot';
-      statusText.textContent = 'Active';
-      schedulerStateLabel.textContent = 'Active & Polling (1m)';
-      if (nextPoll) {
-        const diffMs = new Date(nextPoll).getTime() - Date.now();
-        const diffSec = Math.max(0, Math.round(diffMs / 1000));
-        nextPollTime.textContent = diffSec > 0 ? `Next poll: ~${diffSec}s` : 'Polling shortly';
-      } else {
-        nextPollTime.textContent = '';
-      }
+      statusText.textContent = 'Scheduler Active';
     } else {
       statusDot.className = 'status-dot paused';
-      statusText.textContent = 'Paused';
-      schedulerStateLabel.textContent = 'Scheduler Paused';
-      nextPollTime.textContent = 'Polling disabled';
+      statusText.textContent = 'Scheduler Paused';
     }
   }
 
   /**
-   * Toggles the background scheduler
-   */
-  async function handleSchedulerToggle() {
-    try {
-      const response = await chrome.runtime.sendMessage({ action: 'TOGGLE_SCHEDULER' });
-      if (response && response.success) {
-        applySchedulerUI(response.active, null);
-        showToast(response.active ? 'Scheduler activated' : 'Scheduler paused');
-      } else {
-        // Toggle locally via alarms fallback
-        const isCurrentlyChecked = schedulerToggle.checked;
-        if (isCurrentlyChecked) {
-          await chrome.alarms.create('POLL_CAMPAIGNS_ALARM', { periodInMinutes: 1 });
-          applySchedulerUI(true, null);
-          showToast('Scheduler activated');
-        } else {
-          await chrome.alarms.clear('POLL_CAMPAIGNS_ALARM');
-          applySchedulerUI(false, null);
-          showToast('Scheduler paused');
-        }
-      }
-    } catch (err) {
-      console.error('[Popup] Error toggling scheduler:', err);
-      showToast('Failed to toggle scheduler');
-      await updateSchedulerStatus();
-    }
-  }
-
-  /**
-   * Loads campaigns from IDBStore and populates metrics & queue list
+   * Loads all campaigns from IndexedDB
    */
   async function loadCampaigns() {
     try {
-      let campaigns = [];
       if (window.IDBStore) {
-        campaigns = await window.IDBStore.getCampaigns();
+        allCampaigns = await window.IDBStore.getCampaigns();
+      } else {
+        allCampaigns = [];
       }
 
-      // Compute counts
-      const queued = campaigns.filter(c => c.status === 'QUEUED');
-      const processing = campaigns.filter(c => c.status === 'PROCESSING');
-      const completed = campaigns.filter(c => c.status === 'COMPLETED');
-
-      countQueued.textContent = queued.length;
-      countProcessing.textContent = processing.length;
-      countCompleted.textContent = completed.length;
-
-      // Pending campaigns include QUEUED and PROCESSING
-      const pending = campaigns.filter(c => c.status === 'QUEUED' || c.status === 'PROCESSING');
-      queueBadgeCount.textContent = pending.length;
-
-      renderPendingCampaigns(pending);
+      updateCounts();
+      renderCampaigns();
     } catch (err) {
       console.error('[Popup] Error loading campaigns:', err);
-      showToast('Error loading database');
+      showToast('Error loading campaigns');
     }
   }
 
   /**
-   * Renders pending campaigns cards or displays empty state
+   * Updates the count badges on filter pills
    */
-  function renderPendingCampaigns(pending) {
-    // Clear existing campaign cards (preserving or toggling emptyState)
+  function updateCounts() {
+    const counts = {
+      ALL: allCampaigns.length,
+      QUEUED: 0,
+      COMPLETED: 0,
+      FAILED: 0
+    };
+
+    allCampaigns.forEach((c) => {
+      if (c.status === 'QUEUED' || c.status === 'PROCESSING') {
+        counts.QUEUED++;
+      } else if (c.status === 'COMPLETED') {
+        counts.COMPLETED++;
+      } else if (c.status === 'FAILED') {
+        counts.FAILED++;
+      }
+    });
+
+    countAll.textContent = String(counts.ALL);
+    countQueued.textContent = String(counts.QUEUED);
+    countCompleted.textContent = String(counts.COMPLETED);
+    countFailed.textContent = String(counts.FAILED);
+  }
+
+  /**
+   * Renders campaign cards based on the selected filter
+   */
+  function renderCampaigns() {
     campaignsList.innerHTML = '';
 
-    if (!pending || pending.length === 0) {
+    let filtered = allCampaigns;
+    if (currentFilter === 'QUEUED') {
+      filtered = allCampaigns.filter((c) => c.status === 'QUEUED' || c.status === 'PROCESSING');
+    } else if (currentFilter === 'COMPLETED') {
+      filtered = allCampaigns.filter((c) => c.status === 'COMPLETED');
+    } else if (currentFilter === 'FAILED') {
+      filtered = allCampaigns.filter((c) => c.status === 'FAILED' || c.status === 'CANCELLED');
+    }
+
+    if (!filtered || filtered.length === 0) {
       campaignsList.appendChild(emptyState);
       emptyState.style.display = 'flex';
       return;
@@ -177,70 +192,136 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     emptyState.style.display = 'none';
 
-    pending.forEach(campaign => {
+    filtered.forEach((camp) => {
       const card = document.createElement('div');
       card.className = 'campaign-card';
-      card.dataset.id = campaign.id;
+      card.dataset.id = camp.id;
 
-      const isQueued = campaign.status === 'QUEUED';
-      const statusClass = isQueued ? 'status-queued' : 'status-processing';
-      const statusLabel = isQueued ? 'Queued' : 'Processing';
+      // Status Class & Label
+      let statusClass = 'status-queued';
+      let statusLabel = 'Queued';
+      if (camp.status === 'PROCESSING') {
+        statusClass = 'status-processing';
+        statusLabel = 'Processing';
+      } else if (camp.status === 'COMPLETED') {
+        statusClass = 'status-completed';
+        statusLabel = '✓ Completed';
+      } else if (camp.status === 'FAILED') {
+        statusClass = 'status-failed';
+        statusLabel = '✕ Failed';
+      } else if (camp.status === 'CANCELLED') {
+        statusClass = 'status-cancelled';
+        statusLabel = 'Cancelled';
+      }
 
-      // Format schedule or due time
-      const timeStr = formatScheduledTime(campaign.scheduledAt);
-      const sheetName = campaign.spreadsheetTitle || extractSheetName(campaign.spreadsheetUrl) || 'Google Sheet';
-      const subjectText = campaign.subject || 'Untitled Campaign';
+      // Sender Account
+      const accountLabel = camp.accountEmail
+        ? camp.accountEmail
+        : (camp.userIndex && camp.userIndex !== '0' ? 'Gmail Account #' + camp.userIndex : 'Gmail Primary');
+
+      // Time Display
+      let timeLabel = '';
+      if (camp.status === 'COMPLETED') {
+        timeLabel = 'Sent: ' + formatTime(camp.completedAt || camp.updatedAt);
+      } else if (camp.status === 'QUEUED') {
+        timeLabel = 'Scheduled: ' + formatTime(camp.scheduledAt);
+      } else if (camp.status === 'PROCESSING') {
+        timeLabel = 'Executing now...';
+      } else if (camp.status === 'FAILED') {
+        timeLabel = 'Failed: ' + formatTime(camp.failedAt || camp.updatedAt);
+      } else {
+        timeLabel = formatTime(camp.updatedAt || camp.createdAt);
+      }
+
+      const subject = camp.subject || 'Untitled Subject';
+
+      // Actions HTML
+      let actionsHtml = '';
+      if (camp.status === 'QUEUED') {
+        actionsHtml = `
+          <button class="btn-action btn-run" data-action="run" data-id="${camp.id}" title="Execute immediately">
+            ▶ Run Now
+          </button>
+          <button class="btn-action btn-cancel" data-action="cancel" data-id="${camp.id}" title="Cancel campaign">
+            ✕ Cancel
+          </button>
+        `;
+      } else if (camp.status === 'FAILED') {
+        actionsHtml = `
+          <button class="btn-action btn-run" data-action="run" data-id="${camp.id}" title="Retry execution now">
+            ↻ Retry Now
+          </button>
+          <button class="btn-action btn-delete" data-action="delete" data-id="${camp.id}" title="Remove from list">
+            🗑 Delete
+          </button>
+        `;
+      } else {
+        actionsHtml = `
+          <button class="btn-action btn-delete" data-action="delete" data-id="${camp.id}" title="Remove from list">
+            🗑 Delete
+          </button>
+        `;
+      }
+
+      // Error message if failed
+      const errorHtml = (camp.status === 'FAILED' && camp.errorMessage)
+        ? `<div class="campaign-error" title="${escapeHtml(camp.errorMessage)}">${escapeHtml(camp.errorMessage)}</div>`
+        : '';
 
       card.innerHTML = `
         <div class="campaign-top">
-          <div class="campaign-subject" title="${escapeHtml(subjectText)}">
-            ${escapeHtml(subjectText)}
+          <div class="campaign-subject" title="${escapeHtml(subject)}">
+            ${escapeHtml(subject)}
           </div>
           <span class="campaign-status ${statusClass}">${statusLabel}</span>
         </div>
         <div class="campaign-meta">
-          <div class="sheet-title" title="${escapeHtml(sheetName)}">
-            <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-            </svg>
-            <span>${escapeHtml(sheetName)}</span>
-          </div>
-          <span class="scheduled-time" title="Scheduled execution">${timeStr}</span>
+          <span class="campaign-account" title="Sending account">
+            <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+            ${escapeHtml(accountLabel)}
+          </span>
+          <span class="campaign-time">${escapeHtml(timeLabel)}</span>
         </div>
+        ${errorHtml}
         <div class="campaign-actions">
-          <button class="btn-action btn-run" data-action="run" data-id="${campaign.id}" title="Trigger immediately">
-            ▶ Run Now
-          </button>
-          <button class="btn-action btn-cancel" data-action="cancel" data-id="${campaign.id}" title="Cancel campaign">
-            ✕ Cancel
-          </button>
+          ${actionsHtml}
         </div>
       `;
 
-      // Attach button events
+      // Attach button event listeners
       const btnRun = card.querySelector('[data-action="run"]');
       const btnCancel = card.querySelector('[data-action="cancel"]');
+      const btnDelete = card.querySelector('[data-action="delete"]');
 
-      btnRun.addEventListener('click', (e) => {
-        e.stopPropagation();
-        triggerRunNow(campaign.id);
-      });
-
-      btnCancel.addEventListener('click', (e) => {
-        e.stopPropagation();
-        cancelCampaign(campaign.id);
-      });
+      if (btnRun) {
+        btnRun.addEventListener('click', (e) => {
+          e.stopPropagation();
+          triggerRunNow(camp.id);
+        });
+      }
+      if (btnCancel) {
+        btnCancel.addEventListener('click', (e) => {
+          e.stopPropagation();
+          cancelCampaign(camp.id);
+        });
+      }
+      if (btnDelete) {
+        btnDelete.addEventListener('click', (e) => {
+          e.stopPropagation();
+          deleteCampaign(camp.id);
+        });
+      }
 
       campaignsList.appendChild(card);
     });
   }
 
   /**
-   * Triggers a campaign immediately via background worker
+   * Triggers a campaign immediately
    */
   async function triggerRunNow(campaignId) {
     try {
-      showToast('Dispatched campaign...');
+      showToast('Executing campaign...');
       const response = await chrome.runtime.sendMessage({
         action: 'TRIGGER_CAMPAIGN_NOW',
         campaignId
@@ -249,73 +330,75 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (response && response.success) {
         showToast('Campaign execution started');
       } else {
-        showToast(response?.error || 'Execution triggered');
+        showToast(response?.error || 'Trigger dispatched');
       }
 
-      await loadCampaigns();
+      // Reload state after slight delay
+      setTimeout(loadCampaigns, 1500);
     } catch (err) {
-      console.error('[Popup] Trigger campaign failed:', err);
-      showToast('Trigger failed: ' + err.message);
+      console.error('[Popup] Run Now error:', err);
+      showToast('Error: ' + err.message);
     }
   }
 
   /**
-   * Cancels/deletes a campaign from queue
+   * Cancels a queued campaign
    */
   async function cancelCampaign(campaignId) {
     try {
       if (window.IDBStore) {
-        // Update status to CANCELLED or delete
         await window.IDBStore.updateCampaign(campaignId, {
           status: 'CANCELLED',
           cancelledAt: new Date().toISOString()
         });
         await window.IDBStore.addLog(campaignId, 'WARN', 'Campaign cancelled by user in popup.');
       }
-
-      // Notify background to refresh badge
       try {
         await chrome.runtime.sendMessage({ action: 'REFRESH_BADGE' });
-      } catch (e) {
-        // Ignore if background asleep
-      }
+      } catch (_) {}
 
       showToast('Campaign cancelled');
       await loadCampaigns();
     } catch (err) {
-      console.error('[Popup] Cancel campaign error:', err);
-      showToast('Failed to cancel campaign');
+      console.error('[Popup] Cancel error:', err);
+      showToast('Failed to cancel');
     }
   }
 
   /**
-   * Opens the full dashboard in a new tab
+   * Deletes a campaign from IndexedDB
    */
-  async function openFullDashboard() {
+  async function deleteCampaign(campaignId) {
     try {
-      await chrome.runtime.sendMessage({ action: 'OPEN_DASHBOARD' });
-      window.close();
+      if (window.IDBStore) {
+        await window.IDBStore.deleteCampaign(campaignId);
+      }
+      try {
+        await chrome.runtime.sendMessage({ action: 'REFRESH_BADGE' });
+      } catch (_) {}
+
+      showToast('Campaign deleted');
+      await loadCampaigns();
     } catch (err) {
-      // Fallback
-      const url = chrome.runtime.getURL('src/dashboard/dashboard.html');
-      await chrome.tabs.create({ url });
-      window.close();
+      console.error('[Popup] Delete error:', err);
+      showToast('Failed to delete');
     }
   }
 
   /**
-   * Manual refresh button with animation
+   * Manual refresh with rotation animation
    */
   async function handleManualRefresh() {
     if (isRefreshing) return;
     isRefreshing = true;
     btnRefresh.classList.add('spinning');
-
     try {
-      await loadState();
-      showToast('Queue refreshed');
-    } catch (e) {
-      console.error(e);
+      await syncFromGmailTabs();
+      await loadCampaigns();
+      await updateSchedulerStatus();
+      showToast('Campaigns synchronized');
+    } catch (err) {
+      showToast('Refresh error');
     } finally {
       setTimeout(() => {
         btnRefresh.classList.remove('spinning');
@@ -325,86 +408,70 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   /**
-   * Shows transient toast message
+   * Toggles background scheduler
    */
-  function showToast(message) {
+  async function handleSchedulerToggle() {
+    const active = schedulerToggle.checked;
+    try {
+      await chrome.runtime.sendMessage({
+        action: 'TOGGLE_SCHEDULER',
+        active
+      });
+      applySchedulerUI(active);
+      showToast(active ? 'Scheduler activated' : 'Scheduler paused');
+    } catch (err) {
+      console.error('[Popup] Toggle scheduler error:', err);
+      schedulerToggle.checked = !active;
+      showToast('Failed to toggle scheduler');
+    }
+  }
+
+  /**
+   * Opens the diagnostics dashboard in a new tab
+   */
+  async function openFullDashboard() {
+    try {
+      await chrome.runtime.sendMessage({ action: 'OPEN_DASHBOARD' });
+      window.close();
+    } catch (_) {
+      const url = chrome.runtime.getURL('src/dashboard/dashboard.html');
+      chrome.tabs.create({ url });
+      window.close();
+    }
+  }
+
+  /**
+   * Formats timestamp into clean human string
+   */
+  function formatTime(isoString) {
+    if (!isoString) return '';
+    try {
+      const d = new Date(isoString);
+      if (isNaN(d.getTime())) return '';
+      const now = new Date();
+      const isToday = d.toDateString() === now.toDateString();
+      const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      if (isToday) {
+        return 'Today at ' + timeStr;
+      }
+      return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + timeStr;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function showToast(msg) {
     if (!toast) return;
-    toast.textContent = message;
+    toast.textContent = msg;
     toast.classList.add('show');
-    clearTimeout(toast._timeout);
-    toast._timeout = setTimeout(() => {
+    setTimeout(() => {
       toast.classList.remove('show');
     }, 2200);
   }
 
-  /**
-   * Formats scheduled time relative or concise
-   */
-  function formatScheduledTime(dateStr) {
-    if (!dateStr) return '⚡ Immediate';
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return '⚡ Immediate';
-
-    const now = Date.now();
-    const diffMs = d.getTime() - now;
-
-    if (diffMs <= 0) {
-      return '⏱ Due now';
-    }
-
-    const diffMins = Math.round(diffMs / 60000);
-    if (diffMins < 60) {
-      return `In ${diffMins}m`;
-    }
-
-    const diffHours = Math.round(diffMins / 60);
-    if (diffHours < 24) {
-      return `In ${diffHours}h`;
-    }
-
-    // Format as 'Sep 4, 18:30'
-    const month = d.toLocaleString('en', { month: 'short' });
-    const day = d.getDate();
-    const hours = String(d.getHours()).padStart(2, '0');
-    const mins = String(d.getMinutes()).padStart(2, '0');
-    return `${month} ${day}, ${hours}:${mins}`;
-  }
-
-  /**
-   * Extracts sheet name or ID from URL
-   */
-  function extractSheetName(url) {
-    if (!url) return '';
-    const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
-    if (match && match[1]) {
-      return 'Sheet ' + match[1].substring(0, 8) + '...';
-    }
-    return '';
-  }
-
-  /**
-   * Opens the full management dashboard in a new tab or focuses existing
-   */
-  async function openFullDashboard() {
-    try {
-      const response = await chrome.runtime.sendMessage({ action: 'OPEN_DASHBOARD' });
-      if (!response || !response.success) {
-        const dashboardUrl = chrome.runtime.getURL('src/dashboard/dashboard.html');
-        await chrome.tabs.create({ url: dashboardUrl });
-      }
-    } catch (err) {
-      console.warn('[Popup] Error via sendMessage, opening dashboard via tabs API:', err);
-      const dashboardUrl = chrome.runtime.getURL('src/dashboard/dashboard.html');
-      await chrome.tabs.create({ url: dashboardUrl });
-    }
-  }
-
-  /**
-   * Escapes unsafe HTML characters
-   */
-  function escapeHtml(text) {
-    if (!text) return '';
-    return String(text)
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')

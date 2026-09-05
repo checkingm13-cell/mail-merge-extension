@@ -17,68 +17,16 @@
 
   const DEFAULT_TEMPLATES = [
     {
-      id: 'template-cfp',
-      name: 'Call for Papers (CFP)',
-      subject: 'Call for Papers: {{Conference Name}} - Submission Deadline {{Deadline}}',
-      body: `Dear {{Title}} {{Last Name}},
-
-We cordially invite you to submit your latest research to {{Conference Name}}. Your contributions in the field of {{Research Area}} are highly valued by our program committee.
-
-Key Dates:
-- Submission Deadline: {{Deadline}}
-- Notification of Acceptance: {{Notification Date}}
-- Conference Dates: {{Conference Dates}}
-
-Author Guidelines and Paper Submission Portal:
-{{Submission Link}}
-
-Best regards,
-{{Organizer Name}}
-Program Committee Chair, {{Conference Name}}`,
-      createdAt: new Date().toISOString()
-    },
-    {
-      id: 'template-research',
-      name: 'Research Invitation',
-      subject: 'Research Collaboration Opportunity: {{Project Name}}',
-      body: `Dear Dr. {{Last Name}},
-
-I hope this email finds you well. I have been following your impressive work on {{Research Topic}} and would love to explore a potential collaboration on our research initiative: "{{Project Name}}".
-
-Our team at {{Institution Name}} is focusing on {{Project Focus}}, and we believe your expertise in {{Expertise Area}} would be an invaluable addition.
-
-Would you be open to a brief 15-minute introductory video call next week?
-
-Sincerely,
-{{Sender Name}}
-{{Sender Title}}, {{Institution Name}}`,
-      createdAt: new Date().toISOString()
-    },
-    {
-      id: 'template-deadline',
-      name: 'Deadline Reminder',
-      subject: 'Reminder: Upcoming Submission Deadline for {{Conference Name}}',
-      body: `Dear {{First Name}},
-
-This is a friendly reminder that the final submission deadline for {{Conference Name}} is rapidly approaching on {{Deadline}}.
-
-If you need any assistance or have questions regarding paper formatting or track selection, please do not hesitate to contact our organizing team.
-
-Submit your manuscript here:
-{{Submission Link}}
-
-Warm regards,
-{{Editorial Team}}
-{{Conference Name}}`,
+      id: 'template-starter',
+      name: 'Welcome & Introduction',
+      subject: 'Hello {{First Name}}, quick update on {{Project}}',
+      body: 'Hi {{First Name}},\n\nI wanted to reach out regarding {{Project}}.\n\nBest regards,\n{{Sender Name}}',
       createdAt: new Date().toISOString()
     }
   ];
 
   function generateId(prefix = 'id') {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-      return `${prefix}_${crypto.randomUUID()}`;
-    }
-    return `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    return `${prefix}_${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
   }
 
   const IDBStore = {

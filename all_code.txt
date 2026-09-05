@@ -1,5 +1,5 @@
 === GMAIL NATIVE MAIL MERGE & SCHEDULER EXTENSION CODEBASE ===
-Generated at: 2026-09-05T09:30:27.709Z
+Generated at: 2026-09-05T10:06:47.244Z
 
 
 ================================================================================
@@ -51,7 +51,6 @@ FILE: manifest.json
       "js": [
         "src/db/idb-store.js",
         "src/content/gmail-automator.js",
-        "src/content/compose-injector.js",
         "src/content/content.js"
       ],
       "run_at": "document_idle"
@@ -716,68 +715,16 @@ FILE: src/db/idb-store.js
 
   const DEFAULT_TEMPLATES = [
     {
-      id: 'template-cfp',
-      name: 'Call for Papers (CFP)',
-      subject: 'Call for Papers: {{Conference Name}} - Submission Deadline {{Deadline}}',
-      body: `Dear {{Title}} {{Last Name}},
-
-We cordially invite you to submit your latest research to {{Conference Name}}. Your contributions in the field of {{Research Area}} are highly valued by our program committee.
-
-Key Dates:
-- Submission Deadline: {{Deadline}}
-- Notification of Acceptance: {{Notification Date}}
-- Conference Dates: {{Conference Dates}}
-
-Author Guidelines and Paper Submission Portal:
-{{Submission Link}}
-
-Best regards,
-{{Organizer Name}}
-Program Committee Chair, {{Conference Name}}`,
-      createdAt: new Date().toISOString()
-    },
-    {
-      id: 'template-research',
-      name: 'Research Invitation',
-      subject: 'Research Collaboration Opportunity: {{Project Name}}',
-      body: `Dear Dr. {{Last Name}},
-
-I hope this email finds you well. I have been following your impressive work on {{Research Topic}} and would love to explore a potential collaboration on our research initiative: "{{Project Name}}".
-
-Our team at {{Institution Name}} is focusing on {{Project Focus}}, and we believe your expertise in {{Expertise Area}} would be an invaluable addition.
-
-Would you be open to a brief 15-minute introductory video call next week?
-
-Sincerely,
-{{Sender Name}}
-{{Sender Title}}, {{Institution Name}}`,
-      createdAt: new Date().toISOString()
-    },
-    {
-      id: 'template-deadline',
-      name: 'Deadline Reminder',
-      subject: 'Reminder: Upcoming Submission Deadline for {{Conference Name}}',
-      body: `Dear {{First Name}},
-
-This is a friendly reminder that the final submission deadline for {{Conference Name}} is rapidly approaching on {{Deadline}}.
-
-If you need any assistance or have questions regarding paper formatting or track selection, please do not hesitate to contact our organizing team.
-
-Submit your manuscript here:
-{{Submission Link}}
-
-Warm regards,
-{{Editorial Team}}
-{{Conference Name}}`,
+      id: 'template-starter',
+      name: 'Welcome & Introduction',
+      subject: 'Hello {{First Name}}, quick update on {{Project}}',
+      body: 'Hi {{First Name}},\n\nI wanted to reach out regarding {{Project}}.\n\nBest regards,\n{{Sender Name}}',
       createdAt: new Date().toISOString()
     }
   ];
 
   function generateId(prefix = 'id') {
-    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-      return `${prefix}_${crypto.randomUUID()}`;
-    }
-    return `${prefix}_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    return `${prefix}_${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
   }
 
   const IDBStore = {
@@ -1557,507 +1504,13 @@ FILE: src/content/gmail-automator.js
      * @returns {Promise<{ success: boolean, message: string, campaignId?: string }>}
      */
     static async runMailMerge(campaignConfig, onProgress = () => {}) {
-      const config = {
-        spreadsheetUrl: campaignConfig.spreadsheetUrl || campaignConfig.spreadsheet_url || campaignConfig.sheetUrl || '',
-        spreadsheetTitle: campaignConfig.spreadsheetTitle || campaignConfig.spreadsheet_title || campaignConfig.sheetTitle || '',
-        subject: campaignConfig.subject || '',
-        bodyTemplate: campaignConfig.bodyTemplate || campaignConfig.body_template || campaignConfig.body || '',
-        recipientColumn: campaignConfig.recipientColumn || campaignConfig.recipient_column || 'email',
-        includeUnsubscribe: campaignConfig.includeUnsubscribe !== undefined
-          ? !!campaignConfig.includeUnsubscribe
-          : (campaignConfig.include_unsubscribe !== undefined ? !!campaignConfig.include_unsubscribe : true),
-        dryRun: campaignConfig.dryRun !== undefined
-          ? !!campaignConfig.dryRun
-          : (campaignConfig.dry_run !== undefined ? !!campaignConfig.dry_run : true),
-        id: campaignConfig.id || campaignConfig.campaignId || null
-      };
-
-      const campaignId = config.id;
-
-      const progress = async (step, message, pct = 0) => {
-        const payload = { step, message, pct, campaignId, timestamp: new Date().toISOString() };
-        console.log(`[GmailAutomator] [${pct}%] ${step}: ${message}`);
-        try {
-          onProgress(payload);
-        } catch (_) {}
-
-        if (root.IDBStore && typeof root.IDBStore.addLog === 'function') {
-          try {
-            await root.IDBStore.addLog(campaignId, 'INFO', `[${step}] ${message}`);
-          } catch (_) {}
-        }
-      };
-
-      try {
-        await progress('INIT', 'Starting Gmail Native Mail Merge automation...', 5);
-
-        // 1. Extract Google Sheet ID
-        const extractedSheetId = extractGoogleSheetId(config.spreadsheetUrl) || extractGoogleSheetId(config.spreadsheetTitle);
-        const sheetSearchQuery = extractedSheetId || (config.spreadsheetTitle && !config.spreadsheetTitle.startsWith('http') ? config.spreadsheetTitle : config.spreadsheetUrl);
-
-        if (!sheetSearchQuery) {
-          throw new Error('A valid Google Sheet URL, Sheet ID, or Spreadsheet Title is required.');
-        }
-
-        console.log(`[GmailAutomator] Target Spreadsheet Query: "${sheetSearchQuery}" (Extracted ID: ${extractedSheetId || 'None'})`);
-
-        // 2. Locate or Open Compose Window
-        await progress('COMPOSE', 'Ensuring Gmail Compose dialog is open...', 10);
-        const composeDialog = await this.openCompose();
-        await sleep(1200);
-
-        // 3. Check and Enable Mail merge inside compose dialog
-        await progress('MAIL_MERGE_BUTTON', 'Checking Mail merge state in Compose window...', 20);
-
-        const isAlreadyMailMerge =
-          isElementVisible(composeDialog.querySelector('div[role="button"][data-tooltip*="Continue" i]')) ||
-          findByText(composeDialog, 'button, div[role="button"]', /^Continue$/i) ||
-          (composeDialog.textContent || '').includes("using mail merge") ||
-          (composeDialog.textContent || '').includes("You're using mail merge");
-
-        if (isAlreadyMailMerge) {
-          console.log('[GmailAutomator] Mail merge mode is already active in Compose.');
-        } else {
-          const mailMergeBtn = await waitFor(
-            () => {
-              return findElement(
-                [
-                  'span.Sz.brj',
-                  '[aria-label*="mail merge" i]',
-                  '[data-tooltip*="mail merge" i]',
-                  '[aria-label*="Mail merge" i]',
-                  'div[role="button"][data-tooltip*="Mail merge" i]',
-                  'div[role="button"][aria-label*="Mail merge" i]'
-                ],
-                composeDialog
-              ) || findElement([
-                'span.Sz.brj',
-                '[aria-label*="mail merge" i]',
-                '[data-tooltip*="mail merge" i]'
-              ], document);
-            },
-            { timeout: 15000, errorMsg: 'Could not find Mail merge button in Compose dialog' }
-          );
-
-          console.log('[GmailAutomator] Clicking Mail merge button...');
-          await humanClick(mailMergeBtn);
-          await sleep(1500);
-
-          // Wait for Mail merge menu / popup
-          let menu = await waitFor(
-            () => {
-              return findElement([
-                'div[role="menu"]:has([role="checkbox"])',
-                'div[role="menu"]',
-                'div.J-M[role="menu"]'
-              ], document);
-            },
-            { timeout: 8000, errorMsg: 'Mail merge popup menu did not appear' }
-          ).catch(async () => {
-            console.warn('[GmailAutomator] Menu not opened on first click, retrying click...');
-            await humanClick(mailMergeBtn);
-            await sleep(1500);
-            return waitFor(
-              () => findElement(['div[role="menu"]', 'div.J-M'], document),
-              { timeout: 8000, errorMsg: 'Mail merge menu did not open' }
-            );
-          });
-
-          // 4. Ensure Mail merge checkbox is enabled
-          await progress('ENABLE_MERGE', 'Ensuring Mail merge is checked...', 28);
-          const checkbox = findElement('[role="checkbox"]', menu) || findByText(menu, '[role="menuitemcheckbox"], [role="checkbox"]', /mail merge/i);
-          if (checkbox) {
-            const isChecked = checkbox.getAttribute('aria-checked') === 'true' || checkbox.classList.contains('J-Ks-KO');
-            if (!isChecked) {
-              console.log('[GmailAutomator] Enabling Mail merge checkbox...');
-              await humanClick(checkbox);
-              await sleep(1500);
-            } else {
-              console.log('[GmailAutomator] Mail merge checkbox is already enabled.');
-            }
-          }
-        }
-
-        // Check if spreadsheet is already linked to this compose dialog
-        const isSheetAlreadyLinked =
-          (composeDialog.textContent || '').includes("Linked to") ||
-          (composeDialog.textContent || '').includes("recipients from") ||
-          (composeDialog.textContent || '').includes("Spreadsheet") ||
-          composeDialog.querySelector('div[aria-label*="recipients from" i]') ||
-          composeDialog.querySelector('div[aria-label*="Linked to" i]');
-
-        if (isSheetAlreadyLinked) {
-          console.log('[GmailAutomator] Target spreadsheet is already linked to Compose. Skipping picker step.');
-          await progress('LINKED', 'Spreadsheet already linked. Proceeding...', 65);
-        } else {
-          // 5. Select "Add from a spreadsheet"
-          await progress('ADD_SPREADSHEET', 'Selecting "Add from a spreadsheet"...', 35);
-          let addFromSheetOption = findByText(document, '[role="menuitem"], div[role="menuitem"], span', /add from a spreadsheet/i);
-          if (!addFromSheetOption) {
-            const mmBtn = findElement(['span.Sz.brj', '[aria-label*="mail merge" i]'], composeDialog);
-            if (mmBtn) {
-              await humanClick(mmBtn);
-              await sleep(1200);
-            }
-            addFromSheetOption = await waitFor(
-              () => findByText(document, '[role="menuitem"], div[role="menuitem"], span', /add from a spreadsheet/i),
-              { timeout: 8000, errorMsg: 'Could not find "Add from a spreadsheet" menu option' }
-            );
-          }
-
-          await humanClick(addFromSheetOption);
-          await sleep(2500);
-
-          // 6. Handle Google Drive Picker iframe
-          await progress('DRIVE_PICKER', 'Waiting for Google Drive Picker to load...', 45);
-          const pickerIframe = await waitFor(
-            () => findPickerIframe(),
-            { timeout: 20000, errorMsg: 'Google Drive Picker iframe not found' }
-          );
-
-          console.log('[GmailAutomator] Google Drive Picker iframe detected.');
-          await sleep(2000);
-
-          let pickerHandled = false;
-          let pickerDoc = null;
-          try {
-            pickerDoc = pickerIframe.contentDocument || pickerIframe.contentWindow?.document;
-          } catch (iframeErr) {
-            console.warn('[GmailAutomator] Direct iframe document access restricted:', iframeErr);
-          }
-
-          if (pickerDoc) {
-            try {
-              // Search for spreadsheet in same-origin Picker
-              await progress('SEARCH_SHEET', `Searching for spreadsheet "${sheetSearchQuery}"...`, 52);
-              const searchInput = await waitFor(
-                () => {
-                  return findElement([
-                    'input[aria-label*="Search" i]',
-                    'input[placeholder*="Search" i]',
-                    'input[type="text"]'
-                  ], pickerDoc);
-                },
-                { timeout: 10000, errorMsg: 'Could not find Search input in Drive Picker' }
-              );
-
-              await humanInput(searchInput, sheetSearchQuery);
-              await sleep(300);
-
-              searchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-              searchInput.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-              searchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-              await sleep(3500);
-
-              let fileCard = await waitFor(
-                () => findElement(['div[role="row"]', 'div[role="option"]', 'div[role="gridcell"]', '.picker-grid-item'], pickerDoc),
-                { timeout: 8000, errorMsg: `No file result found for query "${sheetSearchQuery}"` }
-              );
-
-              await humanClick(fileCard);
-              await sleep(1500);
-
-              const selectBtn = await waitFor(
-                () => {
-                  return findElement([
-                    'button[name="ok"]',
-                    'button:has-text("Insert")',
-                    'button:has-text("Select")',
-                    'div[role="button"]:has-text("Insert")'
-                  ], pickerDoc) || findByText(pickerDoc, 'button, div[role="button"]', /^(insert|select|ok)$/i);
-                },
-                { timeout: 8000, errorMsg: 'Could not find Insert/Select button in Drive Picker' }
-              );
-
-              await humanClick(selectBtn);
-              pickerHandled = true;
-              await sleep(3500);
-            } catch (pickerErr) {
-              console.warn('[GmailAutomator] Direct picker interaction failed, attempting background bridge:', pickerErr);
-            }
-          }
-
-          if (!pickerHandled) {
-            // Background script fallback with allFrames scripting permission
-            console.log('[GmailAutomator] Delegating Drive Picker search to background service worker...');
-            await progress('SEARCH_SHEET', `Selecting spreadsheet "${sheetSearchQuery}" via background engine...`, 52);
-            const bridgeRes = await chrome.runtime.sendMessage({
-              action: 'AUTOMATE_DRIVE_PICKER',
-              query: sheetSearchQuery,
-              fallbackTitle: config.spreadsheetTitle
-            });
-            console.log('[GmailAutomator] Background picker response:', bridgeRes);
-            await sleep(3500);
-          }
-
-          // 7. Handle "Finish linking spreadsheet" Column Mapping Dialog if present
-          await progress('MAP_COLUMNS', 'Checking spreadsheet column mappings...', 62);
-          const finishLinkingModal = await waitFor(
-            () => {
-              return findByText(document, 'div[role="dialog"], h2, div', /finish linking spreadsheet/i) ||
-                     findElement('div.rHGeGc-aPP78e', document);
-            },
-            { timeout: 8000, errorMsg: '"Finish linking spreadsheet" modal did not appear' }
-          ).catch(() => null);
-
-          if (finishLinkingModal) {
-            await sleep(1000);
-            const emailDropdown = findElement([
-              'div.rHGeGc-aPP78e',
-              'div[role="listbox"]',
-              'div[role="combobox"]',
-              'div[aria-haspopup="listbox"]'
-            ], document);
-
-            if (emailDropdown) {
-              await humanClick(emailDropdown);
-              await sleep(1200);
-
-              const targetColRegex = new RegExp(config.recipientColumn || 'email', 'i');
-              const emailOption = findByText(document, 'li[role="option"], div[role="option"], [role="menuitem"]', targetColRegex) ||
-                                  findByText(document, 'li[role="option"], div[role="option"]', /email/i);
-
-              if (emailOption) {
-                await humanClick(emailOption);
-                await sleep(1200);
-              }
-            }
-
-            const finishBtn = findByText(document, 'button, div[role="button"]', /^finish$/i) ||
-                             findElement('button[name="ok"]', document);
-            if (finishBtn) {
-              await humanClick(finishBtn);
-              await sleep(2500);
-            }
-          }
-        }
-
-        // 8. Fill Subject Line
-        await progress('SET_SUBJECT', 'Populating subject line...', 70);
-        const subjectInput = await waitFor(
-          () => {
-            return findElement([
-              'input[name="subjectbox"]',
-              'input[aria-label="Subject"]',
-              'input[placeholder="Subject"]'
-            ], composeDialog);
-          },
-          { timeout: 8000, errorMsg: 'Could not find Subject input box in Compose dialog' }
-        );
-
-        const cleanSubject = (config.subject || 'Announcement').replace(/@\w+/g, '').trim();
-        await humanInput(subjectInput, cleanSubject);
-        await sleep(1000);
-
-        // 9. Fill Message Body
-        await progress('SET_BODY', 'Populating message body...', 78);
-        const bodyEditor = await waitFor(
-          () => {
-            return findElement([
-              'div[aria-label="Message Body"]',
-              'div[role="textbox"][aria-label*="Body" i]',
-              'div[g_editable="true"]'
-            ], composeDialog);
-          },
-          { timeout: 8000, errorMsg: 'Could not find Message Body editor in Compose dialog' }
-        );
-
-        const cleanBody = (config.bodyTemplate || 'Hello,\n\nPlease find the details below.\n\nBest regards,')
-          .replace(/@name/gi, 'Colleague')
-          .replace(/@firstname/gi, 'Colleague')
-          .replace(/@email/gi, '')
-          .replace(/@\w+/g, '')
-          .trim();
-
-        await fillMessageBody(bodyEditor, cleanBody);
-        await sleep(2000);
-
-        // 10. Click Continue button
-        await progress('CONTINUE', 'Clicking Continue button to validate Mail Merge...', 85);
-        const continueBtn = await waitFor(
-          () => {
-            return findByText(composeDialog, 'button, div[role="button"]', /^continue$/i) ||
-                   findByText(document, 'button, div[role="button"]', /^continue$/i);
-          },
-          { timeout: 8000, errorMsg: 'Could not find Continue button in Compose window' }
-        );
-
-        await humanClick(continueBtn);
-        await sleep(3000);
-
-        // 11. Handle "Missing unsubscribe link" prompt if it appears
-        const addLinkBtn = findByText(document, 'button, div[role="button"]', /add link/i);
-        const ignoreBtn = findByText(document, 'button, div[role="button"]', /^ignore$/i);
-
-        if (addLinkBtn && config.includeUnsubscribe) {
-          console.log('[GmailAutomator] Resolving unsubscribe prompt via "Add link"...');
-          await humanClick(addLinkBtn);
-          await sleep(2000);
-        } else if (ignoreBtn) {
-          console.log('[GmailAutomator] Dismissing unsubscribe prompt via "Ignore"...');
-          await humanClick(ignoreBtn);
-          await sleep(2000);
-        }
-
-        // 12. Handle one-time "Help fight junk emails" modal if present
-        const gotItBtn = findByText(document, 'button, div[role="button"]', /got it/i);
-        if (gotItBtn) {
-          console.log('[GmailAutomator] Dismissing "Help fight junk emails" popup via "Got it"...');
-          await humanClick(gotItBtn);
-          await sleep(2000);
-        }
-
-        // 12b. Safe Dry Run / Preview Check
-        if (config.dryRun) {
-          console.log('[GmailAutomator] 🛡️ DRY RUN / PREVIEW MODE ACTIVE: All steps verified up to Send. Stopping safely.');
-          await progress('DRY_RUN_COMPLETE', 'Dry Run Verified! Mail merge configured and ready to send. Halting safely before final dispatch.', 100);
-
-          if (campaignId && root.IDBStore) {
-            try {
-              await root.IDBStore.updateCampaign(campaignId, {
-                status: 'COMPLETED (DRY RUN)',
-                completedAt: new Date().toISOString()
-              });
-              await root.IDBStore.addLog(campaignId, 'SUCCESS', 'Dry run preview completed safely without sending.');
-            } catch (dbErr) {
-              console.warn('[GmailAutomator] IDB update error:', dbErr);
-            }
-          }
-
-          try {
-            if (chrome.runtime && chrome.runtime.sendMessage) {
-              chrome.runtime.sendMessage({
-                action: 'CAMPAIGN_STATUS_UPDATE',
-                campaignId,
-                status: 'COMPLETED (DRY RUN)',
-                logMessage: 'Dry run completed safely without sending.'
-              }).catch(() => {});
-            }
-          } catch (_) {}
-
-          return {
-            success: true,
-            dryRun: true,
-            message: 'Mail merge dry run completed successfully without sending',
-            campaignId
-          };
-        }
-
-        // 13. Wait for "Ready to send" Modal
-        await progress('READY_TO_SEND', 'Waiting for Gmail "Ready to send" modal...', 90);
-        await waitFor(
-          () => {
-            return findByText(document, 'h2, div[role="heading"], div[role="dialog"]', /ready to send/i);
-          },
-          { timeout: 15000, errorMsg: '"Ready to send" modal did not appear' }
-        );
-
-        const sendAllBtn = await waitFor(
-          () => {
-            return findByText(document, 'button, div[role="button"]', /send all/i);
-          },
-          { timeout: 10000, errorMsg: '"Send all" button not found in Ready to send modal' }
-        );
-
-        // 14. Generous pause: allow Gmail backend to bind spreadsheet tokens
-        await progress('BINDING_TOKENS', 'Pausing 5 seconds for Gmail backend to bind spreadsheet tokens...', 94);
-        await sleep(5000);
-
-        // 15. Click "Send all"
-        await progress('SENDING', 'Confirming "Send all" for Mail Merge campaign...', 97);
-        await humanClick(sendAllBtn);
-
-        // 16. Wait for "Message sent" toast confirmation
-        await progress('AWAIT_CONFIRMATION', 'Waiting for Gmail "Message sent" confirmation...', 99);
-        const toastConfirmation = await waitFor(
-          () => {
-            return findByText(document, 'div, span, [role="alert"]', /message sent/i);
-          },
-          { timeout: 20000, errorMsg: '"Message sent" toast confirmation did not appear' }
-        ).catch(() => {
-          console.log('[GmailAutomator] Note: Message sent toast not captured within 20s, verifying compose dismissal.');
-          return null;
-        });
-
-        await sleep(2000);
-
-        // 17. Update IDB Store & Notify Background Worker
-        if (campaignId && root.IDBStore) {
-          try {
-            await root.IDBStore.updateCampaign(campaignId, {
-              status: 'COMPLETED',
-              completedAt: new Date().toISOString()
-            });
-            await root.IDBStore.addLog(campaignId, 'SUCCESS', 'Mail merge sent successfully via Gmail.');
-          } catch (dbErr) {
-            console.warn('[GmailAutomator] Failed to update campaign status in IDBStore:', dbErr);
-          }
-        }
-
-        // Notify background service worker of status update
-        try {
-          if (chrome.runtime && chrome.runtime.sendMessage) {
-            chrome.runtime.sendMessage({
-              action: 'CAMPAIGN_STATUS_UPDATE',
-              campaignId,
-              status: 'COMPLETED',
-              logMessage: 'Mail merge sent successfully by GmailAutomator'
-            }).catch(() => {});
-          }
-        } catch (_) {}
-
-        await progress('COMPLETED', 'Mail merge sent successfully!', 100);
-
-        return {
-          success: true,
-          message: 'Mail merge sent successfully',
-          campaignId
-        };
-
-      } catch (error) {
-        console.error('[GmailAutomator] ❌ Error during Mail Merge automation:', error);
-
-        // Mark FAILED in IDBStore
-        if (campaignId && root.IDBStore) {
-          try {
-            await root.IDBStore.updateCampaign(campaignId, {
-              status: 'FAILED',
-              errorMessage: error.message,
-              failedAt: new Date().toISOString()
-            });
-            await root.IDBStore.addLog(campaignId, 'ERROR', `Automation failed: ${error.message}`);
-          } catch (dbErr) {
-            console.warn('[GmailAutomator] Failed to record error in IDBStore:', dbErr);
-          }
-        }
-
-        // Notify background service worker of failure
-        try {
-          if (chrome.runtime && chrome.runtime.sendMessage) {
-            chrome.runtime.sendMessage({
-              action: 'CAMPAIGN_STATUS_UPDATE',
-              campaignId,
-              status: 'FAILED',
-              logMessage: `Mail merge error: ${error.message}`
-            }).catch(() => {});
-          }
-        } catch (_) {}
-
-        return {
-          success: false,
-          error: error.message,
-          campaignId
-        };
-      }
+      console.log('[GmailAutomator] Delegating merge to native scheduled executor...');
+      return await GmailAutomator.executeScheduledNativeMerge(campaignConfig);
     }
 
     /**
      * Executes a scheduled native Gmail Mail Merge.
      * Navigates to the draft, clicks "Continue", waits for the "Ready to send" modal, and clicks "Send all".
-     * In accordance with read-from-this.txt protocol.
-     * @param {string|Object} draftIdOrCampaign
-     * @param {Object} [optionalCampaign]
-     * @returns {Promise<{success: boolean, campaignId?: string, error?: string}>}
      */
     static async executeScheduledNativeMerge(draftIdOrCampaign, optionalCampaign) {
       const campaign = typeof draftIdOrCampaign === 'object' ? draftIdOrCampaign : (optionalCampaign || {});
@@ -2284,44 +1737,6 @@ FILE: src/content/gmail-automator.js
   root.GmailAutomator = GmailAutomator;
   if (typeof window !== 'undefined') {
     window.GmailAutomator = GmailAutomator;
-  }
-})(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this));
-
-
-================================================================================
-FILE: src/content/compose-injector.js
-================================================================================
-
-/**
- * ComposeInjector - Lean stub for Gmail Native Mail Merge & Scheduler.
- * In accordance with the "Zero Extra UI" specification (read-from-this.txt):
- * The legacy 40% height companion panel, sidebar, and duplicate compose elements
- * have been completely removed. Compose remains 100% native Gmail.
- */
-(function (root) {
-  'use strict';
-
-  console.log('[ComposeInjector] Zero-UI Lean Mode active. Heavy compose panels stripped.');
-
-  const ComposeInjector = {
-    injectIntoCompose(composeDialog) {
-      // Intentionally stripped: zero UI overhead in compose dialog.
-      return null;
-    },
-    isPanelOpen(composeDialog) {
-      return false;
-    },
-    togglePanel(composeDialog) {
-      // No-op
-    },
-    adjustDimensions(composeDialog, isExpanded) {
-      // No-op
-    }
-  };
-
-  root.ComposeInjector = ComposeInjector;
-  if (typeof window !== 'undefined') {
-    window.ComposeInjector = ComposeInjector;
   }
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this));
 
@@ -2942,79 +2357,62 @@ FILE: src/popup/popup.html
     <header class="header">
       <div class="brand">
         <img src="../../icons/icon-48.png" alt="Logo" class="brand-icon" onerror="this.style.display='none'">
-        <span class="brand-title">Gmail Mail Merge</span>
-        <span class="brand-badge">PRO</span>
+        <div class="brand-info">
+          <span class="brand-title">Mail Merge</span>
+          <span class="brand-sub">Native Scheduler</span>
+        </div>
       </div>
-      <div class="status-pill" id="statusPill" title="Background Scheduler Status">
-        <span class="status-dot" id="statusDot"></span>
-        <span id="statusText">Active</span>
+      <div class="header-controls">
+        <label class="switch" title="Toggle Background Scheduler">
+          <input type="checkbox" id="schedulerToggle" checked>
+          <span class="slider"></span>
+        </label>
+        <button id="btnRefresh" class="btn-icon" title="Refresh & sync campaigns">
+          <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+          </svg>
+        </button>
       </div>
     </header>
 
-    <!-- Content -->
+    <!-- Filter Pills Bar -->
+    <nav class="filter-bar">
+      <button class="filter-pill active" data-filter="ALL">
+        All <span class="pill-count" id="countAll">0</span>
+      </button>
+      <button class="filter-pill" data-filter="QUEUED">
+        Queued <span class="pill-count" id="countQueued">0</span>
+      </button>
+      <button class="filter-pill" data-filter="COMPLETED">
+        Completed <span class="pill-count" id="countCompleted">0</span>
+      </button>
+      <button class="filter-pill" data-filter="FAILED">
+        Failed <span class="pill-count" id="countFailed">0</span>
+      </button>
+    </nav>
+
+    <!-- Main Content / Campaigns List -->
     <main class="content">
-      <!-- Section 1: Quick Status Bar -->
-      <section class="status-card">
-        <div class="scheduler-row">
-          <div class="scheduler-info">
-            <span class="scheduler-label">Background Scheduler</span>
-            <span class="scheduler-state" id="schedulerStateLabel">Active & Polling</span>
-          </div>
-          <label class="switch" title="Toggle Background Execution">
-            <input type="checkbox" id="schedulerToggle" checked>
-            <span class="slider"></span>
-          </label>
+      <div class="campaigns-list" id="campaignsList">
+        <!-- Dynamic campaign cards rendered here by popup.js -->
+        <div class="empty-state" id="emptyState">
+          <svg class="empty-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"></path>
+          </svg>
+          <div class="empty-title">No campaigns found</div>
+          <div class="empty-desc">Schedule a mail merge draft directly inside Gmail Compose!</div>
         </div>
-
-        <!-- Counts: Queued, Processing, Completed -->
-        <div class="stats-grid">
-          <div class="stat-box queued">
-            <div class="stat-value" id="countQueued">0</div>
-            <div class="stat-label">Queued</div>
-          </div>
-          <div class="stat-box processing">
-            <div class="stat-value" id="countProcessing">0</div>
-            <div class="stat-label">Processing</div>
-          </div>
-          <div class="stat-box completed">
-            <div class="stat-value" id="countCompleted">0</div>
-            <div class="stat-label">Completed</div>
-          </div>
-        </div>
-      </section>
-
-      <!-- Section 2: Queued Campaigns List -->
-      <section class="queue-section">
-        <div class="section-header">
-          <span class="section-title">
-            Pending Queue
-            <span class="badge-count" id="queueBadgeCount">0</span>
-          </span>
-          <span id="nextPollTime" class="scheduled-time" style="font-size: 10px;"></span>
-        </div>
-
-        <div class="campaigns-list" id="campaignsList">
-          <!-- Populated by popup.js -->
-          <div class="empty-state" id="emptyState">
-            <svg class="empty-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"></path>
-            </svg>
-            <div class="empty-title">No campaigns queued</div>
-            <div class="empty-desc">Open Gmail Compose or use Dashboard to schedule your first mail merge!</div>
-          </div>
-        </div>
-      </section>
+      </div>
     </main>
 
     <!-- Footer -->
     <footer class="footer">
-      <button id="btnOpenDashboard" class="btn-primary" title="Open full management dashboard">
-        <span>🚀 Open Full Dashboard</span>
-      </button>
-      <button id="btnRefresh" class="btn-icon-only" title="Refresh queue">
-        <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-        </svg>
+      <div class="status-indicator">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText">Scheduler Active</span>
+      </div>
+      <button id="btnOpenDashboard" class="btn-link" title="Open full diagnostics & logs">
+        <span>Diagnostics ↗</span>
       </button>
     </footer>
   </div>
@@ -3030,41 +2428,599 @@ FILE: src/popup/popup.html
 
 
 ================================================================================
+FILE: src/popup/popup.css
+================================================================================
+
+/* Modern Dark Slate Theme for Gmail Mail Merge Extension Popup */
+:root {
+  --bg-main: #0f172a;
+  --bg-card: #1e293b;
+  --bg-card-hover: #243248;
+  --bg-input: #0b1120;
+  --border-color: #334155;
+  --border-subtle: #1e293b;
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --accent-primary: #6366f1;
+  --accent-hover: #4f46e5;
+  --accent-emerald: #10b981;
+  --accent-amber: #f59e0b;
+  --accent-rose: #f43f5e;
+  --accent-sky: #0ea5e9;
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  width: 400px;
+  min-height: 480px;
+  max-height: 580px;
+  background-color: var(--bg-main);
+  color: var(--text-primary);
+  font-family: var(--font-family);
+  font-size: 13px;
+  line-height: 1.4;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-main);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* App Container */
+.app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-height: 580px;
+  overflow: hidden;
+}
+
+/* Header */
+.header {
+  padding: 12px 16px;
+  background: var(--bg-main);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  display: block;
+}
+
+.brand-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.brand-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+.brand-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-icon {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  padding: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.btn-icon:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+.btn-icon.spinning svg {
+  animation: spin 0.75s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Switch */
+.switch {
+  position: relative;
+  display: inline-block;
+  width: 32px;
+  height: 18px;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider {
+  position: absolute;
+  cursor: pointer;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background-color: var(--border-color);
+  transition: 0.2s;
+  border-radius: 18px;
+}
+
+.slider:before {
+  position: absolute;
+  content: "";
+  height: 12px;
+  width: 12px;
+  left: 3px;
+  bottom: 3px;
+  background-color: white;
+  transition: 0.2s;
+  border-radius: 50%;
+}
+
+input:checked + .slider {
+  background-color: var(--accent-emerald);
+}
+
+input:checked + .slider:before {
+  transform: translateX(14px);
+}
+
+/* Filter Navigation Bar */
+.filter-bar {
+  display: flex;
+  gap: 6px;
+  padding: 10px 16px;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.filter-pill {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: all 0.15s ease;
+}
+
+.filter-pill:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+}
+
+.filter-pill.active {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.pill-count {
+  background: rgba(0, 0, 0, 0.25);
+  padding: 1px 5px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.filter-pill.active .pill-count {
+  background: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
+
+/* Main Content Area */
+.content {
+  padding: 12px 16px;
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.campaigns-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Campaign Card */
+.campaign-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.campaign-card:hover {
+  border-color: #475569;
+  background: var(--bg-card-hover);
+}
+
+.campaign-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.campaign-subject {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 250px;
+}
+
+.campaign-status {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+.status-completed {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.status-queued {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+.status-processing {
+  background: rgba(99, 102, 241, 0.2);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  animation: pulse-glow 1.5s infinite;
+}
+
+.status-failed {
+  background: rgba(244, 63, 94, 0.2);
+  color: #fb7185;
+  border: 1px solid rgba(244, 63, 94, 0.4);
+}
+
+.status-cancelled {
+  background: rgba(100, 116, 139, 0.2);
+  color: #94a3b8;
+  border: 1px solid rgba(100, 116, 139, 0.4);
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.campaign-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.campaign-account {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.campaign-time {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.campaign-error {
+  font-size: 11px;
+  color: #fb7185;
+  background: rgba(244, 63, 94, 0.1);
+  padding: 4px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(244, 63, 94, 0.2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.campaign-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(51, 65, 85, 0.4);
+}
+
+.btn-action {
+  background: rgba(51, 65, 85, 0.5);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+}
+
+.btn-action:hover {
+  background: var(--border-color);
+}
+
+.btn-action.btn-run {
+  background: rgba(99, 102, 241, 0.2);
+  border-color: rgba(99, 102, 241, 0.4);
+  color: #a5b4fc;
+}
+
+.btn-action.btn-run:hover {
+  background: var(--accent-primary);
+  color: white;
+}
+
+.btn-action.btn-cancel {
+  background: rgba(244, 63, 94, 0.1);
+  border-color: rgba(244, 63, 94, 0.25);
+  color: #fda4af;
+}
+
+.btn-action.btn-cancel:hover {
+  background: var(--accent-rose);
+  color: white;
+}
+
+.btn-action.btn-delete {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+}
+
+.btn-action.btn-delete:hover {
+  background: rgba(244, 63, 94, 0.15);
+  border-color: rgba(244, 63, 94, 0.3);
+  color: #fda4af;
+}
+
+/* Empty State */
+.empty-state {
+  background: var(--bg-card);
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  padding: 30px 16px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.empty-icon {
+  width: 36px;
+  height: 36px;
+  color: var(--text-muted);
+}
+
+.empty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.empty-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  max-width: 260px;
+  line-height: 1.4;
+}
+
+/* Footer */
+.footer {
+  padding: 10px 16px;
+  background: var(--bg-main);
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--accent-emerald);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
+  transition: background-color 0.3s ease;
+}
+
+.status-dot.paused {
+  background-color: var(--accent-amber);
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.6);
+}
+
+.btn-link {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s ease;
+}
+
+.btn-link:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+/* Toast Message */
+.toast {
+  position: fixed;
+  bottom: 50px;
+  left: 50%;
+  transform: translateX(-50%) translateY(20px);
+  background: #1e293b;
+  color: #f8fafc;
+  border: 1px solid #475569;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: all 0.2s ease;
+  z-index: 100;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+
+================================================================================
 FILE: src/popup/popup.js
 ================================================================================
 
 /**
- * Popup Script for Gmail Mail Merge & Scheduler
- * Interacts directly with IDBStore and coordinates with Background Service Worker
+ * All-in-One Popup Script for Gmail Native Mail Merge & Scheduler
+ * Provides complete campaign browsing, status filtering, multi-account awareness, and direct controls.
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
-  // DOM Elements
+  // DOM Elements - Header & Filter
   const statusDot = document.getElementById('statusDot');
   const statusText = document.getElementById('statusText');
   const schedulerToggle = document.getElementById('schedulerToggle');
-  const schedulerStateLabel = document.getElementById('schedulerStateLabel');
-  const countQueued = document.getElementById('countQueued');
-  const countProcessing = document.getElementById('countProcessing');
-  const countCompleted = document.getElementById('countCompleted');
-  const queueBadgeCount = document.getElementById('queueBadgeCount');
-  const nextPollTime = document.getElementById('nextPollTime');
+  const btnRefresh = document.getElementById('btnRefresh');
+  const btnOpenDashboard = document.getElementById('btnOpenDashboard');
   const campaignsList = document.getElementById('campaignsList');
   const emptyState = document.getElementById('emptyState');
-  const btnOpenDashboard = document.getElementById('btnOpenDashboard');
-  const btnRefresh = document.getElementById('btnRefresh');
   const toast = document.getElementById('toast');
 
+  // Filter counts
+  const countAll = document.getElementById('countAll');
+  const countQueued = document.getElementById('countQueued');
+  const countCompleted = document.getElementById('countCompleted');
+  const countFailed = document.getElementById('countFailed');
+  const filterPills = document.querySelectorAll('.filter-pill');
+
+  // State
+  let allCampaigns = [];
+  let currentFilter = 'ALL';
   let isRefreshing = false;
 
-  // Initialize and load UI
+  // Initialize
   await initDB();
+  setupEventListeners();
   await loadState();
 
-  // Event Listeners
-  schedulerToggle.addEventListener('change', handleSchedulerToggle);
-  btnRefresh.addEventListener('click', handleManualRefresh);
-  btnOpenDashboard.addEventListener('click', openFullDashboard);
+  function setupEventListeners() {
+    schedulerToggle.addEventListener('change', handleSchedulerToggle);
+    btnRefresh.addEventListener('click', handleManualRefresh);
+    if (btnOpenDashboard) {
+      btnOpenDashboard.addEventListener('click', openFullDashboard);
+    }
+
+    // Filter pill tabs
+    filterPills.forEach((pill) => {
+      pill.addEventListener('click', () => {
+        filterPills.forEach((p) => p.classList.remove('active'));
+        pill.classList.add('active');
+        currentFilter = pill.dataset.filter || 'ALL';
+        renderCampaigns();
+      });
+    });
+  }
 
   /**
    * Initializes IDBStore safely
@@ -3075,14 +3031,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         await window.IDBStore.init();
       }
     } catch (err) {
-      console.warn('[Popup] IDBStore init issue:', err);
+      console.warn('[Popup] IDBStore init note:', err);
     }
   }
 
   /**
-   * Loads full state from service worker and IndexedDB
+   * Loads full state from background worker and IndexedDB
    */
   async function loadState() {
+    // 1. Sync from open Gmail tabs so any recent draft appears immediately
+    await syncFromGmailTabs();
+
+    // 2. Query campaigns and scheduler status
     await Promise.all([
       updateSchedulerStatus(),
       loadCampaigns()
@@ -3090,121 +3050,114 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   /**
-   * Queries the background worker or chrome.alarms for scheduler health
+   * Requests any open Gmail tabs to sync their local campaigns to background
+   */
+  async function syncFromGmailTabs() {
+    try {
+      if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
+        const gmailTabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
+        for (const t of gmailTabs) {
+          chrome.tabs.sendMessage(t.id, { action: 'REQUEST_CAMPAIGN_SYNC' }).catch(() => {});
+        }
+      }
+    } catch (_) {}
+  }
+
+  /**
+   * Updates scheduler toggle & status indicator
    */
   async function updateSchedulerStatus() {
     try {
       const response = await chrome.runtime.sendMessage({ action: 'GET_SCHEDULER_STATUS' });
       if (response && response.success && response.status) {
-        const { alarmActive, nextScheduledPoll } = response.status;
-        applySchedulerUI(alarmActive, nextScheduledPoll);
+        const { alarmActive } = response.status;
+        applySchedulerUI(alarmActive);
         return;
       }
-    } catch (err) {
-      console.warn('[Popup] Could not reach background service worker via message, checking chrome.alarms:', err);
-    }
+    } catch (_) {}
 
-    // Fallback: check chrome.alarms directly
+    // Fallback: direct alarm check
     try {
       const alarm = await chrome.alarms.get('POLL_CAMPAIGNS_ALARM');
-      applySchedulerUI(!!alarm, alarm ? new Date(alarm.scheduledTime).toISOString() : null);
-    } catch (alarmErr) {
-      console.error('[Popup] Failed to inspect alarms:', alarmErr);
-      applySchedulerUI(false, null);
+      applySchedulerUI(!!alarm);
+    } catch (_) {
+      applySchedulerUI(true);
     }
   }
 
-  /**
-   * Updates scheduler toggles, dots, and labels
-   */
-  function applySchedulerUI(isActive, nextPoll) {
+  function applySchedulerUI(isActive) {
     schedulerToggle.checked = isActive;
     if (isActive) {
       statusDot.className = 'status-dot';
-      statusText.textContent = 'Active';
-      schedulerStateLabel.textContent = 'Active & Polling (1m)';
-      if (nextPoll) {
-        const diffMs = new Date(nextPoll).getTime() - Date.now();
-        const diffSec = Math.max(0, Math.round(diffMs / 1000));
-        nextPollTime.textContent = diffSec > 0 ? `Next poll: ~${diffSec}s` : 'Polling shortly';
-      } else {
-        nextPollTime.textContent = '';
-      }
+      statusText.textContent = 'Scheduler Active';
     } else {
       statusDot.className = 'status-dot paused';
-      statusText.textContent = 'Paused';
-      schedulerStateLabel.textContent = 'Scheduler Paused';
-      nextPollTime.textContent = 'Polling disabled';
+      statusText.textContent = 'Scheduler Paused';
     }
   }
 
   /**
-   * Toggles the background scheduler
-   */
-  async function handleSchedulerToggle() {
-    try {
-      const response = await chrome.runtime.sendMessage({ action: 'TOGGLE_SCHEDULER' });
-      if (response && response.success) {
-        applySchedulerUI(response.active, null);
-        showToast(response.active ? 'Scheduler activated' : 'Scheduler paused');
-      } else {
-        // Toggle locally via alarms fallback
-        const isCurrentlyChecked = schedulerToggle.checked;
-        if (isCurrentlyChecked) {
-          await chrome.alarms.create('POLL_CAMPAIGNS_ALARM', { periodInMinutes: 1 });
-          applySchedulerUI(true, null);
-          showToast('Scheduler activated');
-        } else {
-          await chrome.alarms.clear('POLL_CAMPAIGNS_ALARM');
-          applySchedulerUI(false, null);
-          showToast('Scheduler paused');
-        }
-      }
-    } catch (err) {
-      console.error('[Popup] Error toggling scheduler:', err);
-      showToast('Failed to toggle scheduler');
-      await updateSchedulerStatus();
-    }
-  }
-
-  /**
-   * Loads campaigns from IDBStore and populates metrics & queue list
+   * Loads all campaigns from IndexedDB
    */
   async function loadCampaigns() {
     try {
-      let campaigns = [];
       if (window.IDBStore) {
-        campaigns = await window.IDBStore.getCampaigns();
+        allCampaigns = await window.IDBStore.getCampaigns();
+      } else {
+        allCampaigns = [];
       }
 
-      // Compute counts
-      const queued = campaigns.filter(c => c.status === 'QUEUED');
-      const processing = campaigns.filter(c => c.status === 'PROCESSING');
-      const completed = campaigns.filter(c => c.status === 'COMPLETED');
-
-      countQueued.textContent = queued.length;
-      countProcessing.textContent = processing.length;
-      countCompleted.textContent = completed.length;
-
-      // Pending campaigns include QUEUED and PROCESSING
-      const pending = campaigns.filter(c => c.status === 'QUEUED' || c.status === 'PROCESSING');
-      queueBadgeCount.textContent = pending.length;
-
-      renderPendingCampaigns(pending);
+      updateCounts();
+      renderCampaigns();
     } catch (err) {
       console.error('[Popup] Error loading campaigns:', err);
-      showToast('Error loading database');
+      showToast('Error loading campaigns');
     }
   }
 
   /**
-   * Renders pending campaigns cards or displays empty state
+   * Updates the count badges on filter pills
    */
-  function renderPendingCampaigns(pending) {
-    // Clear existing campaign cards (preserving or toggling emptyState)
+  function updateCounts() {
+    const counts = {
+      ALL: allCampaigns.length,
+      QUEUED: 0,
+      COMPLETED: 0,
+      FAILED: 0
+    };
+
+    allCampaigns.forEach((c) => {
+      if (c.status === 'QUEUED' || c.status === 'PROCESSING') {
+        counts.QUEUED++;
+      } else if (c.status === 'COMPLETED') {
+        counts.COMPLETED++;
+      } else if (c.status === 'FAILED') {
+        counts.FAILED++;
+      }
+    });
+
+    countAll.textContent = String(counts.ALL);
+    countQueued.textContent = String(counts.QUEUED);
+    countCompleted.textContent = String(counts.COMPLETED);
+    countFailed.textContent = String(counts.FAILED);
+  }
+
+  /**
+   * Renders campaign cards based on the selected filter
+   */
+  function renderCampaigns() {
     campaignsList.innerHTML = '';
 
-    if (!pending || pending.length === 0) {
+    let filtered = allCampaigns;
+    if (currentFilter === 'QUEUED') {
+      filtered = allCampaigns.filter((c) => c.status === 'QUEUED' || c.status === 'PROCESSING');
+    } else if (currentFilter === 'COMPLETED') {
+      filtered = allCampaigns.filter((c) => c.status === 'COMPLETED');
+    } else if (currentFilter === 'FAILED') {
+      filtered = allCampaigns.filter((c) => c.status === 'FAILED' || c.status === 'CANCELLED');
+    }
+
+    if (!filtered || filtered.length === 0) {
       campaignsList.appendChild(emptyState);
       emptyState.style.display = 'flex';
       return;
@@ -3212,70 +3165,136 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     emptyState.style.display = 'none';
 
-    pending.forEach(campaign => {
+    filtered.forEach((camp) => {
       const card = document.createElement('div');
       card.className = 'campaign-card';
-      card.dataset.id = campaign.id;
+      card.dataset.id = camp.id;
 
-      const isQueued = campaign.status === 'QUEUED';
-      const statusClass = isQueued ? 'status-queued' : 'status-processing';
-      const statusLabel = isQueued ? 'Queued' : 'Processing';
+      // Status Class & Label
+      let statusClass = 'status-queued';
+      let statusLabel = 'Queued';
+      if (camp.status === 'PROCESSING') {
+        statusClass = 'status-processing';
+        statusLabel = 'Processing';
+      } else if (camp.status === 'COMPLETED') {
+        statusClass = 'status-completed';
+        statusLabel = '✓ Completed';
+      } else if (camp.status === 'FAILED') {
+        statusClass = 'status-failed';
+        statusLabel = '✕ Failed';
+      } else if (camp.status === 'CANCELLED') {
+        statusClass = 'status-cancelled';
+        statusLabel = 'Cancelled';
+      }
 
-      // Format schedule or due time
-      const timeStr = formatScheduledTime(campaign.scheduledAt);
-      const sheetName = campaign.spreadsheetTitle || extractSheetName(campaign.spreadsheetUrl) || 'Google Sheet';
-      const subjectText = campaign.subject || 'Untitled Campaign';
+      // Sender Account
+      const accountLabel = camp.accountEmail
+        ? camp.accountEmail
+        : (camp.userIndex && camp.userIndex !== '0' ? 'Gmail Account #' + camp.userIndex : 'Gmail Primary');
+
+      // Time Display
+      let timeLabel = '';
+      if (camp.status === 'COMPLETED') {
+        timeLabel = 'Sent: ' + formatTime(camp.completedAt || camp.updatedAt);
+      } else if (camp.status === 'QUEUED') {
+        timeLabel = 'Scheduled: ' + formatTime(camp.scheduledAt);
+      } else if (camp.status === 'PROCESSING') {
+        timeLabel = 'Executing now...';
+      } else if (camp.status === 'FAILED') {
+        timeLabel = 'Failed: ' + formatTime(camp.failedAt || camp.updatedAt);
+      } else {
+        timeLabel = formatTime(camp.updatedAt || camp.createdAt);
+      }
+
+      const subject = camp.subject || 'Untitled Subject';
+
+      // Actions HTML
+      let actionsHtml = '';
+      if (camp.status === 'QUEUED') {
+        actionsHtml = `
+          <button class="btn-action btn-run" data-action="run" data-id="${camp.id}" title="Execute immediately">
+            ▶ Run Now
+          </button>
+          <button class="btn-action btn-cancel" data-action="cancel" data-id="${camp.id}" title="Cancel campaign">
+            ✕ Cancel
+          </button>
+        `;
+      } else if (camp.status === 'FAILED') {
+        actionsHtml = `
+          <button class="btn-action btn-run" data-action="run" data-id="${camp.id}" title="Retry execution now">
+            ↻ Retry Now
+          </button>
+          <button class="btn-action btn-delete" data-action="delete" data-id="${camp.id}" title="Remove from list">
+            🗑 Delete
+          </button>
+        `;
+      } else {
+        actionsHtml = `
+          <button class="btn-action btn-delete" data-action="delete" data-id="${camp.id}" title="Remove from list">
+            🗑 Delete
+          </button>
+        `;
+      }
+
+      // Error message if failed
+      const errorHtml = (camp.status === 'FAILED' && camp.errorMessage)
+        ? `<div class="campaign-error" title="${escapeHtml(camp.errorMessage)}">${escapeHtml(camp.errorMessage)}</div>`
+        : '';
 
       card.innerHTML = `
         <div class="campaign-top">
-          <div class="campaign-subject" title="${escapeHtml(subjectText)}">
-            ${escapeHtml(subjectText)}
+          <div class="campaign-subject" title="${escapeHtml(subject)}">
+            ${escapeHtml(subject)}
           </div>
           <span class="campaign-status ${statusClass}">${statusLabel}</span>
         </div>
         <div class="campaign-meta">
-          <div class="sheet-title" title="${escapeHtml(sheetName)}">
-            <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
-            </svg>
-            <span>${escapeHtml(sheetName)}</span>
-          </div>
-          <span class="scheduled-time" title="Scheduled execution">${timeStr}</span>
+          <span class="campaign-account" title="Sending account">
+            <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
+            ${escapeHtml(accountLabel)}
+          </span>
+          <span class="campaign-time">${escapeHtml(timeLabel)}</span>
         </div>
+        ${errorHtml}
         <div class="campaign-actions">
-          <button class="btn-action btn-run" data-action="run" data-id="${campaign.id}" title="Trigger immediately">
-            ▶ Run Now
-          </button>
-          <button class="btn-action btn-cancel" data-action="cancel" data-id="${campaign.id}" title="Cancel campaign">
-            ✕ Cancel
-          </button>
+          ${actionsHtml}
         </div>
       `;
 
-      // Attach button events
+      // Attach button event listeners
       const btnRun = card.querySelector('[data-action="run"]');
       const btnCancel = card.querySelector('[data-action="cancel"]');
+      const btnDelete = card.querySelector('[data-action="delete"]');
 
-      btnRun.addEventListener('click', (e) => {
-        e.stopPropagation();
-        triggerRunNow(campaign.id);
-      });
-
-      btnCancel.addEventListener('click', (e) => {
-        e.stopPropagation();
-        cancelCampaign(campaign.id);
-      });
+      if (btnRun) {
+        btnRun.addEventListener('click', (e) => {
+          e.stopPropagation();
+          triggerRunNow(camp.id);
+        });
+      }
+      if (btnCancel) {
+        btnCancel.addEventListener('click', (e) => {
+          e.stopPropagation();
+          cancelCampaign(camp.id);
+        });
+      }
+      if (btnDelete) {
+        btnDelete.addEventListener('click', (e) => {
+          e.stopPropagation();
+          deleteCampaign(camp.id);
+        });
+      }
 
       campaignsList.appendChild(card);
     });
   }
 
   /**
-   * Triggers a campaign immediately via background worker
+   * Triggers a campaign immediately
    */
   async function triggerRunNow(campaignId) {
     try {
-      showToast('Dispatched campaign...');
+      showToast('Executing campaign...');
       const response = await chrome.runtime.sendMessage({
         action: 'TRIGGER_CAMPAIGN_NOW',
         campaignId
@@ -3284,73 +3303,75 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (response && response.success) {
         showToast('Campaign execution started');
       } else {
-        showToast(response?.error || 'Execution triggered');
+        showToast(response?.error || 'Trigger dispatched');
       }
 
-      await loadCampaigns();
+      // Reload state after slight delay
+      setTimeout(loadCampaigns, 1500);
     } catch (err) {
-      console.error('[Popup] Trigger campaign failed:', err);
-      showToast('Trigger failed: ' + err.message);
+      console.error('[Popup] Run Now error:', err);
+      showToast('Error: ' + err.message);
     }
   }
 
   /**
-   * Cancels/deletes a campaign from queue
+   * Cancels a queued campaign
    */
   async function cancelCampaign(campaignId) {
     try {
       if (window.IDBStore) {
-        // Update status to CANCELLED or delete
         await window.IDBStore.updateCampaign(campaignId, {
           status: 'CANCELLED',
           cancelledAt: new Date().toISOString()
         });
         await window.IDBStore.addLog(campaignId, 'WARN', 'Campaign cancelled by user in popup.');
       }
-
-      // Notify background to refresh badge
       try {
         await chrome.runtime.sendMessage({ action: 'REFRESH_BADGE' });
-      } catch (e) {
-        // Ignore if background asleep
-      }
+      } catch (_) {}
 
       showToast('Campaign cancelled');
       await loadCampaigns();
     } catch (err) {
-      console.error('[Popup] Cancel campaign error:', err);
-      showToast('Failed to cancel campaign');
+      console.error('[Popup] Cancel error:', err);
+      showToast('Failed to cancel');
     }
   }
 
   /**
-   * Opens the full dashboard in a new tab
+   * Deletes a campaign from IndexedDB
    */
-  async function openFullDashboard() {
+  async function deleteCampaign(campaignId) {
     try {
-      await chrome.runtime.sendMessage({ action: 'OPEN_DASHBOARD' });
-      window.close();
+      if (window.IDBStore) {
+        await window.IDBStore.deleteCampaign(campaignId);
+      }
+      try {
+        await chrome.runtime.sendMessage({ action: 'REFRESH_BADGE' });
+      } catch (_) {}
+
+      showToast('Campaign deleted');
+      await loadCampaigns();
     } catch (err) {
-      // Fallback
-      const url = chrome.runtime.getURL('src/dashboard/dashboard.html');
-      await chrome.tabs.create({ url });
-      window.close();
+      console.error('[Popup] Delete error:', err);
+      showToast('Failed to delete');
     }
   }
 
   /**
-   * Manual refresh button with animation
+   * Manual refresh with rotation animation
    */
   async function handleManualRefresh() {
     if (isRefreshing) return;
     isRefreshing = true;
     btnRefresh.classList.add('spinning');
-
     try {
-      await loadState();
-      showToast('Queue refreshed');
-    } catch (e) {
-      console.error(e);
+      await syncFromGmailTabs();
+      await loadCampaigns();
+      await updateSchedulerStatus();
+      showToast('Campaigns synchronized');
+    } catch (err) {
+      showToast('Refresh error');
     } finally {
       setTimeout(() => {
         btnRefresh.classList.remove('spinning');
@@ -3360,86 +3381,70 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   /**
-   * Shows transient toast message
+   * Toggles background scheduler
    */
-  function showToast(message) {
+  async function handleSchedulerToggle() {
+    const active = schedulerToggle.checked;
+    try {
+      await chrome.runtime.sendMessage({
+        action: 'TOGGLE_SCHEDULER',
+        active
+      });
+      applySchedulerUI(active);
+      showToast(active ? 'Scheduler activated' : 'Scheduler paused');
+    } catch (err) {
+      console.error('[Popup] Toggle scheduler error:', err);
+      schedulerToggle.checked = !active;
+      showToast('Failed to toggle scheduler');
+    }
+  }
+
+  /**
+   * Opens the diagnostics dashboard in a new tab
+   */
+  async function openFullDashboard() {
+    try {
+      await chrome.runtime.sendMessage({ action: 'OPEN_DASHBOARD' });
+      window.close();
+    } catch (_) {
+      const url = chrome.runtime.getURL('src/dashboard/dashboard.html');
+      chrome.tabs.create({ url });
+      window.close();
+    }
+  }
+
+  /**
+   * Formats timestamp into clean human string
+   */
+  function formatTime(isoString) {
+    if (!isoString) return '';
+    try {
+      const d = new Date(isoString);
+      if (isNaN(d.getTime())) return '';
+      const now = new Date();
+      const isToday = d.toDateString() === now.toDateString();
+      const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      if (isToday) {
+        return 'Today at ' + timeStr;
+      }
+      return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + timeStr;
+    } catch (_) {
+      return '';
+    }
+  }
+
+  function showToast(msg) {
     if (!toast) return;
-    toast.textContent = message;
+    toast.textContent = msg;
     toast.classList.add('show');
-    clearTimeout(toast._timeout);
-    toast._timeout = setTimeout(() => {
+    setTimeout(() => {
       toast.classList.remove('show');
     }, 2200);
   }
 
-  /**
-   * Formats scheduled time relative or concise
-   */
-  function formatScheduledTime(dateStr) {
-    if (!dateStr) return '⚡ Immediate';
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return '⚡ Immediate';
-
-    const now = Date.now();
-    const diffMs = d.getTime() - now;
-
-    if (diffMs <= 0) {
-      return '⏱ Due now';
-    }
-
-    const diffMins = Math.round(diffMs / 60000);
-    if (diffMins < 60) {
-      return `In ${diffMins}m`;
-    }
-
-    const diffHours = Math.round(diffMins / 60);
-    if (diffHours < 24) {
-      return `In ${diffHours}h`;
-    }
-
-    // Format as 'Sep 4, 18:30'
-    const month = d.toLocaleString('en', { month: 'short' });
-    const day = d.getDate();
-    const hours = String(d.getHours()).padStart(2, '0');
-    const mins = String(d.getMinutes()).padStart(2, '0');
-    return `${month} ${day}, ${hours}:${mins}`;
-  }
-
-  /**
-   * Extracts sheet name or ID from URL
-   */
-  function extractSheetName(url) {
-    if (!url) return '';
-    const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
-    if (match && match[1]) {
-      return 'Sheet ' + match[1].substring(0, 8) + '...';
-    }
-    return '';
-  }
-
-  /**
-   * Opens the full management dashboard in a new tab or focuses existing
-   */
-  async function openFullDashboard() {
-    try {
-      const response = await chrome.runtime.sendMessage({ action: 'OPEN_DASHBOARD' });
-      if (!response || !response.success) {
-        const dashboardUrl = chrome.runtime.getURL('src/dashboard/dashboard.html');
-        await chrome.tabs.create({ url: dashboardUrl });
-      }
-    } catch (err) {
-      console.warn('[Popup] Error via sendMessage, opening dashboard via tabs API:', err);
-      const dashboardUrl = chrome.runtime.getURL('src/dashboard/dashboard.html');
-      await chrome.tabs.create({ url: dashboardUrl });
-    }
-  }
-
-  /**
-   * Escapes unsafe HTML characters
-   */
-  function escapeHtml(text) {
-    if (!text) return '';
-    return String(text)
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
