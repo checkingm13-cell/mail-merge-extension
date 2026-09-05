@@ -1,5 +1,5 @@
 === GMAIL NATIVE MAIL MERGE & SCHEDULER EXTENSION CODEBASE ===
-Generated at: 2026-09-05T07:19:40.221Z
+Generated at: 2026-09-05T08:05:28.981Z
 
 
 ================================================================================
@@ -1957,13 +1957,7 @@ FILE: src/content/gmail-automator.js
         };
       }
     }
-  }
 
-  // Expose globally
-  root.GmailAutomator = GmailAutomator;
-  if (typeof window !== 'undefined') {
-    window.GmailAutomator = GmailAutomator;
-  }
     /**
      * Executes a scheduled native Gmail Mail Merge.
      * Navigates to the draft, clicks "Continue", waits for the "Ready to send" modal, and clicks "Send all".
@@ -2141,7 +2135,13 @@ FILE: src/content/gmail-automator.js
         throw error;
       }
     }
+  }
 
+  // Expose globally
+  root.GmailAutomator = GmailAutomator;
+  if (typeof window !== 'undefined') {
+    window.GmailAutomator = GmailAutomator;
+  }
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this));
 
 

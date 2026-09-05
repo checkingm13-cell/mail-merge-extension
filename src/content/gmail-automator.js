@@ -815,13 +815,7 @@
         };
       }
     }
-  }
 
-  // Expose globally
-  root.GmailAutomator = GmailAutomator;
-  if (typeof window !== 'undefined') {
-    window.GmailAutomator = GmailAutomator;
-  }
     /**
      * Executes a scheduled native Gmail Mail Merge.
      * Navigates to the draft, clicks "Continue", waits for the "Ready to send" modal, and clicks "Send all".
@@ -999,5 +993,11 @@
         throw error;
       }
     }
+  }
 
+  // Expose globally
+  root.GmailAutomator = GmailAutomator;
+  if (typeof window !== 'undefined') {
+    window.GmailAutomator = GmailAutomator;
+  }
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof window !== 'undefined' ? window : this));
