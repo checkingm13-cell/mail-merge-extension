@@ -833,23 +833,36 @@
       console.log('[GmailAutomator] 🚀 Executing scheduled native merge for draft: ' + (draftId || 'unknown') + ' (Subject: "' + (subject || '') + '")');
 
       try {
-        // 1. Navigate directly to the draft
-        if (draftId && draftId !== 'unknown') {
-          const targetHash = '#drafts?compose=' + draftId;
-          if (window.location.hash !== targetHash) {
-            window.location.hash = targetHash;
-          }
-        } else {
-          if (!window.location.hash.startsWith('#drafts')) {
-            window.location.hash = '#drafts';
+        // Check if compose dialog is already open on screen
+        let composeDialog = null;
+        const openDialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
+        for (const d of openDialogs) {
+          if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
+            if (!subject || (d.querySelector('input[name="subjectbox"]')?.value || '').includes(subject)) {
+              composeDialog = d;
+              console.log('[GmailAutomator] Compose dialog for draft is already open on screen.');
+              break;
+            }
           }
         }
 
-        await sleep(3000);
-
-        // 2. Wait for compose window to load
-        let composeDialog = null;
-        try {
+        // 1. Navigate directly to the draft if not already open
+        if (!composeDialog) {
+          if (draftId && draftId !== 'unknown') {
+            const targetHash = '#drafts?compose=' + draftId;
+            if (window.location.hash !== targetHash) {
+              window.location.hash = targetHash;
+            }
+          } else {
+            if (!window.location.hash.startsWith('#drafts')) {
+              window.location.hash = '#drafts';
+            }
+          }
+          await sleep(3000);
+        }
+        // 2. Wait for compose window to load if not yet located
+        if (!composeDialog) {
+          try {
           composeDialog = await waitFor(
             () => {
               const dialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
@@ -888,6 +901,7 @@
             },
             { timeout: 15000, errorMsg: 'Compose dialog did not open for scheduled draft' }
           );
+        }
         }
 
         await sleep(2500);

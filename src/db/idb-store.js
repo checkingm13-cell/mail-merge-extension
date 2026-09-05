@@ -5,6 +5,10 @@
 (function (root) {
   'use strict';
 
+  if (root.IDBStore && typeof root.IDBStore.init === 'function') {
+    return;
+  }
+
   const DB_NAME = 'GmailMailMergeDB';
   const DB_VERSION = 1;
 

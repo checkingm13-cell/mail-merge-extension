@@ -1,5 +1,5 @@
 === GMAIL NATIVE MAIL MERGE & SCHEDULER EXTENSION CODEBASE ===
-Generated at: 2026-09-05T08:05:28.981Z
+Generated at: 2026-09-05T08:31:54.116Z
 
 
 ================================================================================
@@ -655,6 +655,10 @@ FILE: src/db/idb-store.js
  */
 (function (root) {
   'use strict';
+
+  if (root.IDBStore && typeof root.IDBStore.init === 'function') {
+    return;
+  }
 
   const DB_NAME = 'GmailMailMergeDB';
   const DB_VERSION = 1;
@@ -1975,23 +1979,36 @@ FILE: src/content/gmail-automator.js
       console.log('[GmailAutomator] 🚀 Executing scheduled native merge for draft: ' + (draftId || 'unknown') + ' (Subject: "' + (subject || '') + '")');
 
       try {
-        // 1. Navigate directly to the draft
-        if (draftId && draftId !== 'unknown') {
-          const targetHash = '#drafts?compose=' + draftId;
-          if (window.location.hash !== targetHash) {
-            window.location.hash = targetHash;
-          }
-        } else {
-          if (!window.location.hash.startsWith('#drafts')) {
-            window.location.hash = '#drafts';
+        // Check if compose dialog is already open on screen
+        let composeDialog = null;
+        const openDialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
+        for (const d of openDialogs) {
+          if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
+            if (!subject || (d.querySelector('input[name="subjectbox"]')?.value || '').includes(subject)) {
+              composeDialog = d;
+              console.log('[GmailAutomator] Compose dialog for draft is already open on screen.');
+              break;
+            }
           }
         }
 
-        await sleep(3000);
-
-        // 2. Wait for compose window to load
-        let composeDialog = null;
-        try {
+        // 1. Navigate directly to the draft if not already open
+        if (!composeDialog) {
+          if (draftId && draftId !== 'unknown') {
+            const targetHash = '#drafts?compose=' + draftId;
+            if (window.location.hash !== targetHash) {
+              window.location.hash = targetHash;
+            }
+          } else {
+            if (!window.location.hash.startsWith('#drafts')) {
+              window.location.hash = '#drafts';
+            }
+          }
+          await sleep(3000);
+        }
+        // 2. Wait for compose window to load if not yet located
+        if (!composeDialog) {
+          try {
           composeDialog = await waitFor(
             () => {
               const dialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
@@ -2030,6 +2047,7 @@ FILE: src/content/gmail-automator.js
             },
             { timeout: 15000, errorMsg: 'Compose dialog did not open for scheduled draft' }
           );
+        }
         }
 
         await sleep(2500);
@@ -2199,6 +2217,12 @@ FILE: src/content/content.js
  */
 (function (root) {
   'use strict';
+
+  if (root.__GMAIL_MAIL_MERGE_CONTENT_INITIALIZED__) {
+    console.log('[MailMerge ContentScript] Already initialized in this tab.');
+    return;
+  }
+  root.__GMAIL_MAIL_MERGE_CONTENT_INITIALIZED__ = true;
 
   console.log('[MailMerge ContentScript] Master Protocol Initialized: Zero-UI Native Scheduling active.');
 
@@ -2547,8 +2571,18 @@ FILE: src/content/content.js
   // HELPER FUNCTIONS
   // =========================================================================
 
+function getComposeDialog() {
+    const dialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
+    for (const d of dialogs) {
+      if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
+        return d;
+      }
+    }
+    return null;
+  }
+
   function getDraftId(anchorElement) {
-    // 1. From URL
+    // 1. Check URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('compose')) return urlParams.get('compose');
     if (window.location.hash && window.location.hash.includes('compose=')) {
@@ -2556,12 +2590,12 @@ FILE: src/content/content.js
       if (match) return match[1];
     }
 
-    // 2. From closest dialog or DOM
-    const dialog = anchorElement?.closest('div[role="dialog"]') || document.querySelector('div[role="dialog"]');
-    if (dialog) {
-      const draftInput = dialog.querySelector('input[name="draft"]');
+    // 2. Check active compose dialog directly
+    const composeDialog = getComposeDialog() || anchorElement?.closest('div[role="dialog"]');
+    if (composeDialog) {
+      const draftInput = composeDialog.querySelector('input[name="draft"]');
       if (draftInput && draftInput.value) return draftInput.value;
-      const composeId = dialog.getAttribute('data-compose-id');
+      const composeId = composeDialog.getAttribute('data-compose-id');
       if (composeId) return composeId;
     }
 
@@ -2572,9 +2606,9 @@ FILE: src/content/content.js
   }
 
   function getSubject(anchorElement) {
-    const dialog = anchorElement?.closest('div[role="dialog"]') || document.querySelector('div[role="dialog"]');
-    if (dialog) {
-      const subjectInput = dialog.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
+    const composeDialog = getComposeDialog() || anchorElement?.closest('div[role="dialog"]');
+    if (composeDialog) {
+      const subjectInput = composeDialog.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
       if (subjectInput && subjectInput.value.trim()) return subjectInput.value.trim();
     }
     const globalSubject = document.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');

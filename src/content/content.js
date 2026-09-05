@@ -11,6 +11,12 @@
 (function (root) {
   'use strict';
 
+  if (root.__GMAIL_MAIL_MERGE_CONTENT_INITIALIZED__) {
+    console.log('[MailMerge ContentScript] Already initialized in this tab.');
+    return;
+  }
+  root.__GMAIL_MAIL_MERGE_CONTENT_INITIALIZED__ = true;
+
   console.log('[MailMerge ContentScript] Master Protocol Initialized: Zero-UI Native Scheduling active.');
 
   const MODAL_BTN_CLASS = 'mm-schedule-modal-btn';
@@ -358,8 +364,18 @@
   // HELPER FUNCTIONS
   // =========================================================================
 
+function getComposeDialog() {
+    const dialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
+    for (const d of dialogs) {
+      if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
+        return d;
+      }
+    }
+    return null;
+  }
+
   function getDraftId(anchorElement) {
-    // 1. From URL
+    // 1. Check URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('compose')) return urlParams.get('compose');
     if (window.location.hash && window.location.hash.includes('compose=')) {
@@ -367,12 +383,12 @@
       if (match) return match[1];
     }
 
-    // 2. From closest dialog or DOM
-    const dialog = anchorElement?.closest('div[role="dialog"]') || document.querySelector('div[role="dialog"]');
-    if (dialog) {
-      const draftInput = dialog.querySelector('input[name="draft"]');
+    // 2. Check active compose dialog directly
+    const composeDialog = getComposeDialog() || anchorElement?.closest('div[role="dialog"]');
+    if (composeDialog) {
+      const draftInput = composeDialog.querySelector('input[name="draft"]');
       if (draftInput && draftInput.value) return draftInput.value;
-      const composeId = dialog.getAttribute('data-compose-id');
+      const composeId = composeDialog.getAttribute('data-compose-id');
       if (composeId) return composeId;
     }
 
@@ -383,9 +399,9 @@
   }
 
   function getSubject(anchorElement) {
-    const dialog = anchorElement?.closest('div[role="dialog"]') || document.querySelector('div[role="dialog"]');
-    if (dialog) {
-      const subjectInput = dialog.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
+    const composeDialog = getComposeDialog() || anchorElement?.closest('div[role="dialog"]');
+    if (composeDialog) {
+      const subjectInput = composeDialog.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
       if (subjectInput && subjectInput.value.trim()) return subjectInput.value.trim();
     }
     const globalSubject = document.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
