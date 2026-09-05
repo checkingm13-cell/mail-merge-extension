@@ -1,5 +1,5 @@
 === GMAIL NATIVE MAIL MERGE & SCHEDULER EXTENSION CODEBASE ===
-Generated at: 2026-09-05T08:41:32.731Z
+Generated at: 2026-09-05T09:08:00.809Z
 
 
 ================================================================================
@@ -256,28 +256,6 @@ async function executeCampaign(campaign) {
     }
 
     // 4. Send message to content script with retry mechanism
-    // For native scheduled merge drafts, attempt message or script injection
-    if (campaign.draftId || campaign.isNative) {
-      console.log("[ServiceWorker] Executing native scheduled campaign for draft " + campaign.draftId);
-      if (chrome.scripting) {
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId: gmailTab.id },
-            func: async (camp) => {
-              if (window.GmailAutomator && (camp.draftId || camp.isNative)) {
-                return await window.GmailAutomator.executeScheduledNativeMerge(camp.draftId, camp);
-              }
-              return { success: false, error: "GmailAutomator not available" };
-            },
-            args: [campaign]
-          });
-          console.log("[ServiceWorker] Native script execution dispatched for campaign " + campaign.id);
-        } catch (scriptErr) {
-          console.warn("[ServiceWorker] Script injection error, falling back to message:", scriptErr.message);
-        }
-      }
-    }
-
     const sent = await sendMessageWithRetry(gmailTab.id, {
       action: 'EXECUTE_CAMPAIGN',
       campaign
@@ -286,6 +264,26 @@ async function executeCampaign(campaign) {
     if (sent) {
       console.log(`[ServiceWorker] Successfully dispatched campaign ${campaign.id} to tab ${gmailTab.id}`);
     } else {
+      // Fallback: If message dispatch failed after retries, attempt direct script injection as emergency backup
+      if (chrome.scripting && (campaign.draftId || campaign.isNative)) {
+        console.warn(`[ServiceWorker] Messaging failed for ${campaign.id}. Attempting fallback script injection...`);
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: gmailTab.id },
+            func: async (camp) => {
+              if (window.GmailAutomator && (camp.draftId || camp.isNative)) {
+                return await window.GmailAutomator.executeScheduledNativeMerge(camp.draftId, camp);
+              }
+              return { success: false, error: 'GmailAutomator not available' };
+            },
+            args: [campaign]
+          });
+          console.log(`[ServiceWorker] Fallback script execution dispatched for campaign ${campaign.id}`);
+          return;
+        } catch (scriptErr) {
+          console.error('[ServiceWorker] Fallback script injection also failed:', scriptErr.message);
+        }
+      }
       throw new Error(`Failed to deliver EXECUTE_CAMPAIGN message to Gmail tab ${gmailTab.id}`);
     }
   } catch (err) {
@@ -903,6 +901,38 @@ Warm regards,
         });
       });
 
+      // Auto-heal any campaigns that had completed successfully but were stomped to FAILED by duplicate triggers
+      try {
+        const recentLogs = await this._transaction('logs', 'readonly', (store) => {
+          return new Promise((resolve) => {
+            const req = store.getAll();
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror = () => resolve([]);
+          });
+        });
+
+        for (const camp of campaigns) {
+          if (camp.status === 'FAILED') {
+            const campLogs = recentLogs.filter((l) => l.campaignId === camp.id);
+            const hasSuccess = campLogs.some((l) => (l.message || '').includes('Native Send All triggered successfully'));
+            if (hasSuccess) {
+              console.log(`[IDBStore] Auto-healing completed campaign ${camp.id} from FAILED back to COMPLETED`);
+              camp.status = 'COMPLETED';
+              camp.errorMessage = null;
+              if (!camp.completedAt) {
+                const succLog = campLogs.find((l) => (l.message || '').includes('Native Send All triggered successfully'));
+                camp.completedAt = succLog ? succLog.timestamp : (camp.updatedAt || new Date().toISOString());
+              }
+              this._transaction('campaigns', 'readwrite', (store) => {
+                store.put(camp);
+              }).catch(() => {});
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[IDBStore] Auto-heal check non-critical error:', err);
+      }
+
       return campaigns.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
     },
 
@@ -934,9 +964,18 @@ Warm regards,
         throw new Error(`Campaign with id "${id}" not found.`);
       }
 
+      const cleanUpdates = { ...updates };
+
+      // Safety guard: A completed campaign cannot regress to FAILED or PROCESSING
+      if (existing.status === 'COMPLETED' && (cleanUpdates.status === 'FAILED' || cleanUpdates.status === 'PROCESSING')) {
+        console.warn(`[IDBStore] Rejecting status regression for campaign ${id}: ${existing.status} -> ${cleanUpdates.status}`);
+        delete cleanUpdates.status;
+        delete cleanUpdates.errorMessage;
+      }
+
       const updated = {
         ...existing,
-        ...updates,
+        ...cleanUpdates,
         id, // Ensure id cannot be overwritten
         updatedAt: new Date().toISOString()
       };
@@ -1983,6 +2022,30 @@ FILE: src/content/gmail-automator.js
       const campaignId = campaign?.id;
       const subject = campaign?.subject;
 
+      // Concurrency lock: prevent multiple simultaneous executions of the same campaign
+      if (!GmailAutomator._activeExecutions) {
+        GmailAutomator._activeExecutions = new Set();
+      }
+      if (campaignId && GmailAutomator._activeExecutions.has(campaignId)) {
+        console.warn('[GmailAutomator] ⚠️ Campaign ' + campaignId + ' is already executing. Ignoring concurrent duplicate trigger.');
+        return { success: true, campaignId, warning: 'Already executing' };
+      }
+      if (campaignId) {
+        GmailAutomator._activeExecutions.add(campaignId);
+      }
+
+      // Check if already completed in IDBStore
+      if (campaignId && root.IDBStore) {
+        try {
+          const existing = await root.IDBStore.getCampaignById(campaignId);
+          if (existing && existing.status === 'COMPLETED') {
+            console.log('[GmailAutomator] Campaign ' + campaignId + ' is already COMPLETED. Skipping redundant execution.');
+            if (campaignId) GmailAutomator._activeExecutions.delete(campaignId);
+            return { success: true, campaignId, status: 'COMPLETED' };
+          }
+        } catch (_) {}
+      }
+
       console.log('[GmailAutomator] 🚀 Executing scheduled native merge for draft: ' + (draftId || 'unknown') + ' (Subject: "' + (subject || '') + '")');
 
       try {
@@ -2140,6 +2203,14 @@ FILE: src/content/gmail-automator.js
         console.error('[GmailAutomator] ❌ Error executing scheduled native merge:', error);
 
         if (campaignId && root.IDBStore) {
+          try {
+            const current = await root.IDBStore.getCampaignById(campaignId);
+            if (current && current.status === 'COMPLETED') {
+              console.warn('[GmailAutomator] Campaign ' + campaignId + ' was already marked COMPLETED. Ignoring catch block failure overwrite.');
+              return { success: true, campaignId, warning: 'Already completed' };
+            }
+          } catch (_) {}
+
           await root.IDBStore.updateCampaign(campaignId, {
             status: 'FAILED',
             errorMessage: error.message,
@@ -2158,6 +2229,10 @@ FILE: src/content/gmail-automator.js
         }
 
         throw error;
+      } finally {
+        if (campaignId && GmailAutomator._activeExecutions) {
+          GmailAutomator._activeExecutions.delete(campaignId);
+        }
       }
     }
   }
@@ -2730,17 +2805,32 @@ function getComposeDialog() {
         const campaign = message.campaign;
         console.log('[MailMerge ContentScript] Executing scheduled campaign: ' + (campaign?.subject || campaign?.id));
 
-        if (!root.GmailAutomator || typeof root.GmailAutomator.executeScheduledNativeMerge !== 'function') {
-          sendResponse({ success: false, error: 'GmailAutomator.executeScheduledNativeMerge not found' });
+        if (campaign?.isNative || campaign?.draftId) {
+          if (!root.GmailAutomator || typeof root.GmailAutomator.executeScheduledNativeMerge !== 'function') {
+            sendResponse({ success: false, error: 'GmailAutomator.executeScheduledNativeMerge not found' });
+            return false;
+          }
+
+          sendResponse({ success: true, accepted: true });
+
+          // Dispatch native merge execution
+          root.GmailAutomator.executeScheduledNativeMerge(campaign.draftId, campaign)
+            .then((result) => console.log('[MailMerge ContentScript] Execution result:', result))
+            .catch((err) => console.error('[MailMerge ContentScript] Execution error:', err));
+
+          return false;
+        }
+
+        // Custom / Sheet mail merge execution
+        if (!root.GmailAutomator || typeof root.GmailAutomator.runMailMerge !== 'function') {
+          sendResponse({ success: false, error: 'GmailAutomator.runMailMerge not found' });
           return false;
         }
 
         sendResponse({ success: true, accepted: true });
-
-        // Dispatch native merge execution
-        root.GmailAutomator.executeScheduledNativeMerge(campaign.draftId, campaign)
-          .then((result) => console.log('[MailMerge ContentScript] Execution result:', result))
-          .catch((err) => console.error('[MailMerge ContentScript] Execution error:', err));
+        root.GmailAutomator.runMailMerge(campaign)
+          .then((result) => console.log('[MailMerge ContentScript] Sheet execution result:', result))
+          .catch((err) => console.error('[MailMerge ContentScript] Sheet execution error:', err));
 
         return false;
       }

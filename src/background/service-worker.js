@@ -178,28 +178,6 @@ async function executeCampaign(campaign) {
     }
 
     // 4. Send message to content script with retry mechanism
-    // For native scheduled merge drafts, attempt message or script injection
-    if (campaign.draftId || campaign.isNative) {
-      console.log("[ServiceWorker] Executing native scheduled campaign for draft " + campaign.draftId);
-      if (chrome.scripting) {
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId: gmailTab.id },
-            func: async (camp) => {
-              if (window.GmailAutomator && (camp.draftId || camp.isNative)) {
-                return await window.GmailAutomator.executeScheduledNativeMerge(camp.draftId, camp);
-              }
-              return { success: false, error: "GmailAutomator not available" };
-            },
-            args: [campaign]
-          });
-          console.log("[ServiceWorker] Native script execution dispatched for campaign " + campaign.id);
-        } catch (scriptErr) {
-          console.warn("[ServiceWorker] Script injection error, falling back to message:", scriptErr.message);
-        }
-      }
-    }
-
     const sent = await sendMessageWithRetry(gmailTab.id, {
       action: 'EXECUTE_CAMPAIGN',
       campaign
@@ -208,6 +186,26 @@ async function executeCampaign(campaign) {
     if (sent) {
       console.log(`[ServiceWorker] Successfully dispatched campaign ${campaign.id} to tab ${gmailTab.id}`);
     } else {
+      // Fallback: If message dispatch failed after retries, attempt direct script injection as emergency backup
+      if (chrome.scripting && (campaign.draftId || campaign.isNative)) {
+        console.warn(`[ServiceWorker] Messaging failed for ${campaign.id}. Attempting fallback script injection...`);
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: gmailTab.id },
+            func: async (camp) => {
+              if (window.GmailAutomator && (camp.draftId || camp.isNative)) {
+                return await window.GmailAutomator.executeScheduledNativeMerge(camp.draftId, camp);
+              }
+              return { success: false, error: 'GmailAutomator not available' };
+            },
+            args: [campaign]
+          });
+          console.log(`[ServiceWorker] Fallback script execution dispatched for campaign ${campaign.id}`);
+          return;
+        } catch (scriptErr) {
+          console.error('[ServiceWorker] Fallback script injection also failed:', scriptErr.message);
+        }
+      }
       throw new Error(`Failed to deliver EXECUTE_CAMPAIGN message to Gmail tab ${gmailTab.id}`);
     }
   } catch (err) {

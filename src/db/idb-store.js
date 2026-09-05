@@ -245,6 +245,38 @@ Warm regards,
         });
       });
 
+      // Auto-heal any campaigns that had completed successfully but were stomped to FAILED by duplicate triggers
+      try {
+        const recentLogs = await this._transaction('logs', 'readonly', (store) => {
+          return new Promise((resolve) => {
+            const req = store.getAll();
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror = () => resolve([]);
+          });
+        });
+
+        for (const camp of campaigns) {
+          if (camp.status === 'FAILED') {
+            const campLogs = recentLogs.filter((l) => l.campaignId === camp.id);
+            const hasSuccess = campLogs.some((l) => (l.message || '').includes('Native Send All triggered successfully'));
+            if (hasSuccess) {
+              console.log(`[IDBStore] Auto-healing completed campaign ${camp.id} from FAILED back to COMPLETED`);
+              camp.status = 'COMPLETED';
+              camp.errorMessage = null;
+              if (!camp.completedAt) {
+                const succLog = campLogs.find((l) => (l.message || '').includes('Native Send All triggered successfully'));
+                camp.completedAt = succLog ? succLog.timestamp : (camp.updatedAt || new Date().toISOString());
+              }
+              this._transaction('campaigns', 'readwrite', (store) => {
+                store.put(camp);
+              }).catch(() => {});
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[IDBStore] Auto-heal check non-critical error:', err);
+      }
+
       return campaigns.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
     },
 
@@ -276,9 +308,18 @@ Warm regards,
         throw new Error(`Campaign with id "${id}" not found.`);
       }
 
+      const cleanUpdates = { ...updates };
+
+      // Safety guard: A completed campaign cannot regress to FAILED or PROCESSING
+      if (existing.status === 'COMPLETED' && (cleanUpdates.status === 'FAILED' || cleanUpdates.status === 'PROCESSING')) {
+        console.warn(`[IDBStore] Rejecting status regression for campaign ${id}: ${existing.status} -> ${cleanUpdates.status}`);
+        delete cleanUpdates.status;
+        delete cleanUpdates.errorMessage;
+      }
+
       const updated = {
         ...existing,
-        ...updates,
+        ...cleanUpdates,
         id, // Ensure id cannot be overwritten
         updatedAt: new Date().toISOString()
       };

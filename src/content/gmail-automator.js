@@ -830,6 +830,30 @@
       const campaignId = campaign?.id;
       const subject = campaign?.subject;
 
+      // Concurrency lock: prevent multiple simultaneous executions of the same campaign
+      if (!GmailAutomator._activeExecutions) {
+        GmailAutomator._activeExecutions = new Set();
+      }
+      if (campaignId && GmailAutomator._activeExecutions.has(campaignId)) {
+        console.warn('[GmailAutomator] ⚠️ Campaign ' + campaignId + ' is already executing. Ignoring concurrent duplicate trigger.');
+        return { success: true, campaignId, warning: 'Already executing' };
+      }
+      if (campaignId) {
+        GmailAutomator._activeExecutions.add(campaignId);
+      }
+
+      // Check if already completed in IDBStore
+      if (campaignId && root.IDBStore) {
+        try {
+          const existing = await root.IDBStore.getCampaignById(campaignId);
+          if (existing && existing.status === 'COMPLETED') {
+            console.log('[GmailAutomator] Campaign ' + campaignId + ' is already COMPLETED. Skipping redundant execution.');
+            if (campaignId) GmailAutomator._activeExecutions.delete(campaignId);
+            return { success: true, campaignId, status: 'COMPLETED' };
+          }
+        } catch (_) {}
+      }
+
       console.log('[GmailAutomator] 🚀 Executing scheduled native merge for draft: ' + (draftId || 'unknown') + ' (Subject: "' + (subject || '') + '")');
 
       try {
@@ -987,6 +1011,14 @@
         console.error('[GmailAutomator] ❌ Error executing scheduled native merge:', error);
 
         if (campaignId && root.IDBStore) {
+          try {
+            const current = await root.IDBStore.getCampaignById(campaignId);
+            if (current && current.status === 'COMPLETED') {
+              console.warn('[GmailAutomator] Campaign ' + campaignId + ' was already marked COMPLETED. Ignoring catch block failure overwrite.');
+              return { success: true, campaignId, warning: 'Already completed' };
+            }
+          } catch (_) {}
+
           await root.IDBStore.updateCampaign(campaignId, {
             status: 'FAILED',
             errorMessage: error.message,
@@ -1005,6 +1037,10 @@
         }
 
         throw error;
+      } finally {
+        if (campaignId && GmailAutomator._activeExecutions) {
+          GmailAutomator._activeExecutions.delete(campaignId);
+        }
       }
     }
   }

@@ -516,17 +516,32 @@ function getComposeDialog() {
         const campaign = message.campaign;
         console.log('[MailMerge ContentScript] Executing scheduled campaign: ' + (campaign?.subject || campaign?.id));
 
-        if (!root.GmailAutomator || typeof root.GmailAutomator.executeScheduledNativeMerge !== 'function') {
-          sendResponse({ success: false, error: 'GmailAutomator.executeScheduledNativeMerge not found' });
+        if (campaign?.isNative || campaign?.draftId) {
+          if (!root.GmailAutomator || typeof root.GmailAutomator.executeScheduledNativeMerge !== 'function') {
+            sendResponse({ success: false, error: 'GmailAutomator.executeScheduledNativeMerge not found' });
+            return false;
+          }
+
+          sendResponse({ success: true, accepted: true });
+
+          // Dispatch native merge execution
+          root.GmailAutomator.executeScheduledNativeMerge(campaign.draftId, campaign)
+            .then((result) => console.log('[MailMerge ContentScript] Execution result:', result))
+            .catch((err) => console.error('[MailMerge ContentScript] Execution error:', err));
+
+          return false;
+        }
+
+        // Custom / Sheet mail merge execution
+        if (!root.GmailAutomator || typeof root.GmailAutomator.runMailMerge !== 'function') {
+          sendResponse({ success: false, error: 'GmailAutomator.runMailMerge not found' });
           return false;
         }
 
         sendResponse({ success: true, accepted: true });
-
-        // Dispatch native merge execution
-        root.GmailAutomator.executeScheduledNativeMerge(campaign.draftId, campaign)
-          .then((result) => console.log('[MailMerge ContentScript] Execution result:', result))
-          .catch((err) => console.error('[MailMerge ContentScript] Execution error:', err));
+        root.GmailAutomator.runMailMerge(campaign)
+          .then((result) => console.log('[MailMerge ContentScript] Sheet execution result:', result))
+          .catch((err) => console.error('[MailMerge ContentScript] Sheet execution error:', err));
 
         return false;
       }
