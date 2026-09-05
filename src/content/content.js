@@ -215,13 +215,12 @@
     const draftId = getDraftId(anchorElement);
     const subject = getSubject(anchorElement);
 
-    // 2. Compute default time (1 hour from now)
-    const defaultDate = new Date(Date.now() + 60 * 60 * 1000);
-    defaultDate.setMinutes(defaultDate.getMinutes() - defaultDate.getTimezoneOffset());
-    const defaultTimeStr = defaultDate.toISOString().slice(0, 16);
+    // 2. Compute default time: Real-time current local time (NOT 1 hour ahead)
+    const now = new Date();
+    const localNow = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
+    const defaultTimeStr = localNow.toISOString().slice(0, 16);
 
-    const minDate = new Date();
-    minDate.setMinutes(minDate.getMinutes() - minDate.getTimezoneOffset());
+    const minDate = new Date(now.getTime() - now.getTimezoneOffset() * 60000 - 60000);
     const minTimeStr = minDate.toISOString().slice(0, 16);
 
     // 3. Create Popover Card
@@ -260,14 +259,16 @@
         '</div>' +
         '<div style="margin-bottom: 14px;">' +
           '<label style="display: block; font-size: 11px; font-weight: 600; color: #3c4043; text-transform: uppercase; margin-bottom: 4px;">' +
-            'Dispatch Date & Time' +
+            'Dispatch Date & Time (Real Time)' +
           '</label>' +
           '<input type="datetime-local" id="mmDateTimeInput" value="' + defaultTimeStr + '" min="' + minTimeStr + '" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #dadce0; border-radius: 6px; font-size: 13px; outline: none; font-family: inherit;" />' +
         '</div>' +
         '<div style="display: flex; gap: 6px; margin-bottom: 16px;">' +
+          '<button type="button" class="mm-quick-time" data-offset="now" style="flex: 1; padding: 4px 6px; font-size: 11px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; color: #3c4043; font-weight: 600;">Now</button>' +
+          '<button type="button" class="mm-quick-time" data-offset="2" style="flex: 1; padding: 4px 6px; font-size: 11px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; color: #3c4043;">+2m</button>' +
+          '<button type="button" class="mm-quick-time" data-offset="5" style="flex: 1; padding: 4px 6px; font-size: 11px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; color: #3c4043;">+5m</button>' +
+          '<button type="button" class="mm-quick-time" data-offset="15" style="flex: 1; padding: 4px 6px; font-size: 11px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; color: #3c4043;">+15m</button>' +
           '<button type="button" class="mm-quick-time" data-offset="30" style="flex: 1; padding: 4px 6px; font-size: 11px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; color: #3c4043;">+30m</button>' +
-          '<button type="button" class="mm-quick-time" data-offset="60" style="flex: 1; padding: 4px 6px; font-size: 11px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; color: #3c4043;">+1 Hour</button>' +
-          '<button type="button" class="mm-quick-time" data-offset="tomorrow" style="flex: 1; padding: 4px 6px; font-size: 11px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; color: #3c4043;">Tomorrow 9am</button>' +
         '</div>' +
         '<div id="mmAlertBox" style="display: none; padding: 8px 10px; border-radius: 6px; font-size: 12px; margin-bottom: 12px;"></div>' +
         '<div style="display: flex; justify-content: flex-end; gap: 8px;">' +
@@ -293,13 +294,16 @@
       btn.addEventListener('click', () => {
         const offset = btn.getAttribute('data-offset');
         const dt = new Date();
-        if (offset === '30') {
+        if (offset === 'now') {
+          // current minute
+        } else if (offset === '2') {
+          dt.setMinutes(dt.getMinutes() + 2);
+        } else if (offset === '5') {
+          dt.setMinutes(dt.getMinutes() + 5);
+        } else if (offset === '15') {
+          dt.setMinutes(dt.getMinutes() + 15);
+        } else if (offset === '30') {
           dt.setMinutes(dt.getMinutes() + 30);
-        } else if (offset === '60') {
-          dt.setHours(dt.getHours() + 1);
-        } else if (offset === 'tomorrow') {
-          dt.setDate(dt.getDate() + 1);
-          dt.setHours(9, 0, 0, 0);
         }
         dt.setMinutes(dt.getMinutes() - dt.getTimezoneOffset());
         overlay.querySelector('#mmDateTimeInput').value = dt.toISOString().slice(0, 16);
@@ -326,7 +330,7 @@
     confirmBtn.addEventListener('click', async () => {
       const val = dtInput.value;
       if (!val) {
-        alertBox.textContent = 'Please choose a future date and time.';
+        alertBox.textContent = 'Please choose a date and time.';
         alertBox.style.display = 'block';
         alertBox.style.background = '#fce8e6';
         alertBox.style.color = '#c5221f';
@@ -334,8 +338,8 @@
       }
 
       const scheduledTime = new Date(val).getTime();
-      if (isNaN(scheduledTime) || scheduledTime <= Date.now()) {
-        alertBox.textContent = 'Scheduled time must be in the future.';
+      if (isNaN(scheduledTime) || scheduledTime < Date.now() - 60000) {
+        alertBox.textContent = 'Scheduled time cannot be in the past.';
         alertBox.style.display = 'block';
         alertBox.style.background = '#fce8e6';
         alertBox.style.color = '#c5221f';
