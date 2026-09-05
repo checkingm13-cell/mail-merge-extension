@@ -532,3 +532,107 @@ input:checked + .slider:before {
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+
+/* Metadata Badges */
+.campaign-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.meta-badge {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  text-decoration: none;
+}
+
+.badge-sheet {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.badge-sheet:hover {
+  text-decoration: underline;
+  background: rgba(16, 185, 129, 0.25);
+}
+
+.badge-audience {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.badge-tags {
+  background: rgba(148, 163, 184, 0.12);
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+/* Progress Bar */
+.progress-bar-wrap {
+  width: 100%;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent-primary);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+/* Details Drawer */
+.actions-left {
+  display: flex;
+  align-items: center;
+}
+
+.actions-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-drawer-toggle {
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+  user-select: none;
+}
+
+.btn-drawer-toggle:hover {
+  color: var(--text-primary);
+}
+
+.campaign-drawer {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.drawer-row {
+  word-break: break-all;
+}
+
+.drawer-snippet {
+  font-style: italic;
+  color: var(--text-secondary);
+}

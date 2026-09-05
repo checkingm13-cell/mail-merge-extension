@@ -204,18 +204,19 @@
   }
 
   // =========================================================================
-  // SCHEDULING DIALOG / POPOVER & EXECUTION HOOK
+  // SCHEDULING DIALOG / POPOVER & METADATA CAPTURE
   // =========================================================================
 
   function openScheduleDialog(anchorElement) {
     const existing = document.getElementById('mm-schedule-popover-card');
     if (existing) existing.remove();
 
-    // 1. Extract Draft ID and Subject
-    const draftId = getDraftId(anchorElement);
-    const subject = getSubject(anchorElement);
+    // Scoped strictly to the specific compose window where schedule was clicked
+    const composeDialog = anchorElement?.closest('div[role="dialog"]') || getComposeDialog();
+    const subject = getSubject(composeDialog);
+    const meta = extractDraftMetadata(composeDialog);
 
-    // 2. Compute default time: Real-time current local time (NOT 1 hour ahead)
+    // Compute default time: Real-time current local time
     const now = new Date();
     const localNow = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
     const defaultTimeStr = localNow.toISOString().slice(0, 16);
@@ -223,7 +224,7 @@
     const minDate = new Date(now.getTime() - now.getTimezoneOffset() * 60000 - 60000);
     const minTimeStr = minDate.toISOString().slice(0, 16);
 
-    // 3. Create Popover Card
+    // Create Popover Card
     const overlay = document.createElement('div');
     overlay.id = 'mm-schedule-popover-card';
     overlay.style.cssText = [
@@ -240,23 +241,40 @@
       'font-family: Roboto, RobotoDraft, Helvetica, Arial, sans-serif'
     ].join('; ');
 
+    const sheetInfoHtml = meta.sheetTitle
+      ? '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">' +
+          '<span style="font-weight: 600; color: #137333;">📊 ' + escapeHtml(meta.sheetTitle) + '</span>' +
+          (meta.recipientCount ? '<span style="color: #1a73e8; font-weight: 500;">👥 ' + meta.recipientCount + ' recipients</span>' : '') +
+        '</div>' +
+        (meta.sheetUrl ? '<div style="font-size: 11px; margin-bottom: 4px;"><a href="' + meta.sheetUrl + '" target="_blank" style="color: #1a73e8; text-decoration: none;">View Spreadsheet ↗</a></div>' : '')
+      : '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">' +
+          '<span style="font-weight: 500; color: #5f6368;">✉️ Direct Mail Merge</span>' +
+          (meta.recipientCount ? '<span style="color: #1a73e8; font-weight: 500;">👥 ' + meta.recipientCount + ' recipients</span>' : '') +
+        '</div>';
+
+    const tagsHtml = (meta.mergeTags && meta.mergeTags.length > 0)
+      ? '<div style="font-size: 11px; color: #5f6368; margin-top: 4px;">Tags: <b>' + escapeHtml(meta.mergeTags.join(', ')) + '</b></div>'
+      : '';
+
     overlay.innerHTML =
-      '<div style="background: #ffffff; border-radius: 12px; width: 380px; box-shadow: 0 8px 28px rgba(0,0,0,0.28); padding: 20px; box-sizing: border-box; position: relative;">' +
+      '<div style="background: #ffffff; border-radius: 12px; width: 390px; box-shadow: 0 8px 28px rgba(0,0,0,0.28); padding: 20px; box-sizing: border-box; position: relative;">' +
         '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">' +
           '<h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #202124; display: flex; align-items: center; gap: 8px;">' +
             '<span style="color: #7e22ce;">📅</span> Schedule Mail Merge' +
           '</h3>' +
           '<span id="mmPopoverClose" style="cursor: pointer; font-size: 18px; color: #5f6368; padding: 2px 6px; line-height: 1;">✕</span>' +
         '</div>' +
-        '<p style="margin: 0 0 14px 0; font-size: 12px; color: #5f6368; line-height: 1.4;">' +
-          'Your linked recipients and merge tags are intact. Gmail will automatically dispatch at the selected time.' +
-        '</p>' +
-        '<div style="background: #f8f9fa; border: 1px solid #dadce0; border-radius: 6px; padding: 8px 12px; margin-bottom: 14px;">' +
-          '<div style="font-size: 11px; color: #5f6368; text-transform: uppercase; font-weight: 600;">Subject</div>' +
-          '<div style="font-size: 13px; color: #202124; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">' +
-            (subject || '(No Subject)') +
+
+        // Detected Draft & Sheet Metadata Preview
+        '<div style="background: #f8f9fa; border: 1px solid #dadce0; border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; font-size: 12px;">' +
+          '<div style="font-size: 11px; color: #5f6368; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Subject</div>' +
+          '<div style="font-size: 13px; color: #202124; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 8px;">' +
+            escapeHtml(subject || '(No Subject)') +
           '</div>' +
+          sheetInfoHtml +
+          tagsHtml +
         '</div>' +
+
         '<div style="margin-bottom: 14px;">' +
           '<label style="display: block; font-size: 11px; font-weight: 600; color: #3c4043; text-transform: uppercase; margin-bottom: 4px;">' +
             'Dispatch Date & Time (Real Time)' +
@@ -347,18 +365,23 @@
       }
 
       confirmBtn.disabled = true;
-      confirmBtn.textContent = 'Scheduling...';
+      confirmBtn.textContent = 'Verifying draft...';
 
       try {
         if (!root.IDBStore) {
           throw new Error('IDBStore is not available');
         }
 
-        // Detect current user account index (/u/0/, /u/1/, etc.) from URL
+        // 1. Ensure Draft ID is saved & permanent on Google server
+        const verifiedDraftId = await ensureDraftSaved(composeDialog);
+
+        confirmBtn.textContent = 'Scheduling...';
+
+        // 2. Detect current user account index (/u/0/, /u/1/, etc.) from URL
         const userMatch = /\/u\/(\d+)/.exec(window.location.pathname);
         const userIndex = userMatch ? userMatch[1] : '0';
 
-        // Detect current account email if available from header avatar or title
+        // 3. Detect current account email
         let accountEmail = '';
         try {
           const accountEl = document.querySelector('header a[aria-label*="@"], div[aria-label*="@"], a[aria-label*="Google Account"]');
@@ -368,9 +391,10 @@
           }
         } catch (_) {}
 
+        // 4. Build comprehensive campaign record
         const campaign = {
           id: 'camp_' + Date.now(),
-          draftId: draftId,
+          draftId: verifiedDraftId,
           subject: subject,
           userIndex: userIndex,
           accountEmail: accountEmail,
@@ -378,7 +402,17 @@
           scheduledAt: new Date(scheduledTime).toISOString(),
           status: 'QUEUED',
           isNative: true,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString(),
+          // Complete Draft & Sheet Metadata:
+          sheetId: meta.sheetId,
+          sheetUrl: meta.sheetUrl,
+          sheetTitle: meta.sheetTitle,
+          recipientCount: meta.recipientCount,
+          recipientsSummary: meta.recipientsSummary,
+          mergeTags: meta.mergeTags,
+          bodySnippet: meta.bodySnippet,
+          attachmentCount: meta.attachmentCount,
+          metadata: meta
         };
 
         await root.IDBStore.saveCampaign(campaign);
@@ -394,7 +428,7 @@
               scheduledTime: scheduledTime
             });
           } catch (commErr) {
-            console.warn('[MailMerge ContentScript] Background registration communication note:', commErr?.message);
+            console.warn('[MailMerge ContentScript] Background registration note:', commErr?.message);
             if (commErr && commErr.message && commErr.message.includes('Extension context invalidated')) {
               throw new Error('Extension was updated in Chrome. Please press F5 to refresh this Gmail tab and click Schedule again.');
             }
@@ -403,11 +437,11 @@
 
         closePopover();
 
-        // Natively close the compose / modal dialog (Gmail auto-saves as draft)
-        closeComposeNatively();
+        // Strictly close ONLY this specific compose dialog (preserves other open windows)
+        closeSpecificCompose(composeDialog);
 
-        // Show native toast confirmation
-        showToast('✅ Campaign scheduled for ' + new Date(scheduledTime).toLocaleString() + '. Draft safely saved.');
+        // Show toast confirmation
+        showToast('✅ Scheduled for ' + new Date(scheduledTime).toLocaleString() + (meta.recipientCount ? ' (' + meta.recipientCount + ' recipients)' : ''));
       } catch (err) {
         console.error('[MailMerge ContentScript] Failed to schedule:', err);
         if (err && err.message && err.message.includes('Extension context invalidated')) {
@@ -430,7 +464,17 @@
   // HELPER FUNCTIONS
   // =========================================================================
 
-function getComposeDialog() {
+  function escapeHtml(text) {
+    if (!text) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function getComposeDialog() {
     const dialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
     for (const d of dialogs) {
       if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
@@ -440,7 +484,7 @@ function getComposeDialog() {
     return null;
   }
 
-  function getDraftId(anchorElement) {
+  function getDraftId(target) {
     // 1. Check URL parameters
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('compose')) return urlParams.get('compose');
@@ -449,8 +493,11 @@ function getComposeDialog() {
       if (match) return match[1];
     }
 
-    // 2. Check active compose dialog directly
-    const composeDialog = getComposeDialog() || anchorElement?.closest('div[role="dialog"]');
+    // 2. Check compose dialog directly
+    const composeDialog = (target && target.matches && target.matches('div[role="dialog"], div.M9, div.AD'))
+      ? target
+      : (target?.closest ? target.closest('div[role="dialog"]') : getComposeDialog());
+
     if (composeDialog) {
       const draftInput = composeDialog.querySelector('input[name="draft"]');
       if (draftInput && draftInput.value) return draftInput.value;
@@ -464,8 +511,11 @@ function getComposeDialog() {
     return 'unknown';
   }
 
-  function getSubject(anchorElement) {
-    const composeDialog = getComposeDialog() || anchorElement?.closest('div[role="dialog"]');
+  function getSubject(target) {
+    const composeDialog = (target && target.matches && target.matches('div[role="dialog"], div.M9, div.AD'))
+      ? target
+      : (target?.closest ? target.closest('div[role="dialog"]') : getComposeDialog());
+
     if (composeDialog) {
       const subjectInput = composeDialog.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
       if (subjectInput && subjectInput.value.trim()) return subjectInput.value.trim();
@@ -475,8 +525,80 @@ function getComposeDialog() {
     return 'Mail Merge (' + new Date().toLocaleDateString() + ')';
   }
 
-  function closeComposeNatively() {
-    // If modal is open, click its Cancel button
+  // Ponytail-lean: extracts all draft metadata in ~35 lines
+  function extractDraftMetadata(composeDialog) {
+    if (!composeDialog) return {};
+
+    // 1. Google Sheet ID, URL & Title
+    let sheetId = null;
+    let sheetTitle = null;
+    const sheetLink = composeDialog.querySelector('a[href*="spreadsheets/d/"], [data-url*="spreadsheets/d/"]');
+    if (sheetLink) {
+      const url = sheetLink.href || sheetLink.getAttribute('data-url') || '';
+      const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]+)/i);
+      if (match) sheetId = match[1];
+      sheetTitle = (sheetLink.textContent || '').trim() || null;
+    }
+    if (!sheetTitle) {
+      const chip = composeDialog.querySelector('div[role="button"][aria-label*="sheet" i], div.vR, div.afV, span[aria-label*="sheet" i]');
+      if (chip) sheetTitle = (chip.textContent || '').replace(/close|remove|delete|spreadsheet/gi, '').trim() || null;
+    }
+    const sheetUrl = sheetId ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit` : null;
+
+    // 2. Recipients & Audience
+    const recipientChips = Array.from(composeDialog.querySelectorAll('span[email], div[email], div[data-hovercard-id]'));
+    let recipientCount = recipientChips.length;
+    const emails = recipientChips.map(c => c.getAttribute('email') || c.getAttribute('data-hovercard-id') || c.textContent.trim()).filter(Boolean);
+    const countMatch = (composeDialog.textContent || '').match(/(\d+)\s+recipients?\b/i);
+    if (countMatch) recipientCount = parseInt(countMatch[1], 10);
+    const recipientsSummary = emails.slice(0, 3).join(', ') + (emails.length > 3 ? ` +${emails.length - 3} more` : (emails.length > 0 ? '' : (recipientCount ? `${recipientCount} recipients` : '')));
+
+    // 3. Body Snippet & Merge Tags
+    const bodyEl = composeDialog.querySelector('div[aria-label="Message Body"], div[role="textbox"], div.Am');
+    const bodyText = (bodyEl ? (bodyEl.innerText || bodyEl.textContent || '') : '').trim();
+    const bodySnippet = bodyText.slice(0, 180);
+
+    const fullText = (getSubject(composeDialog) + ' ' + bodyText);
+    const atMatches = fullText.match(/@[\w\s]{2,25}\b/g) || [];
+    const curlyMatches = fullText.match(/\{\{[\w\s]+\}\}/g) || [];
+    const mergeTags = [...new Set([...atMatches, ...curlyMatches].map(t => t.trim()))].slice(0, 8);
+
+    const attachmentChips = composeDialog.querySelectorAll('div[aria-label*="Attachment" i], div.dQ');
+
+    return {
+      sheetId,
+      sheetUrl,
+      sheetTitle,
+      recipientCount,
+      recipientsSummary,
+      mergeTags,
+      bodySnippet,
+      attachmentCount: attachmentChips.length
+    };
+  }
+
+  // Ponytail: ensure draft is fully saved to Google servers before scheduling
+  async function ensureDraftSaved(composeDialog) {
+    let draftId = getDraftId(composeDialog);
+    if (draftId && draftId !== 'unknown') return draftId;
+
+    const subjectInput = composeDialog?.querySelector('input[name="subjectbox"]');
+    if (subjectInput) {
+      subjectInput.dispatchEvent(new Event('blur', { bubbles: true }));
+    }
+
+    const startTime = Date.now();
+    while (Date.now() - startTime < 3500) {
+      await new Promise((r) => setTimeout(r, 400));
+      draftId = getDraftId(composeDialog);
+      if (draftId && draftId !== 'unknown') return draftId;
+    }
+    return draftId || 'unknown';
+  }
+
+  // Strictly close ONLY the clicked compose dialog (preserves other open compose windows)
+  function closeSpecificCompose(composeDialog) {
+    if (!composeDialog) return;
     const modals = document.querySelectorAll('div[role="dialog"]');
     for (const modal of modals) {
       if (modal.textContent.includes('Ready to send')) {
@@ -486,23 +608,16 @@ function getComposeDialog() {
       }
     }
 
-    // After brief delay, click the compose Close button
     setTimeout(() => {
-      const composeDialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
-      for (const d of composeDialogs) {
-        if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
-          const closeBtn =
-            d.querySelector('button[aria-label*="Close" i]') ||
-            d.querySelector('button[aria-label*="Save & close" i]') ||
-            d.querySelector('img[aria-label*="Close" i]') ||
-            d.querySelector('img[aria-label*="Save & close" i]') ||
-            d.querySelector('img.Ha') ||
-            d.querySelector('button[aria-label*="Discard" i]');
-          if (closeBtn) {
-            closeBtn.click();
-            break;
-          }
-        }
+      const closeBtn =
+        composeDialog.querySelector('button[aria-label*="Close" i]') ||
+        composeDialog.querySelector('button[aria-label*="Save & close" i]') ||
+        composeDialog.querySelector('img[aria-label*="Close" i]') ||
+        composeDialog.querySelector('img[aria-label*="Save & close" i]') ||
+        composeDialog.querySelector('img.Ha') ||
+        composeDialog.querySelector('button[aria-label*="Discard" i]');
+      if (closeBtn) {
+        closeBtn.click();
       }
     }, 300);
   }
@@ -561,34 +676,17 @@ function getComposeDialog() {
         const campaign = message.campaign;
         console.log('[MailMerge ContentScript] Executing scheduled campaign: ' + (campaign?.subject || campaign?.id));
 
-        if (campaign?.isNative || campaign?.draftId) {
-          if (!root.GmailAutomator || typeof root.GmailAutomator.executeScheduledNativeMerge !== 'function') {
-            sendResponse({ success: false, error: 'GmailAutomator.executeScheduledNativeMerge not found' });
-            return false;
-          }
-
-          sendResponse({ success: true, accepted: true });
-
-          // Dispatch native merge execution
-          root.GmailAutomator.executeScheduledNativeMerge(campaign.draftId, campaign)
-            .then((result) => console.log('[MailMerge ContentScript] Execution result:', result))
-            .catch((err) => console.error('[MailMerge ContentScript] Execution error:', err));
-
+        if (!root.GmailAutomator || typeof root.GmailAutomator.executeScheduledNativeMerge !== 'function') {
+          sendResponse({ success: false, error: 'GmailAutomator not found' });
           return false;
         }
 
-        // Custom / Sheet mail merge execution
-        if (!root.GmailAutomator || typeof root.GmailAutomator.runMailMerge !== 'function') {
-          sendResponse({ success: false, error: 'GmailAutomator.runMailMerge not found' });
-          return false;
-        }
+        // Asynchronous execution - properly waits for completion
+        root.GmailAutomator.executeScheduledNativeMerge(campaign.draftId, campaign)
+          .then((result) => sendResponse(result || { success: true }))
+          .catch((err) => sendResponse({ success: false, error: err.message }));
 
-        sendResponse({ success: true, accepted: true });
-        root.GmailAutomator.runMailMerge(campaign)
-          .then((result) => console.log('[MailMerge ContentScript] Sheet execution result:', result))
-          .catch((err) => console.error('[MailMerge ContentScript] Sheet execution error:', err));
-
-        return false;
+        return true; // keep message channel open
       }
     });
   }

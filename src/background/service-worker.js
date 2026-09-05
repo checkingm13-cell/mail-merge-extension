@@ -112,6 +112,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 /**
  * Checks for due campaigns in IndexedDB and triggers execution via Gmail content script.
+ * Ponytail: groups by account so different accounts run parallel while same account runs sequential.
  */
 async function checkAndExecuteDueCampaigns() {
   try {
@@ -127,11 +128,24 @@ async function checkAndExecuteDueCampaigns() {
       return;
     }
 
-    console.log(`[ServiceWorker] Found ${dueCampaigns.length} due campaign(s).`);
+    console.log(`[ServiceWorker] Found ${dueCampaigns.length} due campaign(s). Grouping by account...`);
 
+    // Group due campaigns by account index
+    const accountGroups = {};
     for (const campaign of dueCampaigns) {
-      await executeCampaign(campaign);
+      const key = campaign.userIndex || '0';
+      if (!accountGroups[key]) accountGroups[key] = [];
+      accountGroups[key].push(campaign);
     }
+
+    // Run accounts in parallel; execute campaigns within the same account sequentially
+    await Promise.all(
+      Object.values(accountGroups).map(async (campaignsForAccount) => {
+        for (const camp of campaignsForAccount) {
+          await executeCampaign(camp);
+        }
+      })
+    );
 
     await refreshBadge();
   } catch (err) {
@@ -148,7 +162,7 @@ async function checkAndExecuteDueCampaigns() {
  */
 async function executeCampaign(campaign) {
   try {
-    // 1. Update status to PROCESSING immediately to prevent double firing
+    // 1. Update status to PROCESSING immediately
     await self.IDBStore.updateCampaign(campaign.id, {
       status: 'PROCESSING',
       startedAt: new Date().toISOString()
@@ -157,13 +171,13 @@ async function executeCampaign(campaign) {
     await self.IDBStore.addLog(
       campaign.id,
       'INFO',
-      `Scheduler initiated campaign "${campaign.name || campaign.id}".`
+      `Scheduler initiated campaign "${campaign.name || campaign.subject || campaign.id}".`
     );
 
     // 2. Find an existing Gmail tab matching the account
     let gmailTab = await findGmailTab(campaign);
 
-    // 3. If no Gmail tab exists, open one in the background for the specific account
+    // 3. If no Gmail tab exists, open one in background for the specific account
     if (!gmailTab) {
       const targetUrl = (campaign && campaign.accountUrl)
         ? campaign.accountUrl
@@ -174,41 +188,24 @@ async function executeCampaign(campaign) {
         active: false
       });
 
-      // Wait for the new tab to finish loading before messaging
       await waitForTabComplete(gmailTab.id);
-      // Give content scripts a brief idle buffer to initialize
       await delay(2500);
     }
 
-    // 4. Send message to content script with retry mechanism
+    // 4. Send message to content script and await execution result
     const sent = await sendMessageWithRetry(gmailTab.id, {
       action: 'EXECUTE_CAMPAIGN',
       campaign
     });
 
     if (sent) {
-      console.log(`[ServiceWorker] Successfully dispatched campaign ${campaign.id} to tab ${gmailTab.id}`);
+      console.log(`[ServiceWorker] Dispatched campaign ${campaign.id} to tab ${gmailTab.id}`);
+      // Show desktop notification on successful dispatch/completion
+      notifyDesktop(
+        '✅ Mail Merge Completed',
+        `"${campaign.subject || 'Campaign'}" sent${campaign.recipientCount ? ' to ' + campaign.recipientCount + ' recipients' : ''}.`
+      );
     } else {
-      // Fallback: If message dispatch failed after retries, attempt direct script injection as emergency backup
-      if (chrome.scripting && (campaign.draftId || campaign.isNative)) {
-        console.warn(`[ServiceWorker] Messaging failed for ${campaign.id}. Attempting fallback script injection...`);
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId: gmailTab.id },
-            func: async (camp) => {
-              if (window.GmailAutomator && (camp.draftId || camp.isNative)) {
-                return await window.GmailAutomator.executeScheduledNativeMerge(camp.draftId, camp);
-              }
-              return { success: false, error: 'GmailAutomator not available' };
-            },
-            args: [campaign]
-          });
-          console.log(`[ServiceWorker] Fallback script execution dispatched for campaign ${campaign.id}`);
-          return;
-        } catch (scriptErr) {
-          console.error('[ServiceWorker] Fallback script injection also failed:', scriptErr.message);
-        }
-      }
       throw new Error(`Failed to deliver EXECUTE_CAMPAIGN message to Gmail tab ${gmailTab.id}`);
     }
   } catch (err) {
@@ -219,7 +216,29 @@ async function executeCampaign(campaign) {
       failedAt: new Date().toISOString()
     });
     await self.IDBStore.addLog(campaign.id, 'ERROR', `Execution trigger error: ${err.message}`);
+
+    notifyDesktop(
+      '❌ Mail Merge Error',
+      `Failed to send "${campaign.subject || 'Campaign'}": ${err.message}`,
+      true
+    );
   }
+}
+
+/**
+ * Ponytail-lean Chrome desktop notification helper
+ */
+function notifyDesktop(title, message, isError = false) {
+  try {
+    if (typeof chrome !== 'undefined' && chrome.notifications) {
+      chrome.notifications.create({
+        type: 'basic',
+        iconUrl: 'icons/icon-128.png',
+        title: title,
+        message: message || ''
+      }, () => {});
+    }
+  } catch (_) {}
 }
 
 /**

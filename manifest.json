@@ -9,7 +9,8 @@
     "alarms",
     "tabs",
     "scripting",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "notifications"
   ],
   "host_permissions": [
     "https://mail.google.com/*",

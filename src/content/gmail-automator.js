@@ -327,34 +327,66 @@
     }
 
     /**
-     * Executes a scheduled native Gmail Mail Merge.
-     * Navigates to the draft, clicks "Continue", waits for the "Ready to send" modal, and clicks "Send all".
+     * Executes a scheduled native Gmail Mail Merge via in-tab sequential queue.
+     * Prevents compose window clashing if multiple campaigns fire at the same time.
      */
     static async executeScheduledNativeMerge(draftIdOrCampaign, optionalCampaign) {
       const campaign = typeof draftIdOrCampaign === 'object' ? draftIdOrCampaign : (optionalCampaign || {});
       const draftId = typeof draftIdOrCampaign === 'string' ? draftIdOrCampaign : campaign?.draftId;
+
+      // ponytail: sequential tab queue prevents compose collisions when campaigns share same minute
+      if (!GmailAutomator._queue) {
+        GmailAutomator._queue = Promise.resolve();
+      }
+
+      return new Promise((resolve) => {
+        GmailAutomator._queue = GmailAutomator._queue.then(async () => {
+          try {
+            const res = await GmailAutomator._runSingleExecution(draftId, campaign);
+            resolve(res);
+          } catch (err) {
+            resolve({ success: false, error: err.message });
+          }
+          await sleep(3000); // 3s buffer before next sequential campaign
+        });
+      });
+    }
+
+    /**
+     * Single campaign execution with live progress reporting (10% to 100%).
+     */
+    static async _runSingleExecution(draftId, campaign) {
       const campaignId = campaign?.id;
       const subject = campaign?.subject;
 
-      // Concurrency lock: prevent multiple simultaneous executions of the same campaign
-      if (!GmailAutomator._activeExecutions) {
-        GmailAutomator._activeExecutions = new Set();
-      }
-      if (campaignId && GmailAutomator._activeExecutions.has(campaignId)) {
-        console.warn('[GmailAutomator] ⚠️ Campaign ' + campaignId + ' is already executing. Ignoring concurrent duplicate trigger.');
-        return { success: true, campaignId, warning: 'Already executing' };
-      }
-      if (campaignId) {
-        GmailAutomator._activeExecutions.add(campaignId);
-      }
+      // Helper to report live progress to IDB and popup
+      const reportProgress = async (step, message, pct) => {
+        console.log(`[GmailAutomator] [${pct}%] ${step}: ${message}`);
+        if (campaignId && root.IDBStore) {
+          await root.IDBStore.updateCampaign(campaignId, {
+            status: 'PROCESSING',
+            progressStep: step,
+            progressMessage: message,
+            progressPct: pct
+          }).catch(() => {});
+        }
+        if (chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({
+            action: 'CAMPAIGN_PROGRESS',
+            campaignId,
+            step,
+            message,
+            pct
+          }).catch(() => {});
+        }
+      };
 
       // Check if already completed in IDBStore
       if (campaignId && root.IDBStore) {
         try {
           const existing = await root.IDBStore.getCampaignById(campaignId);
           if (existing && existing.status === 'COMPLETED') {
-            console.log('[GmailAutomator] Campaign ' + campaignId + ' is already COMPLETED. Skipping redundant execution.');
-            if (campaignId) GmailAutomator._activeExecutions.delete(campaignId);
+            console.log('[GmailAutomator] Campaign ' + campaignId + ' is already COMPLETED. Skipping.');
             return { success: true, campaignId, status: 'COMPLETED' };
           }
         } catch (_) {}
@@ -363,6 +395,8 @@
       console.log('[GmailAutomator] 🚀 Executing scheduled native merge for draft: ' + (draftId || 'unknown') + ' (Subject: "' + (subject || '') + '")');
 
       try {
+        await reportProgress('NAVIGATE', 'Opening draft...', 10);
+
         // Check if compose dialog is already open on screen
         let composeDialog = null;
         const openDialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
@@ -370,13 +404,12 @@
           if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
             if (!subject || (d.querySelector('input[name="subjectbox"]')?.value || '').includes(subject)) {
               composeDialog = d;
-              console.log('[GmailAutomator] Compose dialog for draft is already open on screen.');
               break;
             }
           }
         }
 
-        // 1. Navigate directly to the draft if not already open
+        // 1. Navigate directly to draft if not already open
         if (!composeDialog) {
           if (draftId && draftId !== 'unknown') {
             const targetHash = '#drafts?compose=' + draftId;
@@ -388,56 +421,56 @@
               window.location.hash = '#drafts';
             }
           }
-          await sleep(3000);
+          await sleep(3500);
         }
-        // 2. Wait for compose window to load if not yet located
+
+        // 2. Wait for compose window to load
+        await reportProgress('LOAD_DRAFT', 'Waiting for compose window to load...', 30);
         if (!composeDialog) {
           try {
-          composeDialog = await waitFor(
-            () => {
-              const dialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
-              for (const d of dialogs) {
-                if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
-                  return d;
+            composeDialog = await waitFor(
+              () => {
+                const dialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
+                for (const d of dialogs) {
+                  if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
+                    return d;
+                  }
                 }
-              }
-              return null;
-            },
-            { timeout: 10000, errorMsg: 'Compose dialog not loaded directly via URL' }
-          );
-        } catch (_) {
-          // If not opened via URL hash, search draft list by subject
-          if (subject) {
-            console.log('[GmailAutomator] Searching draft row with subject: "' + subject + '"...');
-            const draftRows = document.querySelectorAll('tr[role="row"], div[role="row"]');
-            for (const row of draftRows) {
-              if (row.textContent.includes(subject)) {
-                console.log('[GmailAutomator] Found matching draft row. Clicking to open...');
-                await humanClick(row);
-                break;
+                return null;
+              },
+              { timeout: 12000, errorMsg: 'Compose dialog not loaded via URL' }
+            );
+          } catch (_) {
+            // Search draft row in list by subject
+            if (subject) {
+              const draftRows = document.querySelectorAll('tr[role="row"], div[role="row"]');
+              for (const row of draftRows) {
+                if (row.textContent.includes(subject)) {
+                  await humanClick(row);
+                  break;
+                }
               }
             }
-          }
 
-          composeDialog = await waitFor(
-            () => {
-              const dialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
-              for (const d of dialogs) {
-                if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
-                  return d;
+            composeDialog = await waitFor(
+              () => {
+                const dialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
+                for (const d of dialogs) {
+                  if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
+                    return d;
+                  }
                 }
-              }
-              return null;
-            },
-            { timeout: 15000, errorMsg: 'Compose dialog did not open for scheduled draft' }
-          );
-        }
+                return null;
+              },
+              { timeout: 15000, errorMsg: 'Draft no longer exists or was deleted in Gmail' }
+            );
+          }
         }
 
-        await sleep(2500);
+        await sleep(2000);
 
         // 3. Find and click "Continue"
-        console.log('[GmailAutomator] Locating native "Continue" button...');
+        await reportProgress('CLICK_CONTINUE', 'Clicking Continue...', 60);
         const continueBtn = await waitFor(
           () => {
             const buttons = composeDialog.querySelectorAll('button, div[role="button"]');
@@ -451,12 +484,11 @@
           { timeout: 15000, errorMsg: 'Native "Continue" button not found in compose dialog' }
         );
 
-        console.log('[GmailAutomator] Clicking native "Continue" button...');
         await humanClick(continueBtn);
-        await sleep(3500);
+        await sleep(3000);
 
         // 4. Wait for "Ready to send" modal
-        console.log('[GmailAutomator] Waiting for "Ready to send" modal...');
+        await reportProgress('WAIT_MODAL', 'Waiting for Ready to send modal...', 80);
         const modal = await waitFor(
           () => {
             const dialogs = document.querySelectorAll('div[role="dialog"]');
@@ -471,12 +503,10 @@
           { timeout: 15000, errorMsg: '"Ready to send" modal did not appear' }
         );
 
-        // 5. Pause for Gmail backend token binding & recipient expansion
-        console.log('[GmailAutomator] Pausing for token binding & recipient expansion...');
-        await sleep(3500);
+        await sleep(3000);
 
-        // 6. Click "Send all"
-        console.log('[GmailAutomator] Locating "Send all" button...');
+        // 5. Click "Send all"
+        await reportProgress('SEND_ALL', 'Clicking Send all...', 95);
         const sendAllBtn = await waitFor(
           () => {
             const buttons = modal.querySelectorAll('button, div[role="button"]');
@@ -490,14 +520,17 @@
           { timeout: 10000, errorMsg: '"Send all" button not found in Ready to send modal' }
         );
 
-        console.log('[GmailAutomator] Clicking "Send all" button...');
         await humanClick(sendAllBtn);
-        console.log('[GmailAutomator] Native Send All triggered successfully.');
+        await sleep(1500);
 
-        // 7. Update status in IDBStore
+        await reportProgress('COMPLETED', 'Sent successfully!', 100);
+
+        // 6. Update IDBStore & broadcast completion
         if (campaignId && root.IDBStore) {
           await root.IDBStore.updateCampaign(campaignId, {
             status: 'COMPLETED',
+            progressStep: 'COMPLETED',
+            progressPct: 100,
             completedAt: new Date().toISOString()
           });
           await root.IDBStore.addLog(campaignId, 'INFO', 'Native Send All triggered successfully at scheduled time.');
@@ -517,20 +550,12 @@
         console.error('[GmailAutomator] ❌ Error executing scheduled native merge:', error);
 
         if (campaignId && root.IDBStore) {
-          try {
-            const current = await root.IDBStore.getCampaignById(campaignId);
-            if (current && current.status === 'COMPLETED') {
-              console.warn('[GmailAutomator] Campaign ' + campaignId + ' was already marked COMPLETED. Ignoring catch block failure overwrite.');
-              return { success: true, campaignId, warning: 'Already completed' };
-            }
-          } catch (_) {}
-
           await root.IDBStore.updateCampaign(campaignId, {
             status: 'FAILED',
             errorMessage: error.message,
             failedAt: new Date().toISOString()
-          });
-          await root.IDBStore.addLog(campaignId, 'ERROR', 'Scheduled dispatch failed: ' + error.message);
+          }).catch(() => {});
+          await root.IDBStore.addLog(campaignId, 'ERROR', 'Scheduled dispatch failed: ' + error.message).catch(() => {});
         }
 
         if (chrome.runtime && chrome.runtime.sendMessage) {
@@ -543,10 +568,6 @@
         }
 
         throw error;
-      } finally {
-        if (campaignId && GmailAutomator._activeExecutions) {
-          GmailAutomator._activeExecutions.delete(campaignId);
-        }
       }
     }
   }

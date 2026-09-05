@@ -219,14 +219,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         ? camp.accountEmail
         : (camp.userIndex && camp.userIndex !== '0' ? 'Gmail Account #' + camp.userIndex : 'Gmail Primary');
 
-      // Time Display
+      // Time Display & Live Progress
       let timeLabel = '';
       if (camp.status === 'COMPLETED') {
         timeLabel = 'Sent: ' + formatTime(camp.completedAt || camp.updatedAt);
       } else if (camp.status === 'QUEUED') {
         timeLabel = 'Scheduled: ' + formatTime(camp.scheduledAt);
       } else if (camp.status === 'PROCESSING') {
-        timeLabel = 'Executing now...';
+        timeLabel = (camp.progressMessage || 'Executing...') + (camp.progressPct ? ' (' + camp.progressPct + '%)' : '');
       } else if (camp.status === 'FAILED') {
         timeLabel = 'Failed: ' + formatTime(camp.failedAt || camp.updatedAt);
       } else {
@@ -234,6 +234,32 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       const subject = camp.subject || 'Untitled Subject';
+
+      // Live progress bar HTML for actively running campaign
+      const progressBarHtml = (camp.status === 'PROCESSING')
+        ? `<div class="progress-bar-wrap">
+             <div class="progress-bar-fill" style="width: ${camp.progressPct || 15}%;"></div>
+           </div>`
+        : '';
+
+      // Metadata Badges (Sheet Link, Audience Count, Merge Tags)
+      const sheetBadge = camp.sheetTitle
+        ? `<a class="meta-badge badge-sheet" href="${camp.sheetUrl || '#'}" target="_blank" title="${escapeHtml(camp.sheetUrl || camp.sheetTitle)}" onclick="event.stopPropagation();">
+             📊 ${escapeHtml(camp.sheetTitle)} ↗
+           </a>`
+        : '';
+
+      const audienceBadge = camp.recipientCount
+        ? `<span class="meta-badge badge-audience">👥 ${camp.recipientCount}</span>`
+        : (camp.recipientsSummary ? `<span class="meta-badge badge-audience">👥 ${escapeHtml(camp.recipientsSummary)}</span>` : '');
+
+      const tagsBadge = (camp.mergeTags && camp.mergeTags.length > 0)
+        ? `<span class="meta-badge badge-tags" title="Tags: ${escapeHtml(camp.mergeTags.join(', '))}">🏷️ ${camp.mergeTags.length} tags</span>`
+        : '';
+
+      const badgesHtml = (sheetBadge || audienceBadge || tagsBadge)
+        ? `<div class="campaign-badges">${sheetBadge}${audienceBadge}${tagsBadge}</div>`
+        : '';
 
       // Actions HTML
       let actionsHtml = '';
@@ -268,6 +294,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         ? `<div class="campaign-error" title="${escapeHtml(camp.errorMessage)}">${escapeHtml(camp.errorMessage)}</div>`
         : '';
 
+      // Expandable Details Drawer
+      const hasDetails = camp.draftId || (camp.mergeTags && camp.mergeTags.length > 0) || camp.bodySnippet;
+      const detailsToggleHtml = hasDetails
+        ? `<span class="btn-drawer-toggle" data-toggle="${camp.id}">▸ Details</span>`
+        : '';
+
+      const drawerHtml = hasDetails
+        ? `<div class="campaign-drawer" id="drawer-${camp.id}" style="display: none;">
+             ${camp.draftId ? `<div class="drawer-row"><b>Draft ID:</b> <code>${escapeHtml(camp.draftId.slice(0, 26))}...</code></div>` : ''}
+             ${camp.mergeTags && camp.mergeTags.length > 0 ? `<div class="drawer-row"><b>Tags:</b> ${escapeHtml(camp.mergeTags.join(', '))}</div>` : ''}
+             ${camp.bodySnippet ? `<div class="drawer-row drawer-snippet"><b>Body:</b> "${escapeHtml(camp.bodySnippet.slice(0, 110))}..."</div>` : ''}
+           </div>`
+        : '';
+
       card.innerHTML = `
         <div class="campaign-top">
           <div class="campaign-subject" title="${escapeHtml(subject)}">
@@ -275,6 +315,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           </div>
           <span class="campaign-status ${statusClass}">${statusLabel}</span>
         </div>
+        ${badgesHtml}
+        ${progressBarHtml}
         <div class="campaign-meta">
           <span class="campaign-account" title="Sending account">
             <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"></path></svg>
@@ -284,14 +326,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         </div>
         ${errorHtml}
         <div class="campaign-actions">
-          ${actionsHtml}
+          <div class="actions-left">${detailsToggleHtml}</div>
+          <div class="actions-right">${actionsHtml}</div>
         </div>
+        ${drawerHtml}
       `;
 
       // Attach button event listeners
       const btnRun = card.querySelector('[data-action="run"]');
       const btnCancel = card.querySelector('[data-action="cancel"]');
       const btnDelete = card.querySelector('[data-action="delete"]');
+      const btnDrawer = card.querySelector('[data-toggle]');
+
+      if (btnDrawer) {
+        btnDrawer.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const drawer = card.querySelector(`#drawer-${camp.id}`);
+          if (drawer) {
+            const isHidden = drawer.style.display === 'none';
+            drawer.style.display = isHidden ? 'block' : 'none';
+            btnDrawer.textContent = isHidden ? '▾ Hide' : '▸ Details';
+          }
+        });
+      }
 
       if (btnRun) {
         btnRun.addEventListener('click', (e) => {
@@ -477,5 +534,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+  // Live updates from background worker or Gmail automator
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg.action === 'CAMPAIGN_PROGRESS' || msg.action === 'CAMPAIGN_STATUS_UPDATE') {
+        loadCampaigns().catch(() => {});
+      }
+    });
   }
 });
