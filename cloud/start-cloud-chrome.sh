@@ -55,6 +55,7 @@ exec "$CHROME_BIN" \
     --user-data-dir="$PROFILE_DIR" \
     --load-extension="$EXT_DIR" \
     --disable-features=Translate \
+    --remote-debugging-port=9222 \
     --no-first-run \
     --no-default-browser-check \
     "https://mail.google.com/"

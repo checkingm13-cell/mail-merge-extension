@@ -69,13 +69,25 @@ Because this runs real Google Chrome with your extension loaded:
 
 ---
 
-## Step 5: Verify 24/7 Operation
+## Step 5: Open the 24/7 Web Dashboard in Your Windows Browser
 
-1. Open a draft in Gmail inside the VNC Chrome, link your sheet, and click **`📅 Schedule`**.
-2. Close your VNC viewer.
-3. **Turn off or put your Windows computer to sleep.**
-4. At the scheduled minute, the Oracle Cloud VPS will open the draft, click "Continue", and click "Send all" automatically!
-5. When you check your phone or Gmail later, all emails will be in your **Sent** folder!
+You don't even need VNC to manage campaigns! Simply open your favorite browser on your Windows PC and navigate to:
+
+👉 **`http://100.96.100.52:3000`**
+
+### What you can do from the Web Dashboard:
+* **Queue New Campaigns in 5 Seconds**: Select a saved template from the **"⚡ 1-Click Saved Template"** dropdown, paste your Google Sheet URL, and click **🚀 Queue Campaign**.
+* **Monitor Live Status**: View system memory, Chrome status, and active campaigns in real time.
+* **Inspect Logs**: Real-time audit logs of scheduler triggers and dispatches.
+
+---
+
+## Step 6: Verify 24/7 Operation
+
+1. Queue a campaign via the Web Dashboard at `http://100.96.100.52:3000` (or schedule a draft directly in Gmail).
+2. **Turn off or put your Windows computer to sleep.**
+3. At the scheduled minute, the Oracle Cloud VPS executes the campaign automatically.
+4. When you check your phone or Gmail later, all personalized emails will be in your **Sent** folder!
 
 ---
 

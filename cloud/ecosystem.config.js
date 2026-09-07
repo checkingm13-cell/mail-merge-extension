@@ -11,6 +11,17 @@ module.exports = {
         NODE_ENV: 'production',
         DISPLAY: ':99'
       }
+    },
+    {
+      name: 'mail-merge-web-dashboard',
+      script: './cloud/server.js',
+      max_memory_restart: '350M',
+      restart_delay: 3000,
+      autorestart: true,
+      env: {
+        PORT: 3000,
+        NODE_ENV: 'production'
+      }
     }
   ]
 };

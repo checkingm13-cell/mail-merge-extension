@@ -590,13 +590,17 @@
           '</label>' +
           '<input type="datetime-local" id="mmDateTimeInput" value="' + defaultTimeStr + '" min="' + minTimeStr + '" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #dadce0; border-radius: 6px; font-size: 13px; outline: none; font-family: inherit;" />' +
         '</div>' +
-        '<div style="display: flex; gap: 6px; margin-bottom: 16px;">' +
+        '<div style="display: flex; gap: 6px; margin-bottom: 14px;">' +
           '<button type="button" class="mm-quick-time" data-offset="now" style="flex: 1; padding: 4px 6px; font-size: 11px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; color: #3c4043; font-weight: 600;">Now</button>' +
           '<button type="button" class="mm-quick-time" data-offset="2" style="flex: 1; padding: 4px 6px; font-size: 11px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; color: #3c4043;">+2m</button>' +
           '<button type="button" class="mm-quick-time" data-offset="5" style="flex: 1; padding: 4px 6px; font-size: 11px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; color: #3c4043;">+5m</button>' +
           '<button type="button" class="mm-quick-time" data-offset="15" style="flex: 1; padding: 4px 6px; font-size: 11px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; color: #3c4043;">+15m</button>' +
           '<button type="button" class="mm-quick-time" data-offset="30" style="flex: 1; padding: 4px 6px; font-size: 11px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; color: #3c4043;">+30m</button>' +
         '</div>' +
+        '<label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: #4b5563; margin-bottom: 14px; cursor: pointer; user-select: none;">' +
+          '<input type="checkbox" id="mmSaveAsTemplateCheckbox" style="cursor: pointer; width: 15px; height: 15px;" />' +
+          '<span>💾 Save as reusable template in Dashboard</span>' +
+        '</label>' +
         '<div id="mmAlertBox" style="display: none; padding: 8px 10px; border-radius: 6px; font-size: 12px; margin-bottom: 12px;"></div>' +
         '<div style="display: flex; justify-content: flex-end; gap: 8px;">' +
           '<button type="button" id="mmPopoverCancel" style="background: transparent; border: 1px solid #dadce0; border-radius: 6px; padding: 8px 14px; font-size: 12px; font-weight: 500; cursor: pointer; color: #5f6368;">Cancel</button>' +
@@ -756,6 +760,29 @@
         await root.IDBStore.saveCampaign(campaign);
         await root.IDBStore.addLog(campaign.id, 'INFO', 'Scheduled native mail merge for ' + new Date(scheduledTime).toLocaleString());
 
+        // Check if user checked "Save as reusable template"
+        let templateSaved = false;
+        const saveAsTplCheckbox = overlay.querySelector('#mmSaveAsTemplateCheckbox');
+        if (saveAsTplCheckbox && saveAsTplCheckbox.checked) {
+          try {
+            const bodyEl = composeDialog?.querySelector('div[aria-label="Message Body"], div[role="textbox"], div.Am');
+            const fullBody = bodyEl ? (bodyEl.innerText || bodyEl.textContent || '') : (meta.bodySnippet || '');
+            const newTpl = {
+              id: 'tpl_' + Date.now(),
+              name: (subject || 'Saved Template') + ' (' + new Date().toLocaleDateString([], { month: 'short', day: 'numeric' }) + ')',
+              subject: subject || '',
+              body: fullBody,
+              mergeTags: meta.mergeTags || [],
+              createdAt: new Date().toISOString()
+            };
+            await root.IDBStore.saveTemplate(newTpl);
+            templateSaved = true;
+            console.log('[MailMerge ContentScript] Saved reusable template to Dashboard:', newTpl.name);
+          } catch (tplErr) {
+            console.warn('[MailMerge ContentScript] Error saving template:', tplErr.message);
+          }
+        }
+
         // Register alarm and persist campaign into central background database
         if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
           try {
@@ -779,7 +806,7 @@
         closeSpecificCompose(composeDialog);
 
         // Show toast confirmation
-        showToast('✅ Scheduled for ' + new Date(scheduledTime).toLocaleString() + (meta.recipientCount ? ' (' + meta.recipientCount + ' recipients)' : ''));
+        showToast('✅ Scheduled for ' + new Date(scheduledTime).toLocaleString() + (meta.recipientCount ? ' (' + meta.recipientCount + ' recipients)' : '') + (templateSaved ? ' • 💾 Template saved to Dashboard!' : ''));
       } catch (err) {
         console.error('[MailMerge ContentScript] Failed to schedule:', err);
         if (err && err.message && err.message.includes('Extension context invalidated')) {

@@ -56,6 +56,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const formSheetUrl = document.getElementById('formSheetUrl');
   const extractedSheetIdBadge = document.getElementById('extractedSheetIdBadge');
   const formSheetTitle = document.getElementById('formSheetTitle');
+  const dropdownTemplateSelect = document.getElementById('dropdownTemplateSelect');
   const formSubject = document.getElementById('formSubject');
   const formBodyTemplate = document.getElementById('formBodyTemplate');
   const modeImmediate = document.getElementById('modeImmediate');
@@ -214,11 +215,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnPresetResearch.addEventListener('click', () => applyTemplatePreset('template-research'));
     btnPresetReminder.addEventListener('click', () => applyTemplatePreset('template-deadline'));
 
+    // 1-Click Template Selector Dropdown
+    if (dropdownTemplateSelect) {
+      dropdownTemplateSelect.addEventListener('change', () => {
+        const selectedId = dropdownTemplateSelect.value;
+        if (!selectedId) return;
+        const tpl = allTemplates.find((t) => t.id === selectedId);
+        if (tpl) {
+          if (tpl.subject !== undefined) formSubject.value = tpl.subject;
+          if (tpl.body !== undefined) formBodyTemplate.value = tpl.body;
+          showToast(`⚡ Loaded template: ${tpl.name || 'Template'}`);
+        }
+      });
+    }
+
     // Reset Form
     btnResetForm.addEventListener('click', () => {
       newCampaignForm.reset();
       extractedSheetIdBadge.style.display = 'none';
       formScheduledTime.style.display = 'none';
+      if (dropdownTemplateSelect) dropdownTemplateSelect.value = '';
       modeImmediate.checked = true;
       showToast('Form reset');
     });
@@ -789,8 +805,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     const includeUnsub = formIncludeUnsub.checked;
     const dryRun = formDryRun ? formDryRun.checked : true;
 
-    if (!spreadsheetUrl || !subject || !bodyTemplate) {
-      alert('Please provide a Google Sheet URL, Subject, and Email Body.');
+    if (!spreadsheetUrl) {
+      alert('Please provide a Google Sheet URL.');
+      return;
+    }
+
+    if (!subject && !bodyTemplate) {
+      alert('Please provide at least a Subject or an Email Body.');
       return;
     }
 
@@ -806,8 +827,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       recipientColumn,
       spreadsheetUrl,
       spreadsheetTitle: spreadsheetTitle || extractSheetName(spreadsheetUrl) || 'Google Sheet',
-      subject,
-      bodyTemplate,
+      subject: subject || '(No Subject)',
+      bodyTemplate: bodyTemplate || '',
       includeUnsub,
       dryRun,
       scheduledAt,
@@ -856,6 +877,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       newCampaignForm.reset();
       extractedSheetIdBadge.style.display = 'none';
       formScheduledTime.style.display = 'none';
+      if (dropdownTemplateSelect) dropdownTemplateSelect.value = '';
       modeImmediate.checked = true;
 
       await loadCampaigns();
@@ -900,9 +922,26 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       tabBadgeTemplates.textContent = String(allTemplates.length);
       renderTemplatesGrid();
+      populateTemplateDropdown();
     } catch (err) {
       console.error('[Dashboard] Error loading templates:', err);
       templatesGrid.innerHTML = `<div class="table-empty" style="color: var(--rose); grid-column: 1 / -1;">Error loading templates: ${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  function populateTemplateDropdown() {
+    if (!dropdownTemplateSelect) return;
+    const currentVal = dropdownTemplateSelect.value;
+    dropdownTemplateSelect.innerHTML = '<option value="">-- Choose a Saved Template (Optional) --</option>';
+    allTemplates.forEach((tpl) => {
+      const opt = document.createElement('option');
+      opt.value = tpl.id;
+      const preview = tpl.subject ? ` — "${tpl.subject}"` : (tpl.body ? ' — (Body only)' : '');
+      opt.textContent = `${tpl.name || 'Untitled Template'}${preview}`;
+      dropdownTemplateSelect.appendChild(opt);
+    });
+    if (currentVal && allTemplates.some((t) => t.id === currentVal)) {
+      dropdownTemplateSelect.value = currentVal;
     }
   }
 
@@ -949,6 +988,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       card.querySelector('.btn-use-template').addEventListener('click', () => {
         formSubject.value = tpl.subject || '';
         formBodyTemplate.value = tpl.body || '';
+        if (dropdownTemplateSelect) dropdownTemplateSelect.value = tpl.id;
         showToast(`Template "${tpl.name}" loaded into Queue form`);
         switchTab('tab-queue');
       });
@@ -982,17 +1022,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     const subject = editTemplateSubject.value.trim();
     const body = editTemplateBody.value.trim();
 
-    if (!name || !subject || !body) {
-      alert('Please fill out Name, Subject, and Email Body.');
+    if (!name) {
+      alert('Please provide a Template Name.');
+      return;
+    }
+
+    if (!subject && !body) {
+      alert('Please provide at least a Subject or an Email Body for the template.');
       return;
     }
 
     try {
       const template = {
-        id: id || undefined,
+        id: id || ('tpl_' + Date.now()),
         name,
         subject,
-        body
+        body,
+        updatedAt: new Date().toISOString()
       };
 
       await window.IDBStore.saveTemplate(template);

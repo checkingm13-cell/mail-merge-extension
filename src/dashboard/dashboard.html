@@ -182,6 +182,19 @@
               <input type="text" id="formSheetTitle" class="form-input" placeholder="e.g. IJSR Sept 2026 Authors or leave blank">
             </div>
 
+            <!-- Row 3.5: 1-Click Saved Template Dropdown -->
+            <div class="form-group" style="background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <label class="form-label" for="dropdownTemplateSelect" style="margin-bottom: 0; font-weight: 600; color: #38bdf8;">
+                  ⚡ 1-Click Saved Template
+                </label>
+                <span class="form-help" style="margin: 0;">Auto-fills Subject & Body instantly</span>
+              </div>
+              <select id="dropdownTemplateSelect" class="form-select" style="font-weight: 500;">
+                <option value="">-- Choose a Saved Template (Optional) --</option>
+              </select>
+            </div>
+
             <!-- Row 4: Subject Line -->
             <div class="form-group">
               <label class="form-label" for="formSubject">
@@ -433,12 +446,12 @@
             <input type="text" id="editTemplateName" class="form-input" placeholder="e.g. Academic CFP Invitation" required>
           </div>
           <div class="form-group">
-            <label class="form-label" for="editTemplateSubject">Subject</label>
-            <input type="text" id="editTemplateSubject" class="form-input" placeholder="Subject with {{variables}}" required>
+            <label class="form-label" for="editTemplateSubject">Subject <span style="font-size: 11px; color: var(--text-muted); font-weight: normal;">(Optional if body is filled)</span></label>
+            <input type="text" id="editTemplateSubject" class="form-input" placeholder="Subject with {{variables}}">
           </div>
           <div class="form-group">
-            <label class="form-label" for="editTemplateBody">Email Body</label>
-            <textarea id="editTemplateBody" class="form-textarea font-mono" rows="8" placeholder="Hi {{First Name}},&#10;&#10;..." required></textarea>
+            <label class="form-label" for="editTemplateBody">Email Body <span style="font-size: 11px; color: var(--text-muted); font-weight: normal;">(Optional if subject is filled)</span></label>
+            <textarea id="editTemplateBody" class="form-textarea font-mono" rows="8" placeholder="Hi {{First Name}},&#10;&#10;..."></textarea>
           </div>
         </form>
       </div>
