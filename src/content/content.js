@@ -21,9 +21,11 @@
 
   const MODAL_BTN_CLASS = 'mm-schedule-modal-btn';
   const INLINE_BTN_CLASS = 'mm-schedule-inline';
+  const SAVE_TPL_BTN_CLASS = 'mm-save-tpl-inline';
+  const LOAD_TPL_BTN_CLASS = 'mm-load-tpl-inline';
 
   // =========================================================================
-  // DOM OBSERVERS (Modal & Compose "Continue" Button & Spam Policy Guard)
+  // DOM OBSERVERS (Modal & Compose Buttons & Spam Policy Guard)
   // =========================================================================
 
   // Observer 1: Watch for Gmail's native "Ready to send" modal
@@ -33,9 +35,9 @@
   });
   modalObserver.observe(document.body, { childList: true, subtree: true });
 
-  // Observer 2: Watch for Gmail's native purple "Continue" button in compose dialogs
+  // Observer 2: Watch for Gmail's native compose dialogs and action buttons
   const composeObserver = new MutationObserver(() => {
-    checkAndInjectContinue();
+    checkAndInjectComposeButtons();
     checkAndDismissSpamDisclaimer();
   });
   composeObserver.observe(document.body, { childList: true, subtree: true });
@@ -62,14 +64,14 @@
 
   // Initial immediate checks
   checkAndInjectModal();
-  checkAndInjectContinue();
+  checkAndInjectComposeButtons();
   checkAndDismissSpamDisclaimer();
   checkAndShowMissedOfflineBanners();
 
   // Periodic safety scan (ensures dynamic single-page Gmail view changes never miss buttons or warnings)
   setInterval(() => {
     checkAndInjectModal();
-    checkAndInjectContinue();
+    checkAndInjectComposeButtons();
     checkAndDismissSpamDisclaimer();
     checkAndShowMissedOfflineBanners();
   }, 2000);
@@ -439,18 +441,376 @@
     console.log('[MailMerge ContentScript] Injected "Schedule for later" into "Ready to send" modal.');
   }
 
-  function checkAndInjectContinue() {
+  function createSaveTemplateButton(composeDialog) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = SAVE_TPL_BTN_CLASS + ' T-I J-J5-Ji aoO v7 T-I-atl L3';
+    btn.innerHTML = '<span style="margin-right: 4px;">💾</span> Save Template';
+    btn.title = 'Save this draft as a reusable template with full formatting, colors & hyperlinks';
+    btn.style.cssText = [
+      'display: inline-flex',
+      'align-items: center',
+      'justify-content: center',
+      'height: 36px',
+      'padding: 0 13px',
+      'margin-left: 8px',
+      'background: #ffffff',
+      'color: #0284c7',
+      'border: 1px solid #7dd3fc',
+      'border-radius: 18px',
+      'font-family: Roboto, RobotoDraft, Helvetica, Arial, sans-serif',
+      'font-size: 13px',
+      'font-weight: 600',
+      'cursor: pointer',
+      'user-select: none',
+      'vertical-align: middle',
+      'box-shadow: 0 1px 2px rgba(2, 132, 199, 0.12)',
+      'transition: background 0.15s ease, border-color 0.15s ease',
+      'z-index: 100'
+    ].join('; ');
+
+    btn.addEventListener('mouseenter', () => {
+      btn.style.background = '#f0f9ff';
+      btn.style.borderColor = '#0284c7';
+    });
+    btn.addEventListener('mouseleave', () => {
+      btn.style.background = '#ffffff';
+      btn.style.borderColor = '#7dd3fc';
+    });
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openDirectSaveTemplateModal(composeDialog);
+    });
+    return btn;
+  }
+
+  function createLoadTemplateButton(composeDialog) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = LOAD_TPL_BTN_CLASS + ' T-I J-J5-Ji aoO v7 T-I-atl L3';
+    btn.innerHTML = '<span style="margin-right: 4px;">⚡</span> Templates';
+    btn.title = 'Quick-load a saved template with full formatting & hyperlinks';
+    btn.style.cssText = [
+      'display: inline-flex',
+      'align-items: center',
+      'justify-content: center',
+      'height: 36px',
+      'padding: 0 13px',
+      'margin-left: 8px',
+      'background: #ffffff',
+      'color: #6366f1',
+      'border: 1px solid #a5b4fc',
+      'border-radius: 18px',
+      'font-family: Roboto, RobotoDraft, Helvetica, Arial, sans-serif',
+      'font-size: 13px',
+      'font-weight: 600',
+      'cursor: pointer',
+      'user-select: none',
+      'vertical-align: middle',
+      'box-shadow: 0 1px 2px rgba(99, 102, 241, 0.12)',
+      'transition: background 0.15s ease, border-color 0.15s ease',
+      'z-index: 100'
+    ].join('; ');
+
+    btn.addEventListener('mouseenter', () => {
+      btn.style.background = '#eef2ff';
+      btn.style.borderColor = '#6366f1';
+    });
+    btn.addEventListener('mouseleave', () => {
+      btn.style.background = '#ffffff';
+      btn.style.borderColor = '#a5b4fc';
+    });
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openDirectLoadTemplateMenu(btn, composeDialog);
+    });
+    return btn;
+  }
+
+  function openDirectSaveTemplateModal(composeDialog) {
+    const existing = document.getElementById('mm-direct-save-modal');
+    if (existing) existing.remove();
+
+    const compose = composeDialog || getComposeDialog();
+    if (!compose) return;
+
+    const subject = getSubject(compose) || '';
+    const bodyEl = compose.querySelector('div[aria-label="Message Body"], div[role="textbox"], div.Am');
+    const bodyHtml = bodyEl ? bodyEl.innerHTML : '';
+    const bodyText = bodyEl ? (bodyEl.innerText || bodyEl.textContent || '') : '';
+
+    if (!bodyText.trim() && !subject.trim()) {
+      showToast('⚠️ Write something in the draft subject or body before saving.');
+      return;
+    }
+
+    const defaultName = subject ? subject.slice(0, 40) : ('Template ' + new Date().toLocaleDateString([], { month: 'short', day: 'numeric' }));
+
+    const overlay = document.createElement('div');
+    overlay.id = 'mm-direct-save-modal';
+    overlay.style.cssText = [
+      'position: fixed',
+      'top: 0',
+      'left: 0',
+      'width: 100vw',
+      'height: 100vh',
+      'background: rgba(32, 33, 36, 0.45)',
+      'display: flex',
+      'align-items: center',
+      'justify-content: center',
+      'z-index: 100002',
+      'font-family: Roboto, RobotoDraft, Helvetica, Arial, sans-serif'
+    ].join('; ');
+
+    overlay.innerHTML =
+      '<div style="background: #ffffff; border-radius: 12px; width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); padding: 20px; box-sizing: border-box; position: relative;">' +
+        '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">' +
+          '<h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #202124; display: flex; align-items: center; gap: 8px;">' +
+            '<span style="color: #0284c7;">💾</span> Save as Reusable Template' +
+          '</h3>' +
+          '<span id="mmDirectSaveClose" style="cursor: pointer; font-size: 18px; color: #5f6368; padding: 2px 6px; line-height: 1;">✕</span>' +
+        '</div>' +
+        '<div style="background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 6px; padding: 8px 10px; margin-bottom: 12px; font-size: 12px; color: #0369a1; line-height: 1.4;">' +
+          '✨ <b>100% Rich Formatting:</b> All hyperlinks, text colors, font styles & bold text are saved directly to Dashboard templates.' +
+        '</div>' +
+        '<div style="margin-bottom: 12px;">' +
+          '<label style="display: block; font-size: 11px; font-weight: 600; color: #3c4043; text-transform: uppercase; margin-bottom: 4px;">' +
+            'Template Name' +
+          '</label>' +
+          '<input type="text" id="mmDirectSaveNameInput" value="' + escapeHtml(defaultName) + '" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #dadce0; border-radius: 6px; font-size: 13px; outline: none;" placeholder="e.g. Outreach with Calendar Link" />' +
+        '</div>' +
+        '<div style="margin-bottom: 14px; font-size: 12px; color: #5f6368;">' +
+          '<div><b>Subject:</b> ' + escapeHtml(subject || '(No Subject)') + '</div>' +
+          '<div style="margin-top: 4px; max-height: 48px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">' +
+            '<b>Body preview:</b> ' + escapeHtml(bodyText.slice(0, 90)) + '...' +
+          '</div>' +
+        '</div>' +
+        '<div style="display: flex; justify-content: flex-end; gap: 8px;">' +
+          '<button type="button" id="mmDirectSaveCancel" style="background: transparent; border: 1px solid #dadce0; border-radius: 6px; padding: 8px 14px; font-size: 12px; font-weight: 500; cursor: pointer; color: #5f6368;">Cancel</button>' +
+          '<button type="button" id="mmDirectSaveConfirm" style="background: #0284c7; color: #ffffff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.2);">' +
+            '💾 Save Template' +
+          '</button>' +
+        '</div>' +
+      '</div>';
+
+    document.body.appendChild(overlay);
+
+    const input = overlay.querySelector('#mmDirectSaveNameInput');
+    if (input) {
+      input.focus();
+      input.select();
+    }
+
+    const close = () => overlay.remove();
+    overlay.querySelector('#mmDirectSaveClose').addEventListener('click', close);
+    overlay.querySelector('#mmDirectSaveCancel').addEventListener('click', close);
+
+    overlay.querySelector('#mmDirectSaveConfirm').addEventListener('click', async () => {
+      const name = input.value.trim() || defaultName;
+      const meta = extractDraftMetadata(compose);
+      const newTpl = {
+        id: 'tpl_' + Date.now(),
+        name: name,
+        subject: subject || '',
+        body: bodyText,
+        bodyHtml: bodyHtml,
+        mergeTags: meta.mergeTags || [],
+        createdAt: new Date().toISOString()
+      };
+
+      try {
+        if (root.IDBStore) {
+          await root.IDBStore.saveTemplate(newTpl);
+          close();
+          showToast('💾 Template "' + name + '" saved with all formatting & hyperlinks!');
+        }
+      } catch (err) {
+        alert('Failed to save template: ' + err.message);
+      }
+    });
+  }
+
+  async function openDirectLoadTemplateMenu(anchorBtn, composeDialog) {
+    const existing = document.getElementById('mm-direct-load-menu');
+    if (existing) {
+      existing.remove();
+      return;
+    }
+
+    const compose = composeDialog || getComposeDialog();
+    if (!compose) return;
+
+    let tpls = [];
+    try {
+      if (root.IDBStore) {
+        tpls = await root.IDBStore.getTemplates();
+      }
+    } catch (e) {
+      console.warn('[MailMerge ContentScript] Error fetching templates:', e);
+    }
+
+    const rect = anchorBtn.getBoundingClientRect();
+    const menu = document.createElement('div');
+    menu.id = 'mm-direct-load-menu';
+    menu.style.cssText = [
+      'position: fixed',
+      'left: ' + Math.max(10, rect.left) + 'px',
+      'bottom: ' + (window.innerHeight - rect.top + 8) + 'px',
+      'width: 320px',
+      'background: #ffffff',
+      'border: 1px solid #dadce0',
+      'border-radius: 10px',
+      'box-shadow: 0 8px 24px rgba(0,0,0,0.22)',
+      'z-index: 100002',
+      'padding: 8px 0',
+      'font-family: Roboto, RobotoDraft, Helvetica, Arial, sans-serif',
+      'max-height: 360px',
+      'overflow-y: auto'
+    ].join('; ');
+
+    let listHtml = '';
+    if (!tpls || tpls.length === 0) {
+      listHtml = '<div style="padding: 16px; font-size: 12px; color: #5f6368; text-align: center;">No saved templates yet.<br>Click "<b>💾 Save Template</b>" to create one!</div>';
+    } else {
+      listHtml = tpls.map((t) => {
+        return (
+          '<div class="mm-tpl-item" data-id="' + escapeHtml(t.id) + '" style="padding: 8px 14px; cursor: pointer; border-bottom: 1px solid #f1f3f4; transition: background 0.12s ease;">' +
+            '<div style="font-size: 13px; font-weight: 600; color: #202124; display: flex; align-items: center; justify-content: space-between;">' +
+              '<span>' + escapeHtml(t.name || 'Untitled') + '</span>' +
+              '<span style="font-size: 10px; color: #1a73e8; background: #e8f0fe; padding: 1px 6px; border-radius: 10px; font-weight: 500;">Insert</span>' +
+            '</div>' +
+            (t.subject ? '<div style="font-size: 11px; color: #5f6368; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Subject: ' + escapeHtml(t.subject) + '</div>' : '') +
+          '</div>'
+        );
+      }).join('');
+    }
+
+    menu.innerHTML =
+      '<div style="padding: 6px 14px 8px; border-bottom: 1px solid #dadce0; display: flex; justify-content: space-between; align-items: center;">' +
+        '<span style="font-size: 12px; font-weight: 700; color: #6366f1; text-transform: uppercase;">⚡ Quick Load Template</span>' +
+        '<span id="mmLoadMenuClose" style="cursor: pointer; font-size: 14px; color: #5f6368;">✕</span>' +
+      '</div>' +
+      '<div class="mm-tpl-list-container">' +
+        listHtml +
+      '</div>' +
+      '<div style="padding: 8px 14px 4px; border-top: 1px solid #dadce0; text-align: right;">' +
+        '<button type="button" id="mmLoadMenuManage" style="background: none; border: none; font-size: 11px; color: #9333ea; font-weight: 600; cursor: pointer; text-decoration: underline; padding: 0;">' +
+          '📋 Manage in Dashboard ↗' +
+        '</button>' +
+      '</div>';
+
+    document.body.appendChild(menu);
+
+    // Adjust position if overflowing viewport top
+    const menuRect = menu.getBoundingClientRect();
+    if (menuRect.top < 10) {
+      menu.style.bottom = 'auto';
+      menu.style.top = (rect.bottom + 8) + 'px';
+    }
+
+    menu.querySelector('#mmLoadMenuClose').addEventListener('click', () => menu.remove());
+
+    const manageBtn = menu.querySelector('#mmLoadMenuManage');
+    if (manageBtn) {
+      manageBtn.addEventListener('click', () => {
+        menu.remove();
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({ action: 'OPEN_DASHBOARD', targetTab: 'tab-templates' }).catch(() => {});
+        } else if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) {
+          window.open(chrome.runtime.getURL('src/dashboard/dashboard.html#tab-templates'), '_blank');
+        }
+      });
+    }
+
+    menu.querySelectorAll('.mm-tpl-item').forEach((item) => {
+      item.addEventListener('mouseenter', () => { item.style.background = '#f8f9fa'; });
+      item.addEventListener('mouseleave', () => { item.style.background = '#ffffff'; });
+      item.addEventListener('click', () => {
+        const id = item.getAttribute('data-id');
+        const chosen = tpls.find((t) => t.id === id);
+        if (chosen) {
+          // Apply subject
+          if (chosen.subject !== undefined) {
+            const subInput = compose.querySelector('input[name="subjectbox"], input[name="subject"]');
+            if (subInput) {
+              subInput.value = chosen.subject;
+              subInput.dispatchEvent(new Event('input', { bubbles: true }));
+              subInput.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          }
+          // Apply body with full rich text & links
+          const bodyEl = compose.querySelector('div[aria-label="Message Body"], div[role="textbox"], div.Am');
+          if (bodyEl) {
+            if (chosen.bodyHtml) {
+              bodyEl.innerHTML = chosen.bodyHtml;
+            } else {
+              bodyEl.innerText = chosen.body || '';
+            }
+            bodyEl.dispatchEvent(new Event('input', { bubbles: true }));
+            bodyEl.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          menu.remove();
+          showToast('⚡ Loaded template "' + (chosen.name || 'Template') + '" with hyperlinks & styles!');
+        }
+      });
+    });
+
+    // Close on outside click
+    const outsideClickListener = (e) => {
+      if (!menu.contains(e.target) && e.target !== anchorBtn && !anchorBtn.contains(e.target)) {
+        menu.remove();
+        document.removeEventListener('click', outsideClickListener, true);
+      }
+    };
+    setTimeout(() => {
+      document.addEventListener('click', outsideClickListener, true);
+    }, 50);
+  }
+
+  function checkAndInjectComposeButtons() {
+    // 1. Check native "Continue" buttons (when Mail Merge is active in Gmail)
     const buttons = document.querySelectorAll('button, div[role="button"]');
     for (const btn of buttons) {
       const txt = (btn.textContent || '').trim();
       if (/^Continue$/i.test(txt)) {
         if (!btn.parentElement || btn.parentElement.querySelector('.' + INLINE_BTN_CLASS)) continue;
-        injectScheduleNextToContinue(btn);
+        injectButtonsNextToContinue(btn);
+      }
+    }
+
+    // 2. Check standard compose windows (before or without clicking Mail Merge)
+    const dialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
+    for (const dialog of dialogs) {
+      const bodyEl = dialog.querySelector('div[aria-label="Message Body"], div[role="textbox"], div.Am');
+      if (!bodyEl) continue;
+
+      // If already has our save button, skip
+      if (dialog.querySelector('.' + SAVE_TPL_BTN_CLASS)) continue;
+
+      // Don't inject if Continue button exists (handled by injectButtonsNextToContinue)
+      const hasContinue = Array.from(dialog.querySelectorAll('button, div[role="button"]'))
+        .some(b => /^Continue$/i.test((b.textContent || '').trim()));
+      if (hasContinue) continue;
+
+      // Find the Send button
+      const sendBtn = Array.from(dialog.querySelectorAll('button, div[role="button"]'))
+        .find(b => {
+          const t = (b.getAttribute('data-tooltip') || b.getAttribute('aria-label') || b.textContent || '').trim();
+          return /^Send/i.test(t) || b.classList.contains('aoO');
+        });
+
+      if (sendBtn && sendBtn.parentElement) {
+        injectStandardComposeButtons(sendBtn, dialog);
       }
     }
   }
 
-  function injectScheduleNextToContinue(continueBtn) {
+  function injectButtonsNextToContinue(continueBtn) {
+    const composeDialog = continueBtn.closest('div[role="dialog"]') || getComposeDialog();
+
+    // 1. Schedule button
     const scheduleBtn = document.createElement('button');
     scheduleBtn.type = 'button';
     scheduleBtn.className = INLINE_BTN_CLASS + ' T-I J-J5-Ji aoO v7 T-I-atl L3';
@@ -486,15 +846,30 @@
       scheduleBtn.style.background = '#ffffff';
       scheduleBtn.style.borderColor = '#c084fc';
     });
-
     scheduleBtn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
       openScheduleDialog(continueBtn);
     });
 
+    // 2. Save Template button
+    const saveTplBtn = createSaveTemplateButton(composeDialog);
+
+    // 3. Load Template button
+    const loadTplBtn = createLoadTemplateButton(composeDialog);
+
     continueBtn.parentElement.insertBefore(scheduleBtn, continueBtn.nextSibling);
-    console.log('[MailMerge ContentScript] Injected "Schedule" button next to native "Continue" button.');
+    continueBtn.parentElement.insertBefore(saveTplBtn, scheduleBtn.nextSibling);
+    continueBtn.parentElement.insertBefore(loadTplBtn, saveTplBtn.nextSibling);
+    console.log('[MailMerge ContentScript] Injected "Schedule", "Save Template", and "Templates" buttons next to Continue.');
+  }
+
+  function injectStandardComposeButtons(sendBtn, composeDialog) {
+    const saveTplBtn = createSaveTemplateButton(composeDialog);
+    const loadTplBtn = createLoadTemplateButton(composeDialog);
+    sendBtn.parentElement.insertBefore(saveTplBtn, sendBtn.nextSibling);
+    sendBtn.parentElement.insertBefore(loadTplBtn, saveTplBtn.nextSibling);
+    console.log('[MailMerge ContentScript] Injected "Save Template" and "Templates" buttons in standard compose window.');
   }
 
   // =========================================================================
@@ -694,12 +1069,17 @@
                 subInput.dispatchEvent(new Event('change', { bubbles: true }));
               }
             }
-            // Apply body to compose dialog
-            if (chosen.body !== undefined && composeDialog) {
+            // Apply body to compose dialog with full rich text & links
+            if ((chosen.bodyHtml !== undefined || chosen.body !== undefined) && composeDialog) {
               const bodyEl = composeDialog.querySelector('div[aria-label="Message Body"], div[role="textbox"], div.Am');
               if (bodyEl) {
-                bodyEl.innerText = chosen.body;
+                if (chosen.bodyHtml) {
+                  bodyEl.innerHTML = chosen.bodyHtml;
+                } else {
+                  bodyEl.innerText = chosen.body || '';
+                }
                 bodyEl.dispatchEvent(new Event('input', { bubbles: true }));
+                bodyEl.dispatchEvent(new Event('change', { bubbles: true }));
               }
             }
             // Update preview in popup if present
@@ -707,7 +1087,7 @@
             if (subPreview && chosen.subject) {
               subPreview.textContent = chosen.subject;
             }
-            showToast('⚡ Template "' + (chosen.name || 'Template') + '" loaded into draft!');
+            showToast('⚡ Template "' + (chosen.name || 'Template') + '" loaded with formatting & links!');
           }
         } catch (err) {
           console.error('[MailMerge ContentScript] Error loading template into compose:', err);
@@ -850,18 +1230,20 @@
         if (saveAsTplCheckbox && saveAsTplCheckbox.checked) {
           try {
             const bodyEl = composeDialog?.querySelector('div[aria-label="Message Body"], div[role="textbox"], div.Am');
-            const fullBody = bodyEl ? (bodyEl.innerText || bodyEl.textContent || '') : (meta.bodySnippet || '');
+            const fullBodyHtml = bodyEl ? (bodyEl.innerHTML || '') : '';
+            const fullBodyText = bodyEl ? (bodyEl.innerText || bodyEl.textContent || '') : (meta.bodySnippet || '');
             const newTpl = {
               id: 'tpl_' + Date.now(),
               name: (subject || 'Saved Template') + ' (' + new Date().toLocaleDateString([], { month: 'short', day: 'numeric' }) + ')',
               subject: subject || '',
-              body: fullBody,
+              body: fullBodyText,
+              bodyHtml: fullBodyHtml,
               mergeTags: meta.mergeTags || [],
               createdAt: new Date().toISOString()
             };
             await root.IDBStore.saveTemplate(newTpl);
             templateSaved = true;
-            console.log('[MailMerge ContentScript] Saved reusable template to Dashboard:', newTpl.name);
+            console.log('[MailMerge ContentScript] Saved reusable template with rich formatting to Dashboard:', newTpl.name);
           } catch (tplErr) {
             console.warn('[MailMerge ContentScript] Error saving template:', tplErr.message);
           }

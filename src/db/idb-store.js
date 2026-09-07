@@ -20,7 +20,8 @@
       id: 'template-starter',
       name: 'Welcome & Introduction',
       subject: 'Hello {{First Name}}, quick update on {{Project}}',
-      body: 'Hi {{First Name}},\n\nI wanted to reach out regarding {{Project}}.\n\nBest regards,\n{{Sender Name}}',
+      body: 'Hi {{First Name}},\n\nI wanted to reach out regarding {{Project}}.\n\nYou can check our details on our website (https://workspace.google.com).\n\nBest regards,\n{{Sender Name}}',
+      bodyHtml: '<div style="font-family: Roboto, Arial, sans-serif; font-size: 14px; color: #202124; line-height: 1.6;"><p>Hi <b>{{First Name}}</b>,</p><p>I wanted to reach out regarding <span style="color: #1a73e8; font-weight: 600;">{{Project}}</span>.</p><p>You can check our details on <a href="https://workspace.google.com" target="_blank" style="color: #1a73e8; text-decoration: underline; font-weight: 500;">our website</a>.</p><p>Best regards,<br><b>{{Sender Name}}</b></p></div>',
       createdAt: new Date().toISOString()
     }
   ];

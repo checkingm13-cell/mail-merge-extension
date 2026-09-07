@@ -77,7 +77,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const editTemplateId = document.getElementById('editTemplateId');
   const editTemplateName = document.getElementById('editTemplateName');
   const editTemplateSubject = document.getElementById('editTemplateSubject');
-  const editTemplateBody = document.getElementById('editTemplateBody');
+  const editTemplateBodyHtml = document.getElementById('editTemplateBodyHtml');
   const btnSaveTemplate = document.getElementById('btnSaveTemplate');
 
   // Logs Tab elements
@@ -237,7 +237,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const tpl = allTemplates.find((t) => t.id === selectedId);
         if (tpl) {
           if (tpl.subject !== undefined) formSubject.value = tpl.subject;
-          if (tpl.body !== undefined) formBodyTemplate.value = tpl.body;
+          if (tpl.body !== undefined) {
+            formBodyTemplate.value = tpl.body;
+            formBodyTemplate.dataset.bodyHtml = tpl.bodyHtml || '';
+          }
           showToast(`⚡ Loaded template: ${tpl.name || 'Template'}`);
         }
       });
@@ -261,7 +264,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       editTemplateId.value = '';
       editTemplateName.value = '';
       editTemplateSubject.value = '';
-      editTemplateBody.value = '';
+      if (editTemplateBodyHtml) editTemplateBodyHtml.innerHTML = '';
       modalTemplateTitle.textContent = 'Create Template';
       openModal('modalTemplate');
     });
@@ -843,6 +846,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       spreadsheetTitle: spreadsheetTitle || extractSheetName(spreadsheetUrl) || 'Google Sheet',
       subject: subject || '(No Subject)',
       bodyTemplate: bodyTemplate || '',
+      bodyHtmlTemplate: formBodyTemplate.dataset.bodyHtml || '',
       includeUnsub,
       dryRun,
       scheduledAt,
@@ -976,13 +980,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       const card = document.createElement('div');
       card.className = 'template-card';
 
+      const previewContent = tpl.bodyHtml
+        ? `<div class="template-card-preview-html">${tpl.bodyHtml}</div>`
+        : `<div class="template-card-preview">${escapeHtml(tpl.body || '(No content)')}</div>`;
+
       card.innerHTML = `
         <div>
           <h3 class="template-card-title">${escapeHtml(tpl.name || 'Untitled Template')}</h3>
           <div class="template-card-subject" title="${escapeHtml(tpl.subject || '')}">
             Subject: ${escapeHtml(tpl.subject || 'No Subject')}
           </div>
-          <div class="template-card-preview">${escapeHtml(tpl.body || '')}</div>
+          <div class="template-card-preview-container">
+            ${previewContent}
+          </div>
         </div>
         <div class="template-card-actions">
           <button class="btn btn-primary btn-sm btn-use-template">
@@ -1002,6 +1012,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       card.querySelector('.btn-use-template').addEventListener('click', () => {
         formSubject.value = tpl.subject || '';
         formBodyTemplate.value = tpl.body || '';
+        formBodyTemplate.dataset.bodyHtml = tpl.bodyHtml || '';
         if (dropdownTemplateSelect) dropdownTemplateSelect.value = tpl.id;
         showToast(`Template "${tpl.name}" loaded into Queue form`);
         switchTab('tab-queue');
@@ -1011,7 +1022,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         editTemplateId.value = tpl.id;
         editTemplateName.value = tpl.name || '';
         editTemplateSubject.value = tpl.subject || '';
-        editTemplateBody.value = tpl.body || '';
+        if (editTemplateBodyHtml) {
+          editTemplateBodyHtml.innerHTML = tpl.bodyHtml || (tpl.body ? escapeHtml(tpl.body).replace(/\n/g, '<br>') : '');
+        }
         modalTemplateTitle.textContent = 'Edit Template';
         openModal('modalTemplate');
       });
@@ -1034,14 +1047,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const id = editTemplateId.value;
     const name = editTemplateName.value.trim();
     const subject = editTemplateSubject.value.trim();
-    const body = editTemplateBody.value.trim();
+    const bodyHtml = editTemplateBodyHtml ? editTemplateBodyHtml.innerHTML.trim() : '';
+    const body = editTemplateBodyHtml ? editTemplateBodyHtml.innerText.trim() : '';
 
     if (!name) {
       alert('Please provide a Template Name.');
       return;
     }
 
-    if (!subject && !body) {
+    if (!subject && !body && !bodyHtml) {
       alert('Please provide at least a Subject or an Email Body for the template.');
       return;
     }
@@ -1052,6 +1066,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         name,
         subject,
         body,
+        bodyHtml,
         updatedAt: new Date().toISOString()
       };
 
