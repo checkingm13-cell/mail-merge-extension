@@ -635,19 +635,20 @@ async function handleRuntimeMessage(message, sender) {
     }
 
     case 'OPEN_DASHBOARD': {
-      const dashboardUrl = chrome.runtime.getURL('src/dashboard/dashboard.html');
-      const tabs = await chrome.tabs.query({ url: dashboardUrl });
+      const baseDashboardUrl = chrome.runtime.getURL('src/dashboard/dashboard.html');
+      const targetUrl = message.targetTab ? `${baseDashboardUrl}#${message.targetTab}` : baseDashboardUrl;
+      const tabs = await chrome.tabs.query({ url: `${baseDashboardUrl}*` });
 
       if (tabs && tabs.length > 0) {
-        // Switch to the existing dashboard tab
-        await chrome.tabs.update(tabs[0].id, { active: true });
+        // Switch to existing dashboard tab and update hash if specified
+        await chrome.tabs.update(tabs[0].id, { active: true, url: targetUrl });
         if (tabs[0].windowId) {
           await chrome.windows.update(tabs[0].windowId, { focused: true });
         }
         return { success: true, tabId: tabs[0].id, existing: true };
       } else {
         // Create new tab
-        const newTab = await chrome.tabs.create({ url: dashboardUrl });
+        const newTab = await chrome.tabs.create({ url: targetUrl });
         return { success: true, tabId: newTab.id, existing: false };
       }
     }

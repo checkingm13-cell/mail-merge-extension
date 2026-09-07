@@ -149,6 +149,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     });
 
+    // Direct hash navigation (e.g. #tab-templates)
+    if (window.location.hash) {
+      const initialTab = window.location.hash.replace('#', '');
+      if (document.getElementById(initialTab)) {
+        switchTab(initialTab);
+      }
+    }
+    window.addEventListener('hashchange', () => {
+      const hashTab = window.location.hash.replace('#', '');
+      if (document.getElementById(hashTab)) {
+        switchTab(hashTab);
+      }
+    });
+
     btnJumpToQueue.addEventListener('click', () => switchTab('tab-queue'));
 
     // Header Actions

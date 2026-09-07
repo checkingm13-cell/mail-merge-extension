@@ -577,11 +577,26 @@
         // Detected Draft & Sheet Metadata Preview
         '<div style="background: #f8f9fa; border: 1px solid #dadce0; border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; font-size: 12px;">' +
           '<div style="font-size: 11px; color: #5f6368; text-transform: uppercase; font-weight: 600; margin-bottom: 2px;">Subject</div>' +
-          '<div style="font-size: 13px; color: #202124; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 8px;">' +
+          '<div class="mm-subject-preview" style="font-size: 13px; color: #202124; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 8px;">' +
             escapeHtml(subject || '(No Subject)') +
           '</div>' +
           sheetInfoHtml +
           tagsHtml +
+        '</div>' +
+
+        // Reusable Template Quick-Load Bar
+        '<div style="background: #faf5ff; border: 1px solid #e9d5ff; border-radius: 8px; padding: 10px 12px; margin-bottom: 14px;">' +
+          '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">' +
+            '<label for="mmTemplateSelectDropdown" style="font-size: 11px; font-weight: 700; color: #7e22ce; text-transform: uppercase;">' +
+              '⚡ Load Saved Template' +
+            '</label>' +
+            '<button type="button" id="mmBtnOpenTemplatesDashboard" style="background: transparent; border: none; color: #9333ea; font-size: 11px; font-weight: 600; cursor: pointer; text-decoration: underline; padding: 0;">' +
+              '📋 Manage Templates' +
+            '</button>' +
+          '</div>' +
+          '<select id="mmTemplateSelectDropdown" style="width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #d8b4fe; border-radius: 6px; font-size: 12px; outline: none; background: #ffffff; color: #374151; cursor: pointer;">' +
+            '<option value="">-- Choose Template to Load into Draft --</option>' +
+          '</select>' +
         '</div>' +
 
         '<div style="margin-bottom: 14px;">' +
@@ -640,6 +655,75 @@
         overlay.querySelector('#mmDateTimeInput').value = dt.toISOString().slice(0, 16);
       });
     });
+
+    // Template Dropdown Population & Loading
+    const templateSelect = overlay.querySelector('#mmTemplateSelectDropdown');
+    const btnOpenDash = overlay.querySelector('#mmBtnOpenTemplatesDashboard');
+
+    if (templateSelect && root.IDBStore) {
+      root.IDBStore.getTemplates().then((tpls) => {
+        if (tpls && tpls.length > 0) {
+          tpls.forEach((t) => {
+            const opt = document.createElement('option');
+            opt.value = t.id;
+            opt.textContent = (t.name || 'Untitled Template') + (t.subject ? ' — "' + t.subject + '"' : '');
+            templateSelect.appendChild(opt);
+          });
+        } else {
+          const opt = document.createElement('option');
+          opt.value = '';
+          opt.textContent = '(No saved templates yet)';
+          opt.disabled = true;
+          templateSelect.appendChild(opt);
+        }
+      }).catch((e) => console.warn('[MailMerge ContentScript] Error fetching templates for dialog:', e));
+
+      templateSelect.addEventListener('change', async () => {
+        const tplId = templateSelect.value;
+        if (!tplId) return;
+        try {
+          const tpls = await root.IDBStore.getTemplates();
+          const chosen = tpls.find((t) => t.id === tplId);
+          if (chosen) {
+            // Apply subject to compose dialog
+            if (chosen.subject !== undefined && composeDialog) {
+              const subInput = composeDialog.querySelector('input[name="subjectbox"], input[name="subject"]');
+              if (subInput) {
+                subInput.value = chosen.subject;
+                subInput.dispatchEvent(new Event('input', { bubbles: true }));
+                subInput.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            }
+            // Apply body to compose dialog
+            if (chosen.body !== undefined && composeDialog) {
+              const bodyEl = composeDialog.querySelector('div[aria-label="Message Body"], div[role="textbox"], div.Am');
+              if (bodyEl) {
+                bodyEl.innerText = chosen.body;
+                bodyEl.dispatchEvent(new Event('input', { bubbles: true }));
+              }
+            }
+            // Update preview in popup if present
+            const subPreview = overlay.querySelector('.mm-subject-preview');
+            if (subPreview && chosen.subject) {
+              subPreview.textContent = chosen.subject;
+            }
+            showToast('⚡ Template "' + (chosen.name || 'Template') + '" loaded into draft!');
+          }
+        } catch (err) {
+          console.error('[MailMerge ContentScript] Error loading template into compose:', err);
+        }
+      });
+    }
+
+    if (btnOpenDash) {
+      btnOpenDash.addEventListener('click', () => {
+        if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({ action: 'OPEN_DASHBOARD', targetTab: 'tab-templates' }).catch(() => {});
+        } else if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.getURL) {
+          window.open(chrome.runtime.getURL('src/dashboard/dashboard.html#tab-templates'), '_blank');
+        }
+      });
+    }
 
     const closePopover = () => {
       if (anchorElement && typeof anchorElement.focus === 'function') {
