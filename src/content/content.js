@@ -40,6 +40,26 @@
   });
   composeObserver.observe(document.body, { childList: true, subtree: true });
 
+  // Track active user typing in compose windows to detect when a draft is actively being edited by human
+  let lastUserTypingTime = 0;
+  let lastActiveDraftId = null;
+
+  document.addEventListener('input', (e) => {
+    const compose = e.target?.closest?.('div[role="dialog"], div.M9, div.AD');
+    if (compose) {
+      lastUserTypingTime = Date.now();
+      lastActiveDraftId = getDraftId(compose);
+    }
+  }, true);
+
+  document.addEventListener('keydown', (e) => {
+    const compose = e.target?.closest?.('div[role="dialog"], div.M9, div.AD');
+    if (compose) {
+      lastUserTypingTime = Date.now();
+      lastActiveDraftId = getDraftId(compose);
+    }
+  }, true);
+
   // Initial immediate checks
   checkAndInjectModal();
   checkAndInjectContinue();
@@ -653,16 +673,45 @@
         return;
       }
 
+      // Safety Guard 1: Enforce Non-Empty Subject
+      const currentSubject = (getSubject(composeDialog) || subject || '').trim();
+      if (!currentSubject || currentSubject === '(No Subject)' || currentSubject.startsWith('Mail Merge (')) {
+        alertBox.textContent = '⚠️ Please enter a clear email subject in your draft before scheduling.';
+        alertBox.style.display = 'block';
+        alertBox.style.background = '#fef3c7';
+        alertBox.style.color = '#92400e';
+        return;
+      }
+
+      // Safety Guard 2: Enforce Mail Merge Connection (Google Sheet attached or merge recipients detected)
+      let currentMeta = extractDraftMetadata(composeDialog);
+      if (!currentMeta.sheetId && !currentMeta.sheetTitle && !meta.sheetId && !meta.sheetTitle && !meta.recipientCount) {
+        alertBox.textContent = '⚠️ Please connect a Google Sheet via Mail Merge before scheduling. Regular emails cannot be scheduled.';
+        alertBox.style.display = 'block';
+        alertBox.style.background = '#fef3c7';
+        alertBox.style.color = '#92400e';
+        return;
+      }
+
       confirmBtn.disabled = true;
-      confirmBtn.textContent = 'Verifying draft...';
+      confirmBtn.textContent = 'Verifying draft on server...';
 
       try {
         if (!root.IDBStore) {
           throw new Error('IDBStore is not available');
         }
 
-        // 1. Ensure Draft ID is saved & permanent on Google server
+        // Safety Guard 3: Ensure Draft ID is saved & permanent on Google server
         const verifiedDraftId = await ensureDraftSaved(composeDialog);
+        if (!verifiedDraftId || verifiedDraftId === 'unknown') {
+          alertBox.textContent = '⚠️ Gmail has not finished saving this draft yet. Please wait a moment and try again.';
+          alertBox.style.display = 'block';
+          alertBox.style.background = '#fef3c7';
+          alertBox.style.color = '#92400e';
+          confirmBtn.disabled = false;
+          confirmBtn.textContent = 'Schedule & Save Draft';
+          return;
+        }
 
         confirmBtn.textContent = 'Scheduling...';
 
@@ -988,6 +1037,28 @@
           showMissedOfflineBanner(message.campaign);
         }
         sendResponse({ success: true });
+        return true;
+      }
+
+      if (message.action === 'CHECK_IS_USER_EDITING_DRAFT') {
+        const targetDraftId = message.draftId;
+        const targetSubject = (message.subject || '').trim().toLowerCase();
+        const now = Date.now();
+        const isRecentlyActive = (now - lastUserTypingTime) < 30000; // within 30 seconds
+
+        let isEditingTarget = false;
+        if (isRecentlyActive) {
+          const activeCompose = getComposeDialog();
+          if (activeCompose) {
+            const activeId = getDraftId(activeCompose);
+            const activeSub = (getSubject(activeCompose) || '').trim().toLowerCase();
+            if ((targetDraftId && targetDraftId !== 'unknown' && activeId === targetDraftId) ||
+                (targetSubject && activeSub && (activeSub.includes(targetSubject) || targetSubject.includes(activeSub)))) {
+              isEditingTarget = true;
+            }
+          }
+        }
+        sendResponse({ isEditing: isEditingTarget });
         return true;
       }
     });

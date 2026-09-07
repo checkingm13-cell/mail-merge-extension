@@ -643,6 +643,78 @@
     }
 
     /**
+     * Strictly locates and verifies a Compose dialog belonging to the target campaign.
+     * Evaluates Draft ID, non-empty Subject, and Google Sheet / Mail Merge presence.
+     * Prevents ever touching or sending unrelated or human drafts.
+     * @param {string} draftId
+     * @param {Object} campaign
+     * @param {Element|Document} [doc]
+     * @returns {Element|null}
+     */
+    static findStrictMatchingComposeDialog(draftId, campaign, doc = document) {
+      const dialogs = doc.querySelectorAll('div[role="dialog"], div.M9, div.AD');
+      const expectedSubject = (campaign?.subject || '').trim().toLowerCase();
+      const expectedSheetId = campaign?.sheetId;
+      const expectedSheetTitle = (campaign?.sheetTitle || '').trim().toLowerCase();
+
+      const candidates = [];
+
+      for (const d of dialogs) {
+        if (!isElementVisible(d)) continue;
+
+        const subjectInput = d.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
+        const bodyEl = d.querySelector('[aria-label="Message Body"]');
+        if (!subjectInput && !bodyEl) continue; // Not a compose window
+
+        const actualSubject = (subjectInput?.value || '').trim().toLowerCase();
+        const actualDraftId = d.querySelector('input[name="draft"]')?.value || d.getAttribute('data-compose-id');
+
+        // Check 1: Subject match
+        let subjectMatches = false;
+        if (expectedSubject) {
+          subjectMatches = (actualSubject === expectedSubject) ||
+            (actualSubject.length > 3 && expectedSubject.includes(actualSubject)) ||
+            (expectedSubject.length > 3 && actualSubject.includes(expectedSubject));
+        } else {
+          // If no subject expected, we cannot safely match without exact draftId
+          subjectMatches = !!(draftId && draftId !== 'unknown' && actualDraftId === draftId);
+        }
+
+        // Check 2: Draft ID match
+        const draftIdMatches = (draftId && draftId !== 'unknown' && actualDraftId)
+          ? (actualDraftId === draftId)
+          : true;
+
+        // Check 3: Attached Google Sheet or Mail Merge element
+        const sheetLink = d.querySelector('a[href*="spreadsheets/d/"], [data-url*="spreadsheets/d/"]');
+        const sheetChip = d.querySelector('div[role="button"][aria-label*="sheet" i], span[aria-label*="sheet" i], div.vR, div.afV');
+        const continueBtn = Array.from(d.querySelectorAll('button, div[role="button"]')).some((b) => /^Continue$/i.test((b.textContent || '').trim()));
+
+        let sheetMatches = false;
+        if (sheetLink && expectedSheetId) {
+          sheetMatches = (sheetLink.href || '').includes(expectedSheetId);
+        } else if (sheetChip && expectedSheetTitle) {
+          sheetMatches = (sheetChip.textContent || '').toLowerCase().includes(expectedSheetTitle);
+        } else {
+          sheetMatches = !!(sheetLink || sheetChip || continueBtn);
+        }
+
+        if (subjectMatches && draftIdMatches && (sheetMatches || continueBtn)) {
+          let score = 0;
+          if (actualDraftId && draftId && actualDraftId === draftId) score += 20;
+          if (actualSubject === expectedSubject) score += 10;
+          if (sheetMatches) score += 10;
+          if (continueBtn) score += 5;
+          candidates.push({ dialog: d, score });
+        }
+      }
+
+      if (candidates.length === 0) return null;
+      candidates.sort((a, b) => b.score - a.score);
+      return candidates[0].dialog;
+    }
+
+    /**
      * Opens a new Compose window if none is currently active
      * @returns {Promise<Element>}
      */
@@ -777,21 +849,11 @@
       console.log('[GmailAutomator] 🚀 Executing scheduled native merge for draft: ' + (draftId || 'unknown') + ' (Subject: "' + (subject || '') + '")');
 
       try {
-        await reportProgress('NAVIGATE', 'Opening draft...', 10);
+        await reportProgress('NAVIGATE', 'Opening and verifying targeted draft...', 10);
 
-        // Check if compose dialog is already open on screen
-        let composeDialog = null;
-        const openDialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
-        for (const d of openDialogs) {
-          if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
-            if (!subject || (d.querySelector('input[name="subjectbox"]')?.value || '').includes(subject)) {
-              composeDialog = d;
-              break;
-            }
-          }
-        }
+        // 1. Locate strictly matching compose dialog in this tab
+        let composeDialog = GmailAutomator.findStrictMatchingComposeDialog(draftId, campaign);
 
-        // 1. Navigate directly to draft if not already open
         if (!composeDialog) {
           if (draftId && draftId !== 'unknown') {
             const targetHash = '#drafts?compose=' + draftId;
@@ -806,28 +868,21 @@
           await sleep(3500);
         }
 
-        // 2. Wait for compose window to load
-        await reportProgress('LOAD_DRAFT', 'Waiting for compose window to load...', 30);
+        // 2. Wait for compose window to load with STRICT verification
+        await reportProgress('LOAD_DRAFT', 'Verifying draft & Mail Merge session...', 30);
         if (!composeDialog) {
           try {
             composeDialog = await waitFor(
-              () => {
-                const dialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
-                for (const d of dialogs) {
-                  if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
-                    return d;
-                  }
-                }
-                return null;
-              },
-              { timeout: 12000, errorMsg: 'Compose dialog not loaded via URL' }
+              () => GmailAutomator.findStrictMatchingComposeDialog(draftId, campaign),
+              { timeout: 15000, errorMsg: 'Target mail merge draft not loaded via URL' }
             );
           } catch (_) {
-            // Search draft row in list by subject
+            // Search draft row in list strictly by expected subject
             if (subject) {
               const draftRows = document.querySelectorAll('tr[role="row"], div[role="row"]');
               for (const row of draftRows) {
-                if (row.textContent.includes(subject)) {
+                const rowText = (row.textContent || '').trim().toLowerCase();
+                if (rowText.includes(subject.toLowerCase())) {
                   await humanClick(row);
                   break;
                 }
@@ -835,18 +890,31 @@
             }
 
             composeDialog = await waitFor(
-              () => {
-                const dialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
-                for (const d of dialogs) {
-                  if (d.querySelector('input[name="subjectbox"]') || d.querySelector('[aria-label="Message Body"]')) {
-                    return d;
-                  }
-                }
-                return null;
-              },
-              { timeout: 15000, errorMsg: 'Draft no longer exists or was deleted in Gmail' }
+              () => GmailAutomator.findStrictMatchingComposeDialog(draftId, campaign),
+              { timeout: 15000, errorMsg: 'Target draft not found or did not match mail merge verification' }
             );
           }
+        }
+
+        // HARD SAFETY ENFORCEMENT: Never send an unverified draft!
+        if (!composeDialog) {
+          throw new Error(`SAFETY ABORT: Cannot verify scheduled draft for "${subject || 'Campaign'}". Automation cancelled to prevent sending unintended drafts.`);
+        }
+
+        // Verify Subject
+        const verifySubject = (composeDialog.querySelector('input[name="subjectbox"]')?.value || '').trim();
+        if (subject && verifySubject && !verifySubject.toLowerCase().includes(subject.toLowerCase())) {
+          throw new Error(`SAFETY ABORT: Compose window subject "${verifySubject}" does not match expected campaign subject "${subject}". Execution stopped.`);
+        }
+
+        // Verify Mail Merge session
+        const continueBtnCheck = Array.from(composeDialog.querySelectorAll('button, div[role="button"]'))
+          .some((b) => /^Continue$/i.test((b.textContent || '').trim()));
+        const readyModalCheck = Array.from(document.querySelectorAll('div[role="dialog"]'))
+          .some((d) => (d.textContent || '').includes('Ready to send'));
+
+        if (!continueBtnCheck && !readyModalCheck) {
+          throw new Error(`SAFETY ABORT: Target draft "${verifySubject || subject}" is a standard email, not an active Mail Merge draft (no "Continue" button). Execution cancelled to protect regular drafts.`);
         }
 
         await sleep(2000);

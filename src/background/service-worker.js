@@ -214,7 +214,42 @@ async function executeCampaign(campaign) {
   let createdBackgroundTabId = null;
 
   try {
-    // 1. Update status to PROCESSING immediately
+    // 1. Check if user is actively editing this exact draft in any open Gmail tab
+    try {
+      const openTabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
+      for (const tab of openTabs) {
+        const status = await chrome.tabs.sendMessage(tab.id, {
+          action: 'CHECK_IS_USER_EDITING_DRAFT',
+          draftId: campaign.draftId,
+          subject: campaign.subject
+        }).catch(() => null);
+
+        if (status && status.isEditing) {
+          console.log(`[ServiceWorker] ⏸️ User is actively typing in draft for campaign ${campaign.id}. Postponing by 5 minutes.`);
+          const postponedTime = Date.now() + 5 * 60 * 1000;
+          await self.IDBStore.updateCampaign(campaign.id, {
+            status: 'QUEUED',
+            scheduledAt: new Date(postponedTime).toISOString()
+          });
+          await self.IDBStore.addLog(
+            campaign.id,
+            'INFO',
+            `Campaign postponed by 5 minutes because user was actively editing this draft in Gmail.`
+          );
+          chrome.alarms.create(`CAMPAIGN_${campaign.id}`, { when: postponedTime });
+          notifyDesktop(
+            '⏳ Mail Merge Postponed',
+            `"${campaign.subject || 'Campaign'}" was postponed by 5 minutes because you are actively editing it.`
+          );
+          await refreshBadge();
+          return;
+        }
+      }
+    } catch (activeErr) {
+      console.warn('[ServiceWorker] Note on checking active draft editing:', activeErr.message);
+    }
+
+    // 2. Update status to PROCESSING immediately
     await self.IDBStore.updateCampaign(campaign.id, {
       status: 'PROCESSING',
       startedAt: new Date().toISOString()
@@ -226,26 +261,25 @@ async function executeCampaign(campaign) {
       `Scheduler initiated campaign "${campaign.name || campaign.subject || campaign.id}".`
     );
 
-    // 2. Find an existing Gmail tab matching the account
-    let gmailTab = await findGmailTab(campaign);
+    // 3. ALWAYS launch a dedicated, isolated background tab for execution
+    // Never hijack or disturb existing foreground Gmail tabs where user may be reading/writing emails
+    const baseUrl = campaign.accountUrl || (campaign.userIndex !== undefined ? `https://mail.google.com/mail/u/${campaign.userIndex}/` : 'https://mail.google.com/mail/u/0/');
+    const cleanBaseUrl = baseUrl.replace(/\/$/, '');
+    const targetUrl = (campaign.draftId && campaign.draftId !== 'unknown')
+      ? `${cleanBaseUrl}/#drafts?compose=${campaign.draftId}`
+      : `${cleanBaseUrl}/#drafts`;
 
-    // 3. If no Gmail tab exists, open one in background for the specific account
-    if (!gmailTab) {
-      const targetUrl = (campaign && campaign.accountUrl)
-        ? campaign.accountUrl
-        : ((campaign && campaign.userIndex !== undefined) ? `https://mail.google.com/mail/u/${campaign.userIndex}/` : 'https://mail.google.com/');
-      console.log(`[ServiceWorker] No Gmail tab found for account. Creating background tab for ${targetUrl}...`);
-      gmailTab = await chrome.tabs.create({
-        url: targetUrl,
-        active: false
-      });
-      createdBackgroundTabId = gmailTab.id;
+    console.log(`[ServiceWorker] 🛡️ Opening dedicated isolated background tab for campaign ${campaign.id}: ${targetUrl}`);
+    const gmailTab = await chrome.tabs.create({
+      url: targetUrl,
+      active: false // completely in background
+    });
+    createdBackgroundTabId = gmailTab.id;
 
-      await waitForTabComplete(gmailTab.id);
-      await delay(2500);
-    }
+    await waitForTabComplete(gmailTab.id, 25000);
+    await delay(3000);
 
-    // 4. Send message to content script and await execution result
+    // 4. Send message to content script in isolated tab and await execution result
     const sent = await sendMessageWithRetry(gmailTab.id, {
       action: 'EXECUTE_CAMPAIGN',
       campaign
@@ -260,14 +294,14 @@ async function executeCampaign(campaign) {
         `"${campaign.subject || 'Campaign'}" sent${effectiveCount ? ' to ' + effectiveCount + ' recipients' : ''}.`
       );
 
-      // Clean Auto-Close: If we opened this background tab, close it after completion
+      // Clean Auto-Close: Always close the dedicated background tab after completion
       if (createdBackgroundTabId) {
         setTimeout(() => {
           chrome.tabs.remove(createdBackgroundTabId).catch(() => {});
         }, 4000);
       }
     } else {
-      throw new Error(`Failed to deliver EXECUTE_CAMPAIGN message to Gmail tab ${gmailTab.id}`);
+      throw new Error(`Failed to deliver EXECUTE_CAMPAIGN message to isolated Gmail tab ${gmailTab.id}`);
     }
   } catch (err) {
     console.error(`[ServiceWorker] Failed to execute campaign ${campaign.id}:`, err);
