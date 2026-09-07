@@ -23,30 +23,81 @@
   const INLINE_BTN_CLASS = 'mm-schedule-inline';
 
   // =========================================================================
-  // DOM OBSERVERS (Modal & Compose "Continue" Button)
+  // DOM OBSERVERS (Modal & Compose "Continue" Button & Spam Policy Guard)
   // =========================================================================
 
   // Observer 1: Watch for Gmail's native "Ready to send" modal
   const modalObserver = new MutationObserver(() => {
     checkAndInjectModal();
+    checkAndDismissSpamDisclaimer();
   });
   modalObserver.observe(document.body, { childList: true, subtree: true });
 
   // Observer 2: Watch for Gmail's native purple "Continue" button in compose dialogs
   const composeObserver = new MutationObserver(() => {
     checkAndInjectContinue();
+    checkAndDismissSpamDisclaimer();
   });
   composeObserver.observe(document.body, { childList: true, subtree: true });
 
   // Initial immediate checks
   checkAndInjectModal();
   checkAndInjectContinue();
+  checkAndDismissSpamDisclaimer();
 
-  // Periodic safety scan (ensures dynamic single-page Gmail view changes never miss buttons)
+  // Periodic safety scan (ensures dynamic single-page Gmail view changes never miss buttons or warnings)
   setInterval(() => {
     checkAndInjectModal();
     checkAndInjectContinue();
+    checkAndDismissSpamDisclaimer();
   }, 1000);
+
+  /**
+   * Auto-detects and dismisses Google's bulk sender / spam policy warning dialog if it appears.
+   * Checks "Don't show this again" and clicks "Got it" or "Continue".
+   */
+  function checkAndDismissSpamDisclaimer() {
+    try {
+      const dialogs = document.querySelectorAll('div[role="dialog"]');
+      for (const dialog of dialogs) {
+        const text = (dialog.textContent || '').toLowerCase();
+        const isSpamNotice = (
+          text.includes('spam') || 
+          text.includes('junk') || 
+          text.includes('bulk email') || 
+          text.includes('bulk sender') || 
+          text.includes('best practices')
+        ) && (
+          text.includes("don't show") || 
+          text.includes("dont show") || 
+          text.includes("do not show") ||
+          text.includes("got it") ||
+          text.includes("learn more")
+        );
+
+        if (isSpamNotice) {
+          console.log('[MailMerge ContentScript] 🛡️ Auto-handling Google bulk sender / spam disclaimer...');
+          const checkbox = dialog.querySelector('input[type="checkbox"], div[role="checkbox"]');
+          if (checkbox) {
+            const isChecked = checkbox.checked || checkbox.getAttribute('aria-checked') === 'true';
+            if (!isChecked) {
+              checkbox.click();
+            }
+          }
+          const buttons = Array.from(dialog.querySelectorAll('button, div[role="button"]'));
+          const confirmBtn = buttons.find((b) => {
+            const btnText = (b.textContent || '').trim().toLowerCase();
+            return /^(got it|continue|ok|i understand|proceed|acknowledge|agree)$/i.test(btnText);
+          }) || buttons.find((b) => /got it|continue|ok/i.test((b.textContent || '').trim()));
+
+          if (confirmBtn) {
+            confirmBtn.click();
+            console.log('[MailMerge ContentScript] ✅ Google spam disclaimer auto-dismissed with "Don\'t show again".');
+          }
+        }
+      }
+    } catch (_) {}
+  }
 
   // Synchronize any campaigns created in Gmail's local origin up to the central extension store
   async function syncCampaignsToBackground() {
@@ -214,7 +265,22 @@
     // Scoped strictly to the specific compose window where schedule was clicked
     const composeDialog = anchorElement?.closest('div[role="dialog"]') || getComposeDialog();
     const subject = getSubject(composeDialog);
-    const meta = extractDraftMetadata(composeDialog);
+    let meta = extractDraftMetadata(composeDialog);
+
+    // If scheduled directly from the "Ready to send" modal, merge metadata from underlying compose dialog
+    if (!meta.sheetTitle || !meta.sheetUrl) {
+      const activeCompose = getComposeDialog();
+      if (activeCompose && activeCompose !== composeDialog) {
+        const composeMeta = extractDraftMetadata(activeCompose);
+        meta.sheetId = meta.sheetId || composeMeta.sheetId;
+        meta.sheetUrl = meta.sheetUrl || composeMeta.sheetUrl;
+        meta.sheetTitle = meta.sheetTitle || composeMeta.sheetTitle;
+        if (!meta.recipientCount && composeMeta.recipientCount) {
+          meta.recipientCount = composeMeta.recipientCount;
+          meta.recipientsSummary = composeMeta.recipientsSummary;
+        }
+      }
+    }
 
     // Compute default time: Real-time current local time
     const now = new Date();
@@ -549,8 +615,13 @@
     const recipientChips = Array.from(composeDialog.querySelectorAll('span[email], div[email], div[data-hovercard-id]'));
     let recipientCount = recipientChips.length;
     const emails = recipientChips.map(c => c.getAttribute('email') || c.getAttribute('data-hovercard-id') || c.textContent.trim()).filter(Boolean);
-    const countMatch = (composeDialog.textContent || '').match(/(\d+)\s+recipients?\b/i);
-    if (countMatch) recipientCount = parseInt(countMatch[1], 10);
+    const textContent = composeDialog.textContent || '';
+    const countMatch = textContent.match(/(?:send|about to send)?\s*(\d+)\s*(?:separate|personalized)?\s*(?:emails?|recipients?)\b/i)
+      || textContent.match(/(\d+)\s*(?:separate|personalized)?\s*emails?\b/i)
+      || textContent.match(/(\d+)\s+recipients?\b/i);
+    if (countMatch && parseInt(countMatch[1], 10) > 0) {
+      recipientCount = parseInt(countMatch[1], 10);
+    }
     const recipientsSummary = emails.slice(0, 3).join(', ') + (emails.length > 3 ? ` +${emails.length - 3} more` : (emails.length > 0 ? '' : (recipientCount ? `${recipientCount} recipients` : '')));
 
     // 3. Body Snippet & Merge Tags

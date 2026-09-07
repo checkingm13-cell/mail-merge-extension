@@ -538,8 +538,9 @@ document.addEventListener('DOMContentLoaded', async () => {
           <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(camp.subject || '')}">
             ${escapeHtml(camp.subject || 'Untitled Subject')}
           </div>
-          <div style="font-size: 10px; color: var(--text-muted); margin-top: 2px;">
-            Sender: ${escapeHtml(camp.accountEmail || camp.senderEmail || ('Gmail ' + (camp.userIndex && camp.userIndex !== '0' ? 'Account #' + camp.userIndex : 'Primary')))}
+          <div style="font-size: 10px; color: var(--text-muted); margin-top: 2px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+            <span>Sender: ${escapeHtml(camp.accountEmail || camp.senderEmail || ('Gmail ' + (camp.userIndex && camp.userIndex !== '0' ? 'Account #' + camp.userIndex : 'Primary')))}</span>
+            ${(camp.sentCount || camp.recipientCount) ? `<span style="background: rgba(56, 189, 248, 0.15); color: var(--sky); border: 1px solid rgba(56, 189, 248, 0.3); padding: 0 5px; border-radius: 10px; font-weight: 500; font-size: 9px;">👥 ${camp.sentCount || camp.recipientCount} ${camp.status === 'COMPLETED' ? 'sent' : 'recipients'}</span>` : ''}
           </div>
         </td>
         <td style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
@@ -704,12 +705,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             </span>
           </div>
           <div>
-            <span style="color: var(--text-muted);">Recipient Column:</span>
-            <strong style="margin-left: 6px;">${escapeHtml(camp.recipientColumn || 'Email')}</strong>
+            <span style="color: var(--text-muted);">Audience / Sent:</span>
+            <strong style="margin-left: 6px; color: var(--sky);">👥 ${camp.sentCount || camp.recipientCount || '--'} emails</strong>
           </div>
           <div>
             <span style="color: var(--text-muted);">Scheduled:</span>
             <span style="margin-left: 6px;">${escapeHtml(camp.scheduledAt || 'Immediate')}</span>
+          </div>
+          <div>
+            <span style="color: var(--text-muted);">Recipient Column:</span>
+            <strong style="margin-left: 6px;">${escapeHtml(camp.recipientColumn || 'Email')}</strong>
           </div>
           <div>
             <span style="color: var(--text-muted);">Created:</span>

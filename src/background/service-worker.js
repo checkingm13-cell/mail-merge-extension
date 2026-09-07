@@ -200,10 +200,11 @@ async function executeCampaign(campaign) {
 
     if (sent) {
       console.log(`[ServiceWorker] Dispatched campaign ${campaign.id} to tab ${gmailTab.id}`);
+      const effectiveCount = (typeof sent === 'object' && sent?.sentCount) || campaign.recipientCount;
       // Show desktop notification on successful dispatch/completion
       notifyDesktop(
         '✅ Mail Merge Completed',
-        `"${campaign.subject || 'Campaign'}" sent${campaign.recipientCount ? ' to ' + campaign.recipientCount + ' recipients' : ''}.`
+        `"${campaign.subject || 'Campaign'}" sent${effectiveCount ? ' to ' + effectiveCount + ' recipients' : ''}.`
       );
     } else {
       throw new Error(`Failed to deliver EXECUTE_CAMPAIGN message to Gmail tab ${gmailTab.id}`);
@@ -510,6 +511,7 @@ async function handleRuntimeMessage(message, sender) {
         await self.IDBStore.updateCampaign(message.campaignId, {
           status: message.status,
           sentCount: message.sentCount !== undefined ? message.sentCount : undefined,
+          recipientCount: message.recipientCount !== undefined ? message.recipientCount : undefined,
           failedCount: message.failedCount !== undefined ? message.failedCount : undefined,
           completedAt: (message.status === 'COMPLETED' || message.status === 'COMPLETED (DRY RUN)') ? new Date().toISOString() : undefined
         });

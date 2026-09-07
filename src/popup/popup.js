@@ -249,8 +249,9 @@ document.addEventListener('DOMContentLoaded', async () => {
            </a>`
         : '';
 
-      const audienceBadge = camp.recipientCount
-        ? `<span class="meta-badge badge-audience">👥 ${camp.recipientCount}</span>`
+      const count = camp.sentCount || camp.recipientCount;
+      const audienceBadge = count
+        ? `<span class="meta-badge badge-audience">👥 ${count} ${camp.status === 'COMPLETED' ? 'sent' : 'recipients'}</span>`
         : (camp.recipientsSummary ? `<span class="meta-badge badge-audience">👥 ${escapeHtml(camp.recipientsSummary)}</span>` : '');
 
       const tagsBadge = (camp.mergeTags && camp.mergeTags.length > 0)

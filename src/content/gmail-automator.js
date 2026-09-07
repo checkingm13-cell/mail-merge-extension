@@ -228,6 +228,376 @@
     return null;
   }
 
+  function escapeHtml(text) {
+    if (!text) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  /**
+   * Automatically detects and dismisses Google's bulk sender / spam policy warning modal.
+   * Auto-checks "Don't show again" and clicks "Got it" or "Continue".
+   * @param {Document|Element} root
+   * @returns {Promise<boolean>} True if disclaimer was found and dismissed
+   */
+  async function dismissGoogleSpamDisclaimerIfNeeded(root = document) {
+    try {
+      const dialogs = root.querySelectorAll('div[role="dialog"]');
+      for (const dialog of dialogs) {
+        if (!isElementVisible(dialog)) continue;
+        const text = (dialog.textContent || '').toLowerCase();
+
+        // Check for spam / junk / bulk email disclaimer patterns
+        const isSpamNotice = (
+          text.includes('spam') ||
+          text.includes('junk') ||
+          text.includes('bulk email') ||
+          text.includes('bulk sender') ||
+          text.includes('best practices')
+        ) && (
+          text.includes("don't show") ||
+          text.includes("dont show") ||
+          text.includes("do not show") ||
+          text.includes("got it") ||
+          text.includes("learn more")
+        );
+
+        if (isSpamNotice) {
+          console.log('[GmailAutomator] 🛡️ Detected Google spam/junk policy disclaimer. Auto-handling...');
+
+          // 1. Locate and check the "Don't show this again" checkbox
+          const checkbox = dialog.querySelector('input[type="checkbox"], div[role="checkbox"]');
+          if (checkbox) {
+            const isChecked = checkbox.checked || checkbox.getAttribute('aria-checked') === 'true';
+            if (!isChecked) {
+              await humanClick(checkbox);
+              await sleep(150);
+            }
+          }
+
+          // 2. Locate and click the confirmation button ("Got it", "Continue", "OK", "Acknowledge")
+          const buttons = Array.from(dialog.querySelectorAll('button, div[role="button"]'));
+          const confirmBtn = buttons.find((b) => {
+            const btnText = (b.textContent || '').trim().toLowerCase();
+            return /^(got it|continue|ok|i understand|proceed|acknowledge|agree)$/i.test(btnText);
+          }) || buttons.find((b) => /got it|continue|ok/i.test((b.textContent || '').trim()));
+
+          if (confirmBtn) {
+            await humanClick(confirmBtn);
+            await sleep(500);
+            console.log('[GmailAutomator] ✅ Google spam/junk disclaimer automatically dismissed with "Don\'t show again".');
+            return true;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[GmailAutomator] Error handling spam disclaimer note:', err);
+    }
+    return false;
+  }
+
+  /**
+   * Executes a robust click with element readiness check, visual pulse, and state verification with retries
+   * @param {Function} elementGetter - () => Element|null
+   * @param {Function} stateValidator - () => boolean|Element|Promise<boolean|Element>
+   * @param {Object} options
+   * @returns {Promise<any>}
+   */
+  async function robustClick(elementGetter, stateValidator, {
+    maxRetries = 3,
+    retryDelay = 1500,
+    actionName = 'Click',
+    timeoutPerAttempt = 3500
+  } = {}) {
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      console.log(`[GmailAutomator] 🎯 ${actionName}: Attempt ${attempt}/${maxRetries}...`);
+
+      try {
+        // 1. Wait for element to be present, visible, and enabled
+        const el = await waitFor(
+          () => {
+            const target = elementGetter();
+            if (!target || !isElementVisible(target)) return null;
+            const isDisabled = target.disabled === true
+              || target.getAttribute('aria-disabled') === 'true'
+              || (target.classList && target.classList.contains('disabled'));
+            if (isDisabled) return null;
+            return target;
+          },
+          { timeout: 7000, errorMsg: `${actionName}: Element not found or disabled` }
+        );
+
+        // 2. Visual highlight effect
+        const originalOutline = el.style.outline;
+        const originalBoxShadow = el.style.boxShadow;
+        el.style.outline = '2px solid #a855f7';
+        el.style.boxShadow = '0 0 12px rgba(168, 85, 247, 0.7)';
+
+        // 3. Human click execution
+        await humanClick(el);
+
+        // Clean up visual highlight
+        setTimeout(() => {
+          try {
+            el.style.outline = originalOutline;
+            el.style.boxShadow = originalBoxShadow;
+          } catch (_) {}
+        }, 600);
+
+        // 4. Validate target state
+        const startTime = Date.now();
+        while (Date.now() - startTime < timeoutPerAttempt) {
+          try {
+            const stateResult = await stateValidator();
+            if (stateResult) {
+              console.log(`[GmailAutomator] ✅ ${actionName}: Target state verified on attempt ${attempt}.`);
+              return stateResult;
+            }
+          } catch (_) {}
+          await sleep(250);
+        }
+
+        console.warn(`[GmailAutomator] ⚠️ ${actionName}: Target state not confirmed within ${timeoutPerAttempt}ms on attempt ${attempt}.`);
+      } catch (err) {
+        lastError = err;
+        console.warn(`[GmailAutomator] ⚠️ ${actionName}: Attempt ${attempt} failed: ${err.message}`);
+      }
+
+      if (attempt < maxRetries) {
+        await sleep(retryDelay);
+      }
+    }
+
+    throw new Error(`${actionName} failed after ${maxRetries} attempts. ${lastError ? lastError.message : 'Target state not reached.'}`);
+  }
+
+  // =========================================================================
+  // EXECUTION HUD (In-Tab Live Floating Status Indicator)
+  // =========================================================================
+
+  const ExecutionHUD = {
+    CARD_ID: 'mm-execution-hud',
+    steps: [
+      { id: 'NAVIGATE', label: 'Opening Draft URL', icon: '🗂️' },
+      { id: 'LOAD_DRAFT', label: 'Loading Compose Window', icon: '✍️' },
+      { id: 'CLICK_CONTINUE', label: 'Clicking "Continue"', icon: '🔘' },
+      { id: 'WAIT_MODAL', label: 'Verifying "Ready to send" modal', icon: '🔍' },
+      { id: 'SEND_ALL', label: 'Clicking "Send all"', icon: '🚀' },
+      { id: 'COMPLETED', label: 'Campaign Sent Successfully', icon: '✅' }
+    ],
+
+    show(campaign) {
+      this.remove();
+      const card = document.createElement('div');
+      card.id = this.CARD_ID;
+      card.style.cssText = [
+        'position: fixed',
+        'bottom: 24px',
+        'right: 24px',
+        'width: 360px',
+        'background: #1e1e24',
+        'color: #ffffff',
+        'border-radius: 12px',
+        'box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0,0,0,0.2)',
+        'border: 1px solid #333644',
+        'z-index: 2147483647',
+        'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+        'padding: 16px',
+        'box-sizing: border-box',
+        'overflow: hidden',
+        'transition: opacity 0.3s ease, transform 0.3s ease'
+      ].join('; ');
+
+      const subject = campaign?.subject || 'Scheduled Campaign';
+      const audience = campaign?.recipientCount ? `👥 ${campaign.recipientCount} recipients` : '👥 Mail Merge';
+
+      card.innerHTML = `
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <div id="mmHudSpinner" style="width: 14px; height: 14px; border: 2px solid rgba(168, 85, 247, 0.3); border-top-color: #a855f7; border-radius: 50%; animation: mmSpin 0.8s linear infinite;"></div>
+            <span style="font-weight: 700; font-size: 13px; letter-spacing: 0.3px; color: #f3f4f6;">DISPATCHING CAMPAIGN</span>
+          </div>
+          <span style="font-size: 11px; background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); padding: 2px 8px; border-radius: 10px; font-weight: 600;">
+            ${audience}
+          </span>
+        </div>
+        <div style="font-size: 13px; font-weight: 600; color: #ffffff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 12px;" title="${escapeHtml(subject)}">
+          ${escapeHtml(subject)}
+        </div>
+        <!-- Progress Bar -->
+        <div style="background: #2d313f; border-radius: 6px; height: 6px; overflow: hidden; margin-bottom: 14px; position: relative;">
+          <div id="mmHudProgressFill" style="background: linear-gradient(90deg, #9333ea, #3b82f6); width: 10%; height: 100%; transition: width 0.4s ease; border-radius: 6px;"></div>
+        </div>
+        <!-- Steps Checklist -->
+        <div id="mmHudSteps" style="display: flex; flex-direction: column; gap: 7px; font-size: 12px;">
+          ${this.steps.map((s, idx) => `
+            <div id="mmStep_${s.id}" style="display: flex; align-items: center; justify-content: space-between; color: ${idx === 0 ? '#ffffff' : '#9ca3af'}; transition: color 0.2s ease;">
+              <span style="display: flex; align-items: center; gap: 8px;">
+                <span id="mmStepIcon_${s.id}" style="font-size: 13px;">${idx === 0 ? '⏳' : '⚪'}</span>
+                <span>${s.label}</span>
+              </span>
+              <span id="mmStepStatus_${s.id}" style="font-size: 11px; font-weight: 500; color: ${idx === 0 ? '#c084fc' : '#6b7280'};">${idx === 0 ? 'In progress...' : 'Pending'}</span>
+            </div>
+          `).join('')}
+        </div>
+        <!-- Error Container -->
+        <div id="mmHudErrorBox" style="display: none; margin-top: 12px; padding: 10px; border-radius: 6px; background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; color: #fca5a5; font-size: 11px;">
+          <div style="font-weight: 700; margin-bottom: 2px;">⚠️ Execution Error</div>
+          <div id="mmHudErrorText" style="word-break: break-word;"></div>
+          <button id="mmHudDismissBtn" type="button" style="margin-top: 8px; background: #ef4444; color: #ffffff; border: none; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; font-weight: 600;">Dismiss</button>
+        </div>
+      `;
+
+      if (!document.getElementById('mm-hud-styles')) {
+        const style = document.createElement('style');
+        style.id = 'mm-hud-styles';
+        style.textContent = `
+          @keyframes mmSpin { to { transform: rotate(360deg); } }
+        `;
+        document.head.appendChild(style);
+      }
+
+      document.body.appendChild(card);
+    },
+
+    update(stepId, message, pct) {
+      const card = document.getElementById(this.CARD_ID);
+      if (!card) return;
+
+      const fill = card.querySelector('#mmHudProgressFill');
+      if (fill && pct !== undefined) {
+        fill.style.width = pct + '%';
+      }
+
+      let reached = false;
+      for (const s of this.steps) {
+        const row = card.querySelector('#mmStep_' + s.id);
+        const icon = card.querySelector('#mmStepIcon_' + s.id);
+        const status = card.querySelector('#mmStepStatus_' + s.id);
+        if (!row) continue;
+
+        if (s.id === stepId) {
+          reached = true;
+          row.style.color = '#ffffff';
+          row.style.fontWeight = '600';
+          if (icon) icon.textContent = '⏳';
+          if (status) {
+            status.textContent = message || 'Active';
+            status.style.color = '#c084fc';
+          }
+        } else if (!reached) {
+          row.style.color = '#9ca3af';
+          row.style.fontWeight = 'normal';
+          if (icon) icon.textContent = '✅';
+          if (status) {
+            status.textContent = 'Done';
+            status.style.color = '#10b981';
+          }
+        } else {
+          row.style.color = '#6b7280';
+          row.style.fontWeight = 'normal';
+          if (icon) icon.textContent = '⚪';
+          if (status) {
+            status.textContent = 'Pending';
+            status.style.color = '#4b5563';
+          }
+        }
+      }
+    },
+
+    complete(finalCount) {
+      const card = document.getElementById(this.CARD_ID);
+      if (!card) return;
+
+      const fill = card.querySelector('#mmHudProgressFill');
+      if (fill) {
+        fill.style.width = '100%';
+        fill.style.background = '#10b981';
+      }
+
+      const spinner = card.querySelector('#mmHudSpinner');
+      if (spinner) {
+        spinner.style.border = 'none';
+        spinner.style.animation = 'none';
+        spinner.innerHTML = '✅';
+      }
+
+      for (const s of this.steps) {
+        const icon = card.querySelector('#mmStepIcon_' + s.id);
+        const status = card.querySelector('#mmStepStatus_' + s.id);
+        if (icon) icon.textContent = '✅';
+        if (status) {
+          status.textContent = 'Done';
+          status.style.color = '#10b981';
+        }
+      }
+
+      const compRow = card.querySelector('#mmStep_COMPLETED');
+      if (compRow) {
+        compRow.style.color = '#34d399';
+        compRow.style.fontWeight = '700';
+        const st = card.querySelector('#mmStepStatus_COMPLETED');
+        if (st) {
+          st.textContent = finalCount ? `${finalCount} sent` : 'Sent!';
+          st.style.color = '#34d399';
+        }
+      }
+
+      setTimeout(() => {
+        if (card && card.parentElement) {
+          card.style.opacity = '0';
+          card.style.transform = 'translateY(20px)';
+          setTimeout(() => this.remove(), 400);
+        }
+      }, 4000);
+    },
+
+    error(errorMessage, stepId) {
+      const card = document.getElementById(this.CARD_ID);
+      if (!card) return;
+
+      const fill = card.querySelector('#mmHudProgressFill');
+      if (fill) fill.style.background = '#ef4444';
+
+      const spinner = card.querySelector('#mmHudSpinner');
+      if (spinner) {
+        spinner.style.border = 'none';
+        spinner.style.animation = 'none';
+        spinner.innerHTML = '❌';
+      }
+
+      if (stepId) {
+        const icon = card.querySelector('#mmStepIcon_' + stepId);
+        const status = card.querySelector('#mmStepStatus_' + stepId);
+        if (icon) icon.textContent = '❌';
+        if (status) {
+          status.textContent = 'Failed';
+          status.style.color = '#ef4444';
+        }
+      }
+
+      const errBox = card.querySelector('#mmHudErrorBox');
+      const errTxt = card.querySelector('#mmHudErrorText');
+      if (errBox && errTxt) {
+        errTxt.textContent = errorMessage || 'Unknown error occurred during automation.';
+        errBox.style.display = 'block';
+        const btn = card.querySelector('#mmHudDismissBtn');
+        if (btn) btn.onclick = () => this.remove();
+      }
+    },
+
+    remove() {
+      const existing = document.getElementById(this.CARD_ID);
+      if (existing) existing.remove();
+    }
+  };
+
   // =========================================================================
   // MAIN AUTOMATOR CLASS
   // =========================================================================
@@ -358,10 +728,21 @@
     static async _runSingleExecution(draftId, campaign) {
       const campaignId = campaign?.id;
       const subject = campaign?.subject;
+      let currentStep = 'NAVIGATE';
 
-      // Helper to report live progress to IDB and popup
+      // Launch floating Execution HUD in Gmail
+      try {
+        ExecutionHUD.show(campaign);
+      } catch (_) {}
+
+      // Helper to report live progress to IDB, popup, and in-tab HUD
       const reportProgress = async (step, message, pct) => {
+        currentStep = step;
         console.log(`[GmailAutomator] [${pct}%] ${step}: ${message}`);
+        try {
+          ExecutionHUD.update(step, message, pct);
+        } catch (_) {}
+
         if (campaignId && root.IDBStore) {
           await root.IDBStore.updateCampaign(campaignId, {
             status: 'PROCESSING',
@@ -387,6 +768,7 @@
           const existing = await root.IDBStore.getCampaignById(campaignId);
           if (existing && existing.status === 'COMPLETED') {
             console.log('[GmailAutomator] Campaign ' + campaignId + ' is already COMPLETED. Skipping.');
+            try { ExecutionHUD.remove(); } catch (_) {}
             return { success: true, campaignId, status: 'COMPLETED' };
           }
         } catch (_) {}
@@ -469,9 +851,15 @@
 
         await sleep(2000);
 
-        // 3. Find and click "Continue"
+        // Pre-check: dismiss any pre-existing Google spam disclaimer
+        const preDismissed = await dismissGoogleSpamDisclaimerIfNeeded(document);
+        if (preDismissed && campaignId && root.IDBStore) {
+          await root.IDBStore.addLog(campaignId, 'INFO', 'Google bulk email policy disclaimer automatically accepted with "Don\'t show again".').catch(() => {});
+        }
+
+        // 3. Find and click "Continue" with state verification and up to 3 retries
         await reportProgress('CLICK_CONTINUE', 'Clicking Continue...', 60);
-        const continueBtn = await waitFor(
+        const modal = await robustClick(
           () => {
             const buttons = composeDialog.querySelectorAll('button, div[role="button"]');
             for (const btn of buttons) {
@@ -481,16 +869,13 @@
             }
             return null;
           },
-          { timeout: 15000, errorMsg: 'Native "Continue" button not found in compose dialog' }
-        );
+          async () => {
+            // If Google intercepted with the spam/junk disclaimer modal, auto-accept and dismiss it
+            const intercepted = await dismissGoogleSpamDisclaimerIfNeeded(document);
+            if (intercepted && campaignId && root.IDBStore) {
+              await root.IDBStore.addLog(campaignId, 'INFO', 'Google bulk email policy disclaimer automatically accepted with "Don\'t show again".').catch(() => {});
+            }
 
-        await humanClick(continueBtn);
-        await sleep(3000);
-
-        // 4. Wait for "Ready to send" modal
-        await reportProgress('WAIT_MODAL', 'Waiting for Ready to send modal...', 80);
-        const modal = await waitFor(
-          () => {
             const dialogs = document.querySelectorAll('div[role="dialog"]');
             for (const d of dialogs) {
               const txt = d.textContent || '';
@@ -500,14 +885,37 @@
             }
             return null;
           },
-          { timeout: 15000, errorMsg: '"Ready to send" modal did not appear' }
+          { maxRetries: 3, actionName: 'Click "Continue"', retryDelay: 1500, timeoutPerAttempt: 4000 }
         );
 
-        await sleep(3000);
+        // 4. Verify "Ready to send" modal and extract live audience count
+        await reportProgress('WAIT_MODAL', 'Verifying modal & audience...', 80);
+        await sleep(1500);
 
-        // 5. Click "Send all"
+        let liveRecipientCount = campaign?.recipientCount || null;
+        try {
+          const modalText = modal.textContent || '';
+          console.log('[GmailAutomator] "Ready to send" modal text preview:', modalText.slice(0, 160));
+          const countMatch = modalText.match(/(?:send|about to send)?\s*(\d+)\s*(?:separate|personalized)?\s*(?:emails?|recipients?)\b/i)
+            || modalText.match(/(\d+)\s*(?:separate|personalized)?\s*emails?\b/i)
+            || modalText.match(/(\d+)\s*recipients?\b/i);
+          if (countMatch && parseInt(countMatch[1], 10) > 0) {
+            liveRecipientCount = parseInt(countMatch[1], 10);
+            console.log('[GmailAutomator] Extracted real-time recipient count from modal:', liveRecipientCount);
+          }
+        } catch (cntErr) {
+          console.warn('[GmailAutomator] Failed to parse modal count:', cntErr);
+        }
+
+        try {
+          ExecutionHUD.update('WAIT_MODAL', liveRecipientCount ? `Ready (${liveRecipientCount} recipients)` : 'Modal verified', 85);
+        } catch (_) {}
+
+        await sleep(2000);
+
+        // 5. Click "Send all" with state verification and up to 3 retries
         await reportProgress('SEND_ALL', 'Clicking Send all...', 95);
-        const sendAllBtn = await waitFor(
+        await robustClick(
           () => {
             const buttons = modal.querySelectorAll('button, div[role="button"]');
             for (const btn of buttons) {
@@ -517,13 +925,21 @@
             }
             return null;
           },
-          { timeout: 10000, errorMsg: '"Send all" button not found in Ready to send modal' }
+          () => {
+            // Target state: Modal closed or Gmail confirmation alert
+            const modalGone = !modal.isConnected || !isElementVisible(modal);
+            const sendingAlert = !!document.querySelector('.vh, [role="alert"], div[aria-live="assertive"]');
+            return modalGone || sendingAlert;
+          },
+          { maxRetries: 3, actionName: 'Click "Send all"', retryDelay: 1200, timeoutPerAttempt: 3000 }
         );
 
-        await humanClick(sendAllBtn);
         await sleep(1500);
 
         await reportProgress('COMPLETED', 'Sent successfully!', 100);
+        try {
+          ExecutionHUD.complete(liveRecipientCount);
+        } catch (_) {}
 
         // 6. Update IDBStore & broadcast completion
         if (campaignId && root.IDBStore) {
@@ -531,9 +947,14 @@
             status: 'COMPLETED',
             progressStep: 'COMPLETED',
             progressPct: 100,
+            recipientCount: liveRecipientCount,
+            sentCount: liveRecipientCount,
             completedAt: new Date().toISOString()
           });
-          await root.IDBStore.addLog(campaignId, 'INFO', 'Native Send All triggered successfully at scheduled time.');
+          const logMsg = liveRecipientCount
+            ? `Native Send All triggered successfully for ${liveRecipientCount} recipient(s) at scheduled time.`
+            : 'Native Send All triggered successfully at scheduled time.';
+          await root.IDBStore.addLog(campaignId, 'INFO', logMsg);
         }
 
         if (chrome.runtime && chrome.runtime.sendMessage) {
@@ -541,13 +962,20 @@
             action: 'CAMPAIGN_STATUS_UPDATE',
             campaignId,
             status: 'COMPLETED',
-            logMessage: 'Native Send All triggered successfully.'
+            sentCount: liveRecipientCount,
+            recipientCount: liveRecipientCount,
+            logMessage: liveRecipientCount
+              ? `Native Send All triggered successfully for ${liveRecipientCount} recipient(s).`
+              : 'Native Send All triggered successfully.'
           }).catch(() => {});
         }
 
-        return { success: true, campaignId };
+        return { success: true, campaignId, sentCount: liveRecipientCount };
       } catch (error) {
         console.error('[GmailAutomator] ❌ Error executing scheduled native merge:', error);
+        try {
+          ExecutionHUD.error(error.message, currentStep);
+        } catch (_) {}
 
         if (campaignId && root.IDBStore) {
           await root.IDBStore.updateCampaign(campaignId, {
