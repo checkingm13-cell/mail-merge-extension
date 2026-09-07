@@ -33,6 +33,8 @@ chrome.runtime.onStartup.addListener(async () => {
   await setupPollingAlarm();
   await refreshBadge();
   await injectIntoExistingGmailTabs();
+  // Check campaigns immediately on browser wakeup / startup
+  await checkAndExecuteDueCampaigns();
 });
 
 /**
@@ -128,11 +130,59 @@ async function checkAndExecuteDueCampaigns() {
       return;
     }
 
-    console.log(`[ServiceWorker] Found ${dueCampaigns.length} due campaign(s). Grouping by account...`);
+    const now = Date.now();
+    const FIVE_MINUTES_MS = 5 * 60 * 1000;
+    const readyCampaigns = [];
+
+    for (const camp of dueCampaigns) {
+      if (camp.scheduledAt) {
+        const schedTime = new Date(camp.scheduledAt).getTime();
+        // If overdue by more than 5 minutes, the PC was asleep or turned off during scheduled time
+        if (now - schedTime > FIVE_MINUTES_MS) {
+          console.warn(`[ServiceWorker] Campaign ${camp.id} was missed while offline. Scheduled at: ${camp.scheduledAt}. Requiring user confirmation.`);
+          await self.IDBStore.updateCampaign(camp.id, {
+            status: 'MISSED_OFFLINE',
+            missedAt: new Date().toISOString()
+          });
+          await self.IDBStore.addLog(
+            camp.id,
+            'WARN',
+            `Campaign missed while PC was asleep/offline. Was scheduled for ${new Date(schedTime).toLocaleString()}. Waiting for user confirmation.`
+          );
+
+          // Desktop Notification with warning
+          notifyDesktop(
+            '⚠️ Campaign Missed While Offline',
+            `"${camp.subject || 'Campaign'}" was scheduled for ${new Date(schedTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Open Gmail to Send Now or Reschedule.`
+          );
+
+          // Broadcast to Gmail tabs to show in-tab banner
+          try {
+            const tabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
+            for (const t of tabs) {
+              chrome.tabs.sendMessage(t.id, {
+                action: 'SHOW_MISSED_OFFLINE_BANNER',
+                campaign: camp
+              }).catch(() => {});
+            }
+          } catch (_) {}
+
+          continue; // Do NOT auto-send overdue campaigns!
+        }
+      }
+      readyCampaigns.push(camp);
+    }
+
+    if (readyCampaigns.length === 0) {
+      await refreshBadge();
+      return;
+    }
+
+    console.log(`[ServiceWorker] Found ${readyCampaigns.length} on-time due campaign(s). Grouping by account...`);
 
     // Group due campaigns by account index
     const accountGroups = {};
-    for (const campaign of dueCampaigns) {
+    for (const campaign of readyCampaigns) {
       const key = campaign.userIndex || '0';
       if (!accountGroups[key]) accountGroups[key] = [];
       accountGroups[key].push(campaign);
@@ -161,6 +211,8 @@ async function checkAndExecuteDueCampaigns() {
  * @param {Object} campaign
  */
 async function executeCampaign(campaign) {
+  let createdBackgroundTabId = null;
+
   try {
     // 1. Update status to PROCESSING immediately
     await self.IDBStore.updateCampaign(campaign.id, {
@@ -187,6 +239,7 @@ async function executeCampaign(campaign) {
         url: targetUrl,
         active: false
       });
+      createdBackgroundTabId = gmailTab.id;
 
       await waitForTabComplete(gmailTab.id);
       await delay(2500);
@@ -206,11 +259,25 @@ async function executeCampaign(campaign) {
         '✅ Mail Merge Completed',
         `"${campaign.subject || 'Campaign'}" sent${effectiveCount ? ' to ' + effectiveCount + ' recipients' : ''}.`
       );
+
+      // Clean Auto-Close: If we opened this background tab, close it after completion
+      if (createdBackgroundTabId) {
+        setTimeout(() => {
+          chrome.tabs.remove(createdBackgroundTabId).catch(() => {});
+        }, 4000);
+      }
     } else {
       throw new Error(`Failed to deliver EXECUTE_CAMPAIGN message to Gmail tab ${gmailTab.id}`);
     }
   } catch (err) {
     console.error(`[ServiceWorker] Failed to execute campaign ${campaign.id}:`, err);
+
+    if (createdBackgroundTabId) {
+      setTimeout(() => {
+        chrome.tabs.remove(createdBackgroundTabId).catch(() => {});
+      }, 5000);
+    }
+
     await self.IDBStore.updateCampaign(campaign.id, {
       status: 'FAILED',
       errorMessage: err.message,
@@ -485,6 +552,52 @@ async function handleRuntimeMessage(message, sender) {
     case 'REFRESH_BADGE': {
       await refreshBadge();
       return { success: true };
+    }
+
+    case 'GET_MISSED_CAMPAIGNS': {
+      if (self.IDBStore) {
+        const campaigns = await self.IDBStore.getCampaigns();
+        const missed = campaigns.filter((c) => c.status === 'MISSED_OFFLINE');
+        return { success: true, campaigns: missed };
+      }
+      return { success: true, campaigns: [] };
+    }
+
+    case 'RESCHEDULE_CAMPAIGN': {
+      if (!message.campaignId || !message.scheduledTime) {
+        return { success: false, error: 'Missing campaignId or scheduledTime' };
+      }
+      const isoDate = new Date(message.scheduledTime).toISOString();
+      if (self.IDBStore) {
+        await self.IDBStore.updateCampaign(message.campaignId, {
+          scheduledAt: isoDate,
+          status: 'QUEUED',
+          missedAt: null
+        });
+        await self.IDBStore.addLog(message.campaignId, 'INFO', `Rescheduled to ${isoDate}`);
+      }
+      if (message.scheduledTime <= Date.now() + 5000) {
+        checkAndExecuteDueCampaigns().catch(() => {});
+      } else {
+        chrome.alarms.create(`CAMPAIGN_${message.campaignId}`, {
+          when: message.scheduledTime
+        });
+      }
+      await refreshBadge();
+      return { success: true };
+    }
+
+    case 'DISMISS_MISSED_CAMPAIGN': {
+      if (message.campaignId && self.IDBStore) {
+        await self.IDBStore.updateCampaign(message.campaignId, {
+          status: 'CANCELLED',
+          cancelledAt: new Date().toISOString()
+        });
+        await self.IDBStore.addLog(message.campaignId, 'INFO', 'Missed campaign dismissed by user.');
+        await refreshBadge();
+        return { success: true };
+      }
+      return { success: false, error: 'Missing campaignId' };
     }
 
     case 'OPEN_DASHBOARD': {

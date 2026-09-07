@@ -543,6 +543,12 @@ body {
   color: #cbd5e1;
 }
 
+.badge-missed-offline {
+  background: rgba(245, 158, 11, 0.2);
+  border: 1px solid var(--amber);
+  color: #fbbf24;
+}
+
 /* Tag Pills for Insert Tags */
 .tag-pills {
   display: flex;

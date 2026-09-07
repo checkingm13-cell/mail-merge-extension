@@ -154,7 +154,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
 
     allCampaigns.forEach((c) => {
-      if (c.status === 'QUEUED' || c.status === 'PROCESSING') {
+      if (c.status === 'QUEUED' || c.status === 'PROCESSING' || c.status === 'MISSED_OFFLINE') {
         counts.QUEUED++;
       } else if (c.status === 'COMPLETED') {
         counts.COMPLETED++;
@@ -177,7 +177,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     let filtered = allCampaigns;
     if (currentFilter === 'QUEUED') {
-      filtered = allCampaigns.filter((c) => c.status === 'QUEUED' || c.status === 'PROCESSING');
+      filtered = allCampaigns.filter((c) => c.status === 'QUEUED' || c.status === 'PROCESSING' || c.status === 'MISSED_OFFLINE');
     } else if (currentFilter === 'COMPLETED') {
       filtered = allCampaigns.filter((c) => c.status === 'COMPLETED');
     } else if (currentFilter === 'FAILED') {
@@ -212,6 +212,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else if (camp.status === 'CANCELLED') {
         statusClass = 'status-cancelled';
         statusLabel = 'Cancelled';
+      } else if (camp.status === 'MISSED_OFFLINE') {
+        statusClass = 'status-missed-offline';
+        statusLabel = '⚠️ Missed (Offline)';
       }
 
       // Sender Account
@@ -225,6 +228,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         timeLabel = 'Sent: ' + formatTime(camp.completedAt || camp.updatedAt);
       } else if (camp.status === 'QUEUED') {
         timeLabel = 'Scheduled: ' + formatTime(camp.scheduledAt);
+      } else if (camp.status === 'MISSED_OFFLINE') {
+        timeLabel = 'Missed: ' + formatTime(camp.missedAt || camp.scheduledAt);
       } else if (camp.status === 'PROCESSING') {
         timeLabel = (camp.progressMessage || 'Executing...') + (camp.progressPct ? ' (' + camp.progressPct + '%)' : '');
       } else if (camp.status === 'FAILED') {
@@ -264,7 +269,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       // Actions HTML
       let actionsHtml = '';
-      if (camp.status === 'QUEUED') {
+      if (camp.status === 'QUEUED' || camp.status === 'MISSED_OFFLINE') {
         actionsHtml = `
           <button class="btn-action btn-run" data-action="run" data-id="${camp.id}" title="Execute immediately">
             ▶ Run Now
@@ -293,6 +298,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Error message if failed
       const errorHtml = (camp.status === 'FAILED' && camp.errorMessage)
         ? `<div class="campaign-error" title="${escapeHtml(camp.errorMessage)}">${escapeHtml(camp.errorMessage)}</div>`
+        : '';
+
+      // Warning message if missed offline
+      const missedWarningHtml = (camp.status === 'MISSED_OFFLINE')
+        ? `<div class="campaign-error" style="color: #fbbf24; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.35);">⚠️ Missed while PC was offline. Click "Run Now" to dispatch immediately.</div>`
         : '';
 
       // Expandable Details Drawer
@@ -326,6 +336,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           <span class="campaign-time">${escapeHtml(timeLabel)}</span>
         </div>
         ${errorHtml}
+        ${missedWarningHtml}
         <div class="campaign-actions">
           <div class="actions-left">${detailsToggleHtml}</div>
           <div class="actions-right">${actionsHtml}</div>

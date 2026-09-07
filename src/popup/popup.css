@@ -324,6 +324,12 @@ input:checked + .slider:before {
   border: 1px solid rgba(100, 116, 139, 0.4);
 }
 
+.status-missed-offline {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.5);
+}
+
 @keyframes pulse-glow {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }

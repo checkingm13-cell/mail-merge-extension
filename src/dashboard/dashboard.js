@@ -460,7 +460,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         PROCESSING: 0,
         COMPLETED: 0,
         FAILED: 0,
-        CANCELLED: 0
+        CANCELLED: 0,
+        MISSED_OFFLINE: 0
       };
 
       allCampaigns.forEach((c) => {
@@ -470,7 +471,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
 
       countAll.textContent = String(counts.ALL);
-      countFilterQueued.textContent = String(counts.QUEUED);
+      countFilterQueued.textContent = String(counts.QUEUED + counts.MISSED_OFFLINE);
       countFilterProcessing.textContent = String(counts.PROCESSING);
       countFilterCompleted.textContent = String(counts.COMPLETED);
       countFilterFailed.textContent = String(counts.FAILED);
@@ -486,7 +487,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   function renderCampaignsTable() {
     let filtered = allCampaigns;
     if (currentCampaignFilter !== 'ALL') {
-      filtered = allCampaigns.filter((c) => c.status === currentCampaignFilter);
+      if (currentCampaignFilter === 'QUEUED') {
+        filtered = allCampaigns.filter((c) => c.status === 'QUEUED' || c.status === 'MISSED_OFFLINE');
+      } else {
+        filtered = allCampaigns.filter((c) => c.status === currentCampaignFilter);
+      }
     }
 
     if (filtered.length === 0) {
@@ -514,6 +519,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       else if (camp.status === 'COMPLETED') badgeClass = 'badge-completed';
       else if (camp.status === 'FAILED') badgeClass = 'badge-failed';
       else if (camp.status === 'CANCELLED') badgeClass = 'badge-cancelled';
+      else if (camp.status === 'MISSED_OFFLINE') badgeClass = 'badge-missed-offline';
 
       // Sheet Link & Title
       const sheetTitle = camp.spreadsheetTitle || extractSheetName(camp.spreadsheetUrl) || 'Google Sheet';
@@ -556,7 +562,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         </td>
         <td>
           <span class="badge ${badgeClass}">
-            ${camp.status === 'PROCESSING' ? '● ' : ''}${escapeHtml(camp.status)}
+            ${camp.status === 'PROCESSING' ? '● ' : ''}${camp.status === 'MISSED_OFFLINE' ? '⚠️ MISSED (OFFLINE)' : escapeHtml(camp.status)}
           </span>
         </td>
         <td style="text-align: right; white-space: nowrap;">
@@ -611,7 +617,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   function openRescheduleModal(camp) {
     rescheduleCampaignId.value = camp.id;
-    if (camp.scheduledAt) {
+    const isPast = camp.scheduledAt && new Date(camp.scheduledAt).getTime() <= Date.now();
+    if (camp.scheduledAt && !isPast) {
       inputRescheduleTime.value = formatDateTimeLocal(new Date(camp.scheduledAt));
     } else {
       inputRescheduleTime.value = formatDateTimeLocal(new Date(Date.now() + 15 * 60000));

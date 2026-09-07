@@ -44,13 +44,15 @@
   checkAndInjectModal();
   checkAndInjectContinue();
   checkAndDismissSpamDisclaimer();
+  checkAndShowMissedOfflineBanners();
 
   // Periodic safety scan (ensures dynamic single-page Gmail view changes never miss buttons or warnings)
   setInterval(() => {
     checkAndInjectModal();
     checkAndInjectContinue();
     checkAndDismissSpamDisclaimer();
-  }, 1000);
+    checkAndShowMissedOfflineBanners();
+  }, 2000);
 
   /**
    * Auto-detects and dismisses Google's bulk sender / spam policy warning dialog if it appears.
@@ -97,6 +99,227 @@
         }
       }
     } catch (_) {}
+  }
+
+  // =========================================================================
+  // MISSED-WHILE-OFFLINE NOTIFICATION & IN-TAB BANNER
+  // =========================================================================
+
+  // Set to track dismissed banners during current tab session
+  const dismissedBannerCampaignIds = new Set();
+
+  /**
+   * Periodically checks for any campaigns flagged as MISSED_OFFLINE and displays in-tab warning banners.
+   */
+  async function checkAndShowMissedOfflineBanners() {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) return;
+      const resp = await chrome.runtime.sendMessage({ action: 'GET_MISSED_CAMPAIGNS' }).catch(() => null);
+      if (resp && resp.success && Array.isArray(resp.campaigns)) {
+        for (const camp of resp.campaigns) {
+          if (!dismissedBannerCampaignIds.has(camp.id)) {
+            showMissedOfflineBanner(camp);
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  /**
+   * Displays an interactive floating banner at the top of Gmail for a campaign missed while offline.
+   * Gives the user options to "Send Now", "Reschedule", or "Dismiss".
+   * @param {Object} camp
+   */
+  function showMissedOfflineBanner(camp) {
+    if (!camp || !camp.id || dismissedBannerCampaignIds.has(camp.id)) return;
+
+    const bannerId = `mm-missed-banner-${camp.id}`;
+    if (document.getElementById(bannerId)) return;
+
+    let container = document.getElementById('mm-missed-banners-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'mm-missed-banners-container';
+      container.style.cssText = [
+        'position: fixed',
+        'top: 16px',
+        'left: 50%',
+        'transform: translateX(-50%)',
+        'z-index: 1000000',
+        'display: flex',
+        'flex-direction: column',
+        'gap: 10px',
+        'width: 90%',
+        'max-width: 640px',
+        'pointer-events: auto',
+        'font-family: Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+      ].join('; ');
+      document.body.appendChild(container);
+    }
+
+    const banner = document.createElement('div');
+    banner.id = bannerId;
+    banner.style.cssText = [
+      'background: #1e293b',
+      'color: #f8fafc',
+      'border: 1px solid #f59e0b',
+      'border-left: 6px solid #f59e0b',
+      'border-radius: 8px',
+      'box-shadow: 0 10px 25px rgba(0, 0, 0, 0.45)',
+      'padding: 12px 18px',
+      'display: flex',
+      'flex-direction: column',
+      'gap: 10px',
+      'transition: all 0.25s ease'
+    ].join('; ');
+
+    const schedDate = camp.scheduledAt ? new Date(camp.scheduledAt) : new Date();
+    const schedStr = schedDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ', ' +
+      schedDate.toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+    function renderDefaultView() {
+      banner.innerHTML = `
+        <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;">
+          <div style="display: flex; align-items: flex-start; gap: 10px;">
+            <span style="font-size: 20px; line-height: 1;">⚠️</span>
+            <div>
+              <div style="font-size: 13px; font-weight: 700; color: #f59e0b; display: flex; align-items: center; gap: 6px;">
+                <span>Mail Merge Missed While PC Was Offline</span>
+                <span style="background: rgba(245, 158, 11, 0.2); color: #fbbf24; border-radius: 4px; padding: 1px 6px; font-size: 10px; text-transform: uppercase;">Awaiting Confirmation</span>
+              </div>
+              <div style="font-size: 13px; font-weight: 600; color: #ffffff; margin-top: 3px; max-width: 440px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                "${escapeHtml(camp.subject || 'Untitled Subject')}"
+              </div>
+              <div style="font-size: 11px; color: #94a3b8; margin-top: 2px;">
+                Scheduled for: <b style="color: #cbd5e1;">${schedStr}</b>
+                ${camp.recipientCount ? ` &bull; 👥 ${camp.recipientCount} recipients` : ''}
+              </div>
+            </div>
+          </div>
+          <button class="mm-banner-dismiss-btn" title="Dismiss" style="background: transparent; border: none; color: #94a3b8; font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 4px;">✕</button>
+        </div>
+        <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 8px;">
+          <button class="mm-banner-dismiss-link" style="background: transparent; border: 1px solid #475569; color: #94a3b8; border-radius: 5px; padding: 5px 12px; font-size: 12px; font-weight: 500; cursor: pointer;">
+            Dismiss
+          </button>
+          <button class="mm-banner-resched-btn" style="background: #4f46e5; border: 1px solid #6366f1; color: #ffffff; border-radius: 5px; padding: 5px 14px; font-size: 12px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;">
+            <span>⏰</span> Reschedule
+          </button>
+          <button class="mm-banner-send-btn" style="background: #059669; border: 1px solid #10b981; color: #ffffff; border-radius: 5px; padding: 5px 16px; font-size: 12px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 5px;">
+            <span>▶</span> Send Now
+          </button>
+        </div>
+      `;
+
+      // Event Listeners
+      const handleDismiss = () => {
+        dismissedBannerCampaignIds.add(camp.id);
+        banner.style.opacity = '0';
+        banner.style.transform = 'translateY(-10px)';
+        setTimeout(() => banner.remove(), 250);
+        chrome.runtime.sendMessage({ action: 'DISMISS_MISSED_CAMPAIGN', campaignId: camp.id }).catch(() => {});
+      };
+
+      banner.querySelector('.mm-banner-dismiss-btn').addEventListener('click', handleDismiss);
+      banner.querySelector('.mm-banner-dismiss-link').addEventListener('click', handleDismiss);
+
+      // Send Now Action
+      banner.querySelector('.mm-banner-send-btn').addEventListener('click', () => {
+        banner.innerHTML = `
+          <div style="display: flex; align-items: center; gap: 10px; padding: 6px 0;">
+            <span style="font-size: 18px;">⏳</span>
+            <span style="font-size: 13px; font-weight: 600; color: #38bdf8;">Dispatching "${escapeHtml(camp.subject || 'Campaign')}" immediately...</span>
+          </div>
+        `;
+        chrome.runtime.sendMessage({
+          action: 'TRIGGER_CAMPAIGN_NOW',
+          campaignId: camp.id
+        }).then((res) => {
+          if (res && res.success) {
+            banner.innerHTML = `
+              <div style="display: flex; align-items: center; gap: 8px; color: #34d399; font-weight: 600; padding: 6px 0;">
+                <span>✅</span> Dispatched! Mail merge automation is in progress...
+              </div>
+            `;
+            setTimeout(() => {
+              dismissedBannerCampaignIds.add(camp.id);
+              banner.remove();
+            }, 2500);
+          } else {
+            banner.innerHTML = `
+              <div style="color: #f87171; font-weight: 600; padding: 6px 0;">
+                ⚠️ Dispatch error: ${escapeHtml(res?.error || 'Unknown error')}
+              </div>
+            `;
+            setTimeout(() => banner.remove(), 4000);
+          }
+        }).catch((err) => {
+          banner.innerHTML = `<div style="color: #f87171; font-weight: 600; padding: 6px 0;">⚠️ Error: ${escapeHtml(err.message)}</div>`;
+          setTimeout(() => banner.remove(), 4000);
+        });
+      });
+
+      // Reschedule Action (inline picker)
+      banner.querySelector('.mm-banner-resched-btn').addEventListener('click', () => {
+        const nextTime = new Date(Date.now() + 10 * 60000);
+        const nextTimeLocal = new Date(nextTime.getTime() - nextTime.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+        const minTimeLocal = new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+
+        banner.innerHTML = `
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-size: 13px; font-weight: 600; color: #e2e8f0; display: flex; align-items: center; gap: 6px;">
+              <span>⏰</span> Reschedule "${escapeHtml(camp.subject || 'Campaign')}"
+            </span>
+            <button class="mm-resched-cancel-x" style="background: transparent; border: none; color: #94a3b8; font-size: 16px; cursor: pointer;">✕</button>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
+            <input type="datetime-local" class="mm-resched-input" value="${nextTimeLocal}" min="${minTimeLocal}" style="flex: 1; background: #0f172a; color: #f8fafc; border: 1px solid #475569; border-radius: 4px; padding: 6px 10px; font-size: 13px; outline: none;" />
+            <button class="mm-resched-confirm-btn" style="background: #4f46e5; border: 1px solid #6366f1; color: #ffffff; border-radius: 4px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;">Confirm</button>
+            <button class="mm-resched-back-btn" style="background: #334155; border: 1px solid #475569; color: #cbd5e1; border-radius: 4px; padding: 6px 10px; font-size: 12px; cursor: pointer;">Back</button>
+          </div>
+        `;
+
+        banner.querySelector('.mm-resched-cancel-x').addEventListener('click', renderDefaultView);
+        banner.querySelector('.mm-resched-back-btn').addEventListener('click', renderDefaultView);
+
+        banner.querySelector('.mm-resched-confirm-btn').addEventListener('click', () => {
+          const val = banner.querySelector('.mm-resched-input').value;
+          if (!val) return;
+          const newTimestamp = new Date(val).getTime();
+
+          banner.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 8px; color: #38bdf8; font-weight: 600; padding: 6px 0;">
+              <span>⏳</span> Updating schedule...
+            </div>
+          `;
+
+          chrome.runtime.sendMessage({
+            action: 'RESCHEDULE_CAMPAIGN',
+            campaignId: camp.id,
+            scheduledTime: newTimestamp
+          }).then((res) => {
+            if (res && res.success) {
+              banner.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 8px; color: #34d399; font-weight: 600; padding: 6px 0;">
+                  <span>✅</span> Rescheduled for ${new Date(val).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}, ${new Date(val).toLocaleDateString([], { month: 'short', day: 'numeric' })}!
+                </div>
+              `;
+              dismissedBannerCampaignIds.add(camp.id);
+              setTimeout(() => banner.remove(), 2500);
+            } else {
+              banner.innerHTML = `<div style="color: #f87171; padding: 6px 0;">Failed to reschedule: ${escapeHtml(res?.error || '')}</div>`;
+              setTimeout(renderDefaultView, 3000);
+            }
+          }).catch((err) => {
+            banner.innerHTML = `<div style="color: #f87171; padding: 6px 0;">Error: ${escapeHtml(err.message)}</div>`;
+            setTimeout(renderDefaultView, 3000);
+          });
+        });
+      });
+    }
+
+    renderDefaultView();
+    container.appendChild(banner);
   }
 
   // Synchronize any campaigns created in Gmail's local origin up to the central extension store
@@ -758,6 +981,14 @@
           .catch((err) => sendResponse({ success: false, error: err.message }));
 
         return true; // keep message channel open
+      }
+
+      if (message.action === 'SHOW_MISSED_OFFLINE_BANNER') {
+        if (message.campaign && !dismissedBannerCampaignIds.has(message.campaign.id)) {
+          showMissedOfflineBanner(message.campaign);
+        }
+        sendResponse({ success: true });
+        return true;
       }
     });
   }
