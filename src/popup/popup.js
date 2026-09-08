@@ -167,6 +167,37 @@ document.addEventListener('DOMContentLoaded', async () => {
     countQueued.textContent = String(counts.QUEUED);
     countCompleted.textContent = String(counts.COMPLETED);
     countFailed.textContent = String(counts.FAILED);
+
+    const retryBanner = document.getElementById('popupRetryBanner');
+    const retryText = document.getElementById('popupRetryText');
+    const btnRetryAll = document.getElementById('btnPopupRetryAll');
+
+    if (retryBanner && retryText) {
+      if (counts.FAILED > 0) {
+        retryText.textContent = `${counts.FAILED} Failed Campaign(s)`;
+        retryBanner.style.display = 'flex';
+        if (btnRetryAll && !btnRetryAll.dataset.bound) {
+          btnRetryAll.dataset.bound = 'true';
+          btnRetryAll.onclick = async () => {
+            btnRetryAll.disabled = true;
+            btnRetryAll.textContent = 'Retrying...';
+            const failedList = allCampaigns.filter((c) => c.status === 'FAILED');
+            for (const camp of failedList) {
+              await chrome.runtime.sendMessage({
+                action: 'TRIGGER_CAMPAIGN_NOW',
+                campaignId: camp.id
+              }).catch(() => {});
+              await new Promise((r) => setTimeout(r, 600));
+            }
+            btnRetryAll.disabled = false;
+            btnRetryAll.textContent = '↻ Retry All';
+            await loadCampaigns();
+          };
+        }
+      } else {
+        retryBanner.style.display = 'none';
+      }
+    }
   }
 
   /**
