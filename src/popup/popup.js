@@ -185,14 +185,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             btnRetryAll.style.display = 'inline-flex';
             btnRetryAll.onclick = async () => {
               btnRetryAll.disabled = true;
-              btnRetryAll.textContent = 'Retrying...';
-              for (const camp of retryableFailed) {
-                await chrome.runtime.sendMessage({
-                  action: 'TRIGGER_CAMPAIGN_NOW',
-                  campaignId: camp.id
-                }).catch(() => {});
-                await new Promise((r) => setTimeout(r, 600));
-              }
+              btnRetryAll.textContent = 'Queueing...';
+              const resp = await chrome.runtime.sendMessage({ action: 'RETRY_ALL_FAILED' }).catch(() => null);
+              showToast(resp?.count ? `⚡ Queued ${resp.count} campaign(s) in execution pipeline!` : 'Campaigns queued');
               btnRetryAll.disabled = false;
               btnRetryAll.textContent = '↻ Retry All';
               await loadCampaigns();
@@ -227,6 +222,74 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   /**
+   * Derives human-friendly multi-stage status, queue position, and progress percentage.
+   */
+  function getStageInfo(camp, allList = []) {
+    if (camp.status === 'QUEUED') {
+      const accountKey = (camp.accountEmail || '').toLowerCase().trim() || String(camp.userIndex !== undefined ? camp.userIndex : '0');
+      const isAccountBusy = allList.some(
+        (c) => c.status === 'PROCESSING' && ((c.accountEmail || '').toLowerCase().trim() || String(c.userIndex !== undefined ? c.userIndex : '0')) === accountKey
+      );
+      if (isAccountBusy) {
+        const queuedList = allList
+          .filter((c) => c.status === 'QUEUED' && ((c.accountEmail || '').toLowerCase().trim() || String(c.userIndex !== undefined ? c.userIndex : '0')) === accountKey)
+          .sort((a, b) => new Date(a.scheduledAt || a.createdAt || 0) - new Date(b.scheduledAt || b.createdAt || 0));
+        const idx = queuedList.findIndex((c) => c.id === camp.id);
+        const pos = idx >= 0 ? idx + 1 : 1;
+        return {
+          stageName: `⏳ Queued (#${pos} in line)`,
+          description: `Waiting in line for account #${camp.userIndex || '0'}`,
+          pct: 0
+        };
+      }
+      return {
+        stageName: '⏳ Queued',
+        description: 'Waiting for scheduled dispatch',
+        pct: 0
+      };
+    }
+
+    if (camp.status === 'PROCESSING') {
+      const step = camp.progressStep || 'NAVIGATE';
+      const stageMap = {
+        'NAVIGATE': { name: '🧭 Step 1/5: Navigating (10%)', pct: 10 },
+        'LOAD_DRAFT': { name: '🔍 Step 2/5: Verifying Draft (30%)', pct: 30 },
+        'CLICK_CONTINUE': { name: '⚙️ Step 3/5: Preparing Merge (60%)', pct: 60 },
+        'WAIT_MODAL': { name: '👥 Step 4/5: Audience & Sheet (80%)', pct: 80 },
+        'SEND_ALL': { name: '🚀 Step 5/5: Sending Emails (95%)', pct: 95 }
+      };
+      const info = stageMap[step] || { name: `⚡ ${step} (${camp.progressPct || 15}%)`, pct: camp.progressPct || 15 };
+      return {
+        stageName: info.name,
+        description: camp.progressMessage || 'Automating native Mail Merge...',
+        pct: camp.progressPct !== undefined ? camp.progressPct : info.pct
+      };
+    }
+
+    if (camp.status === 'COMPLETED') {
+      return {
+        stageName: '✓ Completed (100%)',
+        description: 'Sent successfully',
+        pct: 100
+      };
+    }
+
+    if (camp.status === 'FAILED') {
+      return {
+        stageName: '✕ Failed',
+        description: camp.errorMessage || 'Execution failed',
+        pct: 0
+      };
+    }
+
+    return {
+      stageName: camp.status || 'Unknown',
+      description: '',
+      pct: 0
+    };
+  }
+
+  /**
    * Renders campaign cards based on the selected filter
    */
   function renderCampaigns() {
@@ -254,18 +317,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       card.className = 'campaign-card';
       card.dataset.id = camp.id;
 
+      const stageInfo = getStageInfo(camp, allCampaigns);
+
       // Status Class & Label
       let statusClass = 'status-queued';
-      let statusLabel = 'Queued';
+      let statusLabel = stageInfo.stageName;
       if (camp.status === 'PROCESSING') {
         statusClass = 'status-processing';
-        statusLabel = 'Processing';
       } else if (camp.status === 'COMPLETED') {
         statusClass = 'status-completed';
-        statusLabel = '✓ Completed';
       } else if (camp.status === 'FAILED') {
         statusClass = 'status-failed';
-        statusLabel = '✕ Failed';
       } else if (camp.status === 'CANCELLED') {
         statusClass = 'status-cancelled';
         statusLabel = 'Cancelled';
@@ -284,11 +346,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (camp.status === 'COMPLETED') {
         timeLabel = 'Sent: ' + formatTime(camp.completedAt || camp.updatedAt);
       } else if (camp.status === 'QUEUED') {
-        timeLabel = 'Scheduled: ' + formatTime(camp.scheduledAt);
+        timeLabel = stageInfo.description.includes('Waiting in line')
+          ? stageInfo.description
+          : ('Scheduled: ' + formatTime(camp.scheduledAt));
       } else if (camp.status === 'MISSED_OFFLINE') {
         timeLabel = 'Missed: ' + formatTime(camp.missedAt || camp.scheduledAt);
       } else if (camp.status === 'PROCESSING') {
-        timeLabel = (camp.progressMessage || 'Executing...') + (camp.progressPct ? ' (' + camp.progressPct + '%)' : '');
+        timeLabel = stageInfo.description + (camp.progressPct ? ' (' + camp.progressPct + '%)' : '');
       } else if (camp.status === 'FAILED') {
         timeLabel = 'Failed: ' + formatTime(camp.failedAt || camp.updatedAt);
       } else {
@@ -300,7 +364,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Live progress bar HTML for actively running campaign
       const progressBarHtml = (camp.status === 'PROCESSING')
         ? `<div class="progress-bar-wrap">
-             <div class="progress-bar-fill" style="width: ${camp.progressPct || 15}%;"></div>
+             <div class="progress-bar-fill" style="width: ${stageInfo.pct || 15}%;"></div>
            </div>`
         : '';
 

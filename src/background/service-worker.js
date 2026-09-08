@@ -20,8 +20,8 @@ const POLL_INTERVAL_MINUTES = 1;
 // Tracks active campaign execution tabs: campaignId -> { tabId, timeoutId }
 const activeCampaignTabs = new Map();
 
-// Tracks actively executing accounts to prevent concurrent campaign clashes
-const executingAccounts = new Set();
+// Tracks actively executing accounts: accountKey -> { campaignId, timeoutId, startedAt }
+const executingAccounts = new Map();
 
 // =============================================================================
 // LIFECYCLE & ALARM MANAGEMENT
@@ -183,8 +183,11 @@ async function checkAndExecuteDueCampaigns() {
     // Run accounts in parallel; execute campaigns within the same account sequentially
     await Promise.all(
       Object.values(accountGroups).map(async (campaignsForAccount) => {
-        for (const camp of campaignsForAccount) {
-          await executeCampaign(camp);
+        const sorted = campaignsForAccount.sort(
+          (a, b) => new Date(a.scheduledAt || a.createdAt || 0) - new Date(b.scheduledAt || b.createdAt || 0)
+        );
+        if (sorted.length > 0) {
+          await executeCampaign(sorted[0]);
         }
       })
     );
@@ -208,7 +211,7 @@ async function executeCampaign(campaign) {
 
   // Concurrency guard: Do not run two campaigns for the same account simultaneously
   if (executingAccounts.has(accountKey)) {
-    console.log(`[ServiceWorker] ⏳ Account "${accountKey}" is currently executing another campaign. Will execute on next scheduler cycle.`);
+    console.log(`[ServiceWorker] ⏳ Account "${accountKey}" is currently executing another campaign. Campaign "${campaign.id}" remains QUEUED in line.`);
     return;
   }
 
@@ -235,7 +238,16 @@ async function executeCampaign(campaign) {
     }
   }
 
-  executingAccounts.add(accountKey);
+  const timeoutId = setTimeout(() => {
+    console.warn(`[ServiceWorker] Safety timeout (6 min) reached for account ${accountKey} on campaign ${campaign.id}. Releasing lock.`);
+    releaseAccountLock(accountKey, campaign.id).catch(() => {});
+  }, 6 * 60 * 1000);
+
+  executingAccounts.set(accountKey, {
+    campaignId: campaign.id,
+    timeoutId,
+    startedAt: Date.now()
+  });
 
   try {
     // 1. Check if user is actively editing this exact draft in any open Gmail tab
@@ -383,12 +395,63 @@ async function executeCampaign(campaign) {
       `Failed to send "${campaign.subject || 'Campaign'}": ${err.message}`,
       true
     );
-  } finally {
-    // 5-second buffer before releasing lock so Gmail DOM settles cleanly
-    setTimeout(() => {
-      executingAccounts.delete(accountKey);
-      checkAndExecuteDueCampaigns().catch(() => {});
-    }, 5000);
+
+    // Free lock on setup failure so subsequent queued campaigns can run
+    await releaseAccountLock(accountKey, campaign.id);
+  }
+}
+
+/**
+ * Releases the execution lock for an account and triggers the next queued campaign in FIFO order.
+ * @param {string} accountKey
+ * @param {string} [campaignId]
+ */
+async function releaseAccountLock(accountKey, campaignId) {
+  if (!accountKey) return;
+  const lock = executingAccounts.get(accountKey);
+  if (lock) {
+    if (campaignId && lock.campaignId && lock.campaignId !== campaignId) {
+      return;
+    }
+    if (lock.timeoutId) clearTimeout(lock.timeoutId);
+    executingAccounts.delete(accountKey);
+    console.log(`[ServiceWorker] 🔓 Released execution lock for account "${accountKey}".`);
+  }
+
+  // 3.5s buffer for Gmail tab to close and DOM to settle cleanly
+  setTimeout(async () => {
+    await processNextQueuedCampaign(accountKey);
+  }, 3500);
+}
+
+/**
+ * Finds and executes the next queued campaign for a given account.
+ * @param {string} accountKey
+ */
+async function processNextQueuedCampaign(accountKey) {
+  if (!self.IDBStore) return;
+  if (executingAccounts.has(accountKey)) return;
+
+  try {
+    const campaigns = await self.IDBStore.getCampaigns();
+    const queuedForAccount = campaigns
+      .filter((c) => {
+        if (c.status !== 'QUEUED') return false;
+        const key = (c.accountEmail || '').toLowerCase().trim() || String(c.userIndex !== undefined ? c.userIndex : '0');
+        return key === accountKey;
+      })
+      .sort((a, b) => new Date(a.scheduledAt || a.createdAt || 0) - new Date(b.scheduledAt || b.createdAt || 0));
+
+    if (queuedForAccount.length > 0) {
+      const nextCamp = queuedForAccount[0];
+      console.log(`[ServiceWorker] ⏩ Processing next queued campaign for account "${accountKey}": ${nextCamp.id} ("${nextCamp.subject || 'Untitled'}")`);
+      await executeCampaign(nextCamp);
+    } else {
+      console.log(`[ServiceWorker] 🏁 Queue drained for account "${accountKey}". All queued campaigns finished.`);
+      await refreshBadge();
+    }
+  } catch (err) {
+    console.error(`[ServiceWorker] Error processing next queued campaign for ${accountKey}:`, err);
   }
 }
 
@@ -705,9 +768,31 @@ async function handleRuntimeMessage(message, sender) {
         if (!campaign) {
           return { success: false, error: `Campaign with id "${message.campaignId}" not found.` };
         }
-        await executeCampaign(campaign);
-        await refreshBadge();
-        return { success: true, message: `Campaign "${campaign.id}" triggered.` };
+        if (campaign.canAutoRetry === false || campaign.errorCategory === 'DRAFT_NOT_FOUND' || (campaign.errorMessage && campaign.errorMessage.includes('[DRAFT_NOT_FOUND]'))) {
+          return { success: false, error: 'Cannot retry: draft was deleted or not found in Gmail. Please re-schedule.' };
+        }
+
+        await self.IDBStore.updateCampaign(campaign.id, {
+          status: 'QUEUED',
+          progressStep: 'QUEUED',
+          progressMessage: 'Waiting in queue...',
+          progressPct: 0,
+          errorMessage: null,
+          errorCategory: null,
+          failedAt: null,
+          scheduledAt: new Date().toISOString()
+        });
+        await self.IDBStore.addLog(campaign.id, 'INFO', 'Campaign queued for immediate execution.');
+
+        const accountKey = (campaign.accountEmail || '').toLowerCase().trim() || String(campaign.userIndex !== undefined ? campaign.userIndex : '0');
+        if (executingAccounts.has(accountKey)) {
+          await refreshBadge();
+          return { success: true, queued: true, message: `Campaign queued in line for account #${campaign.userIndex || '0'}.` };
+        } else {
+          executeCampaign(campaign).catch((err) => console.error('[ServiceWorker] Trigger error:', err));
+          await refreshBadge();
+          return { success: true, started: true, message: `Campaign "${campaign.id}" triggered.` };
+        }
       } else {
         await checkAndExecuteDueCampaigns();
         return { success: true, message: 'Scheduler poll executed immediately.' };
@@ -878,6 +963,13 @@ async function handleRuntimeMessage(message, sender) {
           activeCampaignTabs.delete(message.campaignId);
         }
 
+        // Release account execution lock and trigger next queued campaign for this account
+        if (message.status === 'COMPLETED' || message.status === 'COMPLETED (DRY RUN)' || message.status === 'FAILED') {
+          const camp = await self.IDBStore.getCampaignById(message.campaignId).catch(() => null);
+          const accountKey = (camp?.accountEmail || message.accountEmail || '').toLowerCase().trim() || String(camp?.userIndex !== undefined ? camp.userIndex : '0');
+          releaseAccountLock(accountKey, message.campaignId).catch(() => {});
+        }
+
         if (message.status === 'COMPLETED' || message.status === 'COMPLETED (DRY RUN)') {
           notifyDesktop(
             '✅ Mail Merge Completed',
@@ -897,6 +989,46 @@ async function handleRuntimeMessage(message, sender) {
         return { success: true };
       }
       return { success: false, error: 'Missing campaignId or status' };
+    }
+
+    case 'CAMPAIGN_PROGRESS': {
+      if (message.campaignId && self.IDBStore) {
+        await self.IDBStore.updateCampaign(message.campaignId, {
+          status: 'PROCESSING',
+          progressStep: message.step,
+          progressMessage: message.message,
+          progressPct: message.pct
+        }).catch(() => {});
+      }
+      return { success: true };
+    }
+
+    case 'RETRY_ALL_FAILED': {
+      if (!self.IDBStore) {
+        return { success: false, error: 'Database not ready' };
+      }
+      const campaigns = await self.IDBStore.getCampaigns();
+      const retryable = campaigns.filter(
+        (c) => c.status === 'FAILED' && c.canAutoRetry !== false && c.errorCategory !== 'DRAFT_NOT_FOUND' && !(c.errorMessage && c.errorMessage.includes('[DRAFT_NOT_FOUND]'))
+      );
+
+      for (const camp of retryable) {
+        await self.IDBStore.updateCampaign(camp.id, {
+          status: 'QUEUED',
+          progressStep: 'QUEUED',
+          progressMessage: 'Queued in line...',
+          progressPct: 0,
+          errorMessage: null,
+          errorCategory: null,
+          failedAt: null,
+          scheduledAt: new Date().toISOString()
+        });
+        await self.IDBStore.addLog(camp.id, 'INFO', 'Campaign re-queued for execution via Retry All.');
+      }
+
+      checkAndExecuteDueCampaigns().catch((err) => console.error('[ServiceWorker] Retry all error:', err));
+      await refreshBadge();
+      return { success: true, count: retryable.length };
     }
 
     case 'AUTOMATE_DRIVE_PICKER': {

@@ -596,12 +596,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             btnRetryAllFailed.style.display = 'inline-flex';
             btnRetryAllFailed.onclick = async () => {
               btnRetryAllFailed.disabled = true;
-              btnRetryAllFailed.textContent = 'Retrying...';
-              showToast(`Retrying ${retryableFailed.length} retryable campaigns...`);
-              for (const camp of retryableFailed) {
-                await triggerCampaign(camp.id);
-                await new Promise((r) => setTimeout(r, 1000));
-              }
+              btnRetryAllFailed.textContent = 'Queueing...';
+              showToast(`Queueing ${retryableFailed.length} retryable campaigns...`);
+              const resp = await chrome.runtime.sendMessage({ action: 'RETRY_ALL_FAILED' }).catch(() => null);
+              showToast(resp?.count ? `⚡ Queued ${resp.count} campaign(s) in background execution pipeline!` : 'Campaigns queued');
               btnRetryAllFailed.disabled = false;
               btnRetryAllFailed.textContent = '↻ Retry All Failed';
               await loadCampaigns();
@@ -693,6 +691,43 @@ document.addEventListener('DOMContentLoaded', async () => {
         `;
       }
 
+      // Multi-stage status display for dashboard
+      let stageDisplayHtml = '';
+      if (camp.status === 'PROCESSING') {
+        const step = camp.progressStep || 'NAVIGATE';
+        const stageMap = {
+          'NAVIGATE': { label: '🧭 Step 1/5: Navigating', pct: 10 },
+          'LOAD_DRAFT': { label: '🔍 Step 2/5: Verifying Draft', pct: 30 },
+          'CLICK_CONTINUE': { label: '⚙️ Step 3/5: Preparing Merge', pct: 60 },
+          'WAIT_MODAL': { label: '👥 Step 4/5: Checking Audience', pct: 80 },
+          'SEND_ALL': { label: '🚀 Step 5/5: Sending Emails', pct: 95 }
+        };
+        const info = stageMap[step] || { label: step, pct: camp.progressPct || 15 };
+        const pct = camp.progressPct !== undefined ? camp.progressPct : info.pct;
+        stageDisplayHtml = `
+          <div style="margin-top: 4px;">
+            <div style="font-size: 10px; color: var(--sky); font-weight: 500; display: flex; align-items: center; justify-content: space-between; gap: 4px;">
+              <span>${info.label}</span>
+              <span style="color: var(--text-muted); font-family: var(--font-mono);">${pct}%</span>
+            </div>
+            <div style="background: rgba(255,255,255,0.1); border-radius: 4px; height: 4px; width: 100%; margin-top: 3px; overflow: hidden;">
+              <div style="background: #38bdf8; height: 100%; width: ${pct}%; transition: width 0.3s ease;"></div>
+            </div>
+          </div>
+        `;
+      } else if (camp.status === 'QUEUED') {
+        const accountKey = (camp.accountEmail || '').toLowerCase().trim() || String(camp.userIndex !== undefined ? camp.userIndex : '0');
+        const isBusy = allCampaigns.some((c) => c.status === 'PROCESSING' && ((c.accountEmail || '').toLowerCase().trim() || String(c.userIndex !== undefined ? c.userIndex : '0')) === accountKey);
+        if (isBusy) {
+          const queuedList = allCampaigns
+            .filter((c) => c.status === 'QUEUED' && ((c.accountEmail || '').toLowerCase().trim() || String(c.userIndex !== undefined ? c.userIndex : '0')) === accountKey)
+            .sort((a, b) => new Date(a.scheduledAt || a.createdAt || 0) - new Date(b.scheduledAt || b.createdAt || 0));
+          const idx = queuedList.findIndex((c) => c.id === camp.id);
+          const pos = idx >= 0 ? idx + 1 : 1;
+          stageDisplayHtml = `<div style="font-size: 10px; color: #fbbf24; margin-top: 2px;">⏳ In line (#${pos})</div>`;
+        }
+      }
+
       tr.innerHTML = `
         <td style="font-family: var(--font-mono); color: var(--text-muted); font-size: 11px;" title="${escapeHtml(camp.id)}">
           ${escapeHtml(shortId)}
@@ -720,8 +755,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         </td>
         <td>
           <span class="badge ${badgeClass}">
-            ${camp.status === 'PROCESSING' ? '● ' : ''}${camp.status === 'MISSED_OFFLINE' ? '⚠️ MISSED (OFFLINE)' : escapeHtml(camp.status)}
+            ${camp.status === 'PROCESSING' ? '● PROCESSING' : (camp.status === 'MISSED_OFFLINE' ? '⚠️ MISSED (OFFLINE)' : escapeHtml(camp.status))}
           </span>
+          ${stageDisplayHtml}
         </td>
         <td style="text-align: right; white-space: nowrap;">
           <div style="display: inline-flex; gap: 6px; justify-content: flex-end;">
@@ -1355,5 +1391,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+
+  // Live updates from background worker or Gmail automator
+  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg.action === 'CAMPAIGN_PROGRESS' || msg.action === 'CAMPAIGN_STATUS_UPDATE') {
+        loadCampaigns().catch(() => {});
+      }
+    });
   }
 });
