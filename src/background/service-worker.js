@@ -263,55 +263,63 @@ async function executeCampaign(campaign) {
       `Scheduler initiated campaign "${campaign.name || campaign.subject || campaign.id}".`
     );
 
-    // 3. ALWAYS launch a dedicated, isolated background tab for execution
-    // Never hijack or disturb existing foreground Gmail tabs where user may be reading/writing emails
-    const baseUrl = campaign.accountUrl || (campaign.userIndex !== undefined ? `https://mail.google.com/mail/u/${campaign.userIndex}/` : 'https://mail.google.com/mail/u/0/');
-    const cleanBaseUrl = baseUrl.replace(/\/$/, '');
-    const targetUrl = (campaign.draftId && campaign.draftId !== 'unknown')
-      ? `${cleanBaseUrl}/#drafts?compose=${campaign.draftId}`
-      : `${cleanBaseUrl}/#drafts`;
+    // 3. Prioritize reusing an existing open Gmail tab!
+    let targetTab = await findGmailTab(campaign);
 
-    console.log(`[ServiceWorker] 🛡️ Opening dedicated isolated background tab for campaign ${campaign.id}: ${targetUrl}`);
-    const gmailTab = await chrome.tabs.create({
-      url: targetUrl,
-      active: false // completely in background
-    });
-    createdBackgroundTabId = gmailTab.id;
+    if (!targetTab) {
+      // Only open a new tab as fallback if NO Gmail tab is open
+      const baseUrl = campaign.accountUrl || (campaign.userIndex !== undefined ? `https://mail.google.com/mail/u/${campaign.userIndex}/` : 'https://mail.google.com/mail/u/0/');
+      const cleanBaseUrl = baseUrl.replace(/\/$/, '');
+      const targetUrl = (campaign.draftId && campaign.draftId !== 'unknown')
+        ? `${cleanBaseUrl}/#drafts?compose=${campaign.draftId}`
+        : `${cleanBaseUrl}/#drafts`;
 
-    await waitForTabComplete(gmailTab.id, 25000);
-    await delay(2000);
+      console.log(`[ServiceWorker] 🛡️ No open Gmail tab found. Opening dedicated tab for campaign ${campaign.id}: ${targetUrl}`);
+      targetTab = await chrome.tabs.create({
+        url: targetUrl,
+        active: false // completely in background
+      });
+      createdBackgroundTabId = targetTab.id;
 
-    // Check if user is logged out and tab redirected to accounts.google.com
-    try {
-      const currentTab = await chrome.tabs.get(gmailTab.id);
-      if (currentTab && currentTab.url && currentTab.url.includes('accounts.google.com')) {
-        throw new Error('Google account login required (redirected to accounts.google.com). Please sign in to Gmail.');
+      await waitForTabComplete(targetTab.id, 25000);
+      await delay(2000);
+
+      // Check if user is logged out and tab redirected to accounts.google.com
+      try {
+        const currentTab = await chrome.tabs.get(targetTab.id);
+        if (currentTab && currentTab.url && currentTab.url.includes('accounts.google.com')) {
+          throw new Error('Google account login required (redirected to accounts.google.com). Please sign in to Gmail.');
+        }
+      } catch (checkErr) {
+        if (checkErr.message && checkErr.message.includes('Google account login required')) {
+          throw checkErr;
+        }
       }
-    } catch (checkErr) {
-      if (checkErr.message && checkErr.message.includes('Google account login required')) {
-        throw checkErr;
-      }
+    } else {
+      console.log(`[ServiceWorker] ⚡ Reusing existing open Gmail tab ${targetTab.id} for campaign ${campaign.id}`);
     }
 
-    // 4. Send message to content script in isolated tab and await handshake ACK
-    const sent = await sendMessageWithRetry(gmailTab.id, {
+    // 4. Send message to content script in target tab and await handshake ACK
+    const sent = await sendMessageWithRetry(targetTab.id, {
       action: 'EXECUTE_CAMPAIGN',
       campaign
     });
 
     if (sent) {
-      console.log(`[ServiceWorker] Dispatched campaign ${campaign.id} to tab ${gmailTab.id} (ACK received). Execution running in background tab.`);
-      // Track the execution tab and set 5-minute safety timeout to auto-close if hanging
-      activeCampaignTabs.set(campaign.id, {
-        tabId: gmailTab.id,
-        timeoutId: setTimeout(() => {
-          console.warn(`[ServiceWorker] Campaign ${campaign.id} safety timeout (5 min). Closing tab ${gmailTab.id}.`);
-          chrome.tabs.remove(gmailTab.id).catch(() => {});
-          activeCampaignTabs.delete(campaign.id);
-        }, 5 * 60 * 1000)
-      });
+      console.log(`[ServiceWorker] Dispatched campaign ${campaign.id} to tab ${targetTab.id} (ACK received). Execution running in tab.`);
+      // Only auto-close if WE created this dedicated tab; NEVER close user's existing tab
+      if (createdBackgroundTabId) {
+        activeCampaignTabs.set(campaign.id, {
+          tabId: createdBackgroundTabId,
+          timeoutId: setTimeout(() => {
+            console.warn(`[ServiceWorker] Campaign ${campaign.id} safety timeout (5 min). Closing tab ${createdBackgroundTabId}.`);
+            chrome.tabs.remove(createdBackgroundTabId).catch(() => {});
+            activeCampaignTabs.delete(campaign.id);
+          }, 5 * 60 * 1000)
+        });
+      }
     } else {
-      throw new Error(`Failed to deliver EXECUTE_CAMPAIGN message to isolated Gmail tab ${gmailTab.id}`);
+      throw new Error(`Failed to deliver EXECUTE_CAMPAIGN message to Gmail tab ${targetTab.id}`);
     }
   } catch (err) {
     console.error(`[ServiceWorker] Failed to execute campaign ${campaign.id}:`, err);
@@ -364,17 +372,33 @@ async function findGmailTab(campaign) {
     return null;
   }
 
-  // 1. If campaign specifies a user index (/u/0/, /u/1/, etc.), find that exact account tab
-  if (campaign && campaign.userIndex !== undefined) {
-    const targetPath = `/mail/u/${campaign.userIndex}/`;
-    const accountTab = tabs.find((t) => t.url && t.url.includes(targetPath));
-    if (accountTab) {
-      return accountTab;
+  // Determine target account path (/mail/u/0/, /mail/u/1/, etc.) if known
+  let targetPath = null;
+  if (campaign) {
+    if (campaign.accountUrl) {
+      const match = campaign.accountUrl.match(/\/mail\/u\/(\d+)/);
+      if (match) targetPath = `/mail/u/${match[1]}/`;
+    }
+    if (!targetPath && campaign.userIndex !== undefined) {
+      targetPath = `/mail/u/${campaign.userIndex}/`;
     }
   }
 
-  // 2. Fallback: Prefer active tab if one of them is active
+  // 1. If active tab matches target account (or no specific account required), use active tab immediately!
   const activeTab = tabs.find((t) => t.active);
+  if (activeTab) {
+    if (!targetPath || (activeTab.url && activeTab.url.includes(targetPath))) {
+      return activeTab;
+    }
+  }
+
+  // 2. Otherwise find any open tab for the target account
+  if (targetPath) {
+    const accountTab = tabs.find((t) => t.url && t.url.includes(targetPath));
+    if (accountTab) return accountTab;
+  }
+
+  // 3. Fallback to active tab or first available tab
   return activeTab || tabs[0];
 }
 

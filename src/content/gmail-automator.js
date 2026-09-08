@@ -44,7 +44,7 @@
     const startTime = Date.now();
     while (Date.now() - startTime < timeout) {
       try {
-        const result = predicate();
+        const result = await predicate();
         if (result) return result;
       } catch (_) {
         // Suppress transient query errors
@@ -676,19 +676,14 @@
             (actualSubject.length > 3 && expectedSubject.includes(actualSubject)) ||
             (expectedSubject.length > 3 && actualSubject.includes(expectedSubject));
         } else {
-          // If no subject expected, we cannot safely match without exact draftId
-          subjectMatches = !!(draftId && draftId !== 'unknown' && actualDraftId === draftId);
+          // If no subject expected, match by draftId or compose token
+          subjectMatches = !!(draftId && draftId !== 'unknown' && (actualDraftId === draftId || (window.location.hash && window.location.hash.includes(draftId))));
         }
 
-        // Check 2: Draft ID match
-        const draftIdMatches = (draftId && draftId !== 'unknown' && actualDraftId)
-          ? (actualDraftId === draftId)
-          : true;
-
-        // Check 3: Attached Google Sheet or Mail Merge element
+        // Check 2: Attached Google Sheet or Mail Merge Continue button
         const sheetLink = d.querySelector('a[href*="spreadsheets/d/"], [data-url*="spreadsheets/d/"]');
         const sheetChip = d.querySelector('div[role="button"][aria-label*="sheet" i], span[aria-label*="sheet" i], div.vR, div.afV');
-        const continueBtn = Array.from(d.querySelectorAll('button, div[role="button"]')).some((b) => /^Continue$/i.test((b.textContent || '').trim()));
+        const continueBtn = Array.from(d.querySelectorAll('button, div[role="button"]')).some((b) => /^(Continue|Send all)$/i.test((b.textContent || '').trim()));
 
         let sheetMatches = false;
         if (sheetLink && expectedSheetId) {
@@ -699,12 +694,22 @@
           sheetMatches = !!(sheetLink || sheetChip || continueBtn);
         }
 
-        if (subjectMatches && draftIdMatches && (sheetMatches || continueBtn)) {
+        // Check 3: Draft ID match
+        // Note: Gmail draftId can be a URL token (compose=GTv...) or an internal draft id (input[name="draft"]).
+        // When the subject matches and the Continue button is present, that is a confirmed match.
+        let draftIdMatches = true;
+        if (draftId && draftId !== 'unknown' && actualDraftId) {
+          draftIdMatches = (actualDraftId === draftId) ||
+            (window.location.hash && window.location.hash.includes(draftId)) ||
+            (subjectMatches && continueBtn);
+        }
+
+        if (subjectMatches && (sheetMatches || continueBtn) && draftIdMatches) {
           let score = 0;
           if (actualDraftId && draftId && actualDraftId === draftId) score += 20;
-          if (actualSubject === expectedSubject) score += 10;
+          if (actualSubject === expectedSubject) score += 15;
           if (sheetMatches) score += 10;
-          if (continueBtn) score += 5;
+          if (continueBtn) score += 10;
           candidates.push({ dialog: d, score });
         }
       }
@@ -857,12 +862,16 @@
       console.log('[GmailAutomator] 🚀 Executing scheduled native merge for draft: ' + (draftId || 'unknown') + ' (Subject: "' + (subject || '') + '")');
 
       try {
-        await reportProgress('NAVIGATE', 'Opening and verifying targeted draft...', 10);
+        // Auto-dismiss any Google spam / junk policy disclaimer modal right away
+        await dismissGoogleSpamDisclaimerIfNeeded(document);
 
-        // 1. Locate strictly matching compose dialog in this tab
+        await reportProgress('NAVIGATE', 'Locating and verifying targeted draft...', 10);
+
+        // 1. First check if matching compose dialog is ALREADY open in this tab
         let composeDialog = GmailAutomator.findStrictMatchingComposeDialog(draftId, campaign);
 
         if (!composeDialog) {
+          await dismissGoogleSpamDisclaimerIfNeeded(document);
           if (draftId && draftId !== 'unknown') {
             const targetHash = '#drafts?compose=' + draftId;
             if (window.location.hash !== targetHash) {
@@ -873,19 +882,24 @@
               window.location.hash = '#drafts';
             }
           }
-          await sleep(3500);
+          await sleep(2500);
+          await dismissGoogleSpamDisclaimerIfNeeded(document);
         }
 
-        // 2. Wait for compose window to load with STRICT verification
+        // 2. Wait for compose window to load with verification
         await reportProgress('LOAD_DRAFT', 'Verifying draft & Mail Merge session...', 30);
         if (!composeDialog) {
           try {
             composeDialog = await waitFor(
-              () => GmailAutomator.findStrictMatchingComposeDialog(draftId, campaign),
+              async () => {
+                await dismissGoogleSpamDisclaimerIfNeeded(document);
+                return GmailAutomator.findStrictMatchingComposeDialog(draftId, campaign);
+              },
               { timeout: 15000, errorMsg: 'Target mail merge draft not loaded via URL' }
             );
           } catch (_) {
-            // Search draft row in list strictly by expected subject
+            await dismissGoogleSpamDisclaimerIfNeeded(document);
+            // Fallback: search draft row in drafts list by expected subject
             if (subject) {
               const draftRows = document.querySelectorAll('tr[role="row"], div[role="row"]');
               for (const row of draftRows) {
@@ -898,7 +912,10 @@
             }
 
             composeDialog = await waitFor(
-              () => GmailAutomator.findStrictMatchingComposeDialog(draftId, campaign),
+              async () => {
+                await dismissGoogleSpamDisclaimerIfNeeded(document);
+                return GmailAutomator.findStrictMatchingComposeDialog(draftId, campaign);
+              },
               { timeout: 15000, errorMsg: 'Target draft not found or did not match mail merge verification' }
             );
           }
