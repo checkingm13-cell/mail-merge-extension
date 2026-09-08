@@ -998,13 +998,18 @@
             );
           } catch (_) {
             await dismissGoogleSpamDisclaimerIfNeeded(document);
-            // Fallback: search draft row in drafts list by expected subject
+            // Fallback: search draft rows in drafts list by expected subject
             if (subject) {
-              const draftRows = document.querySelectorAll('tr[role="row"], div[role="row"]');
+              const cleanSub = subject.toLowerCase().trim();
+              const draftRows = Array.from(document.querySelectorAll('tr[role="row"], div[role="row"]'))
+                .filter((r) => (r.textContent || '').toLowerCase().includes(cleanSub));
+
               for (const row of draftRows) {
-                const rowText = (row.textContent || '').trim().toLowerCase();
-                if (rowText.includes(subject.toLowerCase())) {
-                  await humanClick(row);
+                await humanClick(row);
+                await sleep(1500);
+                const dialog = await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
+                if (dialog) {
+                  composeDialog = dialog;
                   break;
                 }
               }
@@ -1086,7 +1091,38 @@
                   await humanClick(backBtn);
                   await sleep(400);
                 }
-                const fatalErr = new Error('Google Sheet Access Error: Gmail reported "Can\'t open the sheet". Please verify Google Sheet permissions for this account, ensure the sheet was not moved or deleted from Google Drive, and complete any "Verify it\'s you" security prompts in Chrome.');
+
+                // Check retry count: retry once after 2 minutes for temporary Drive 429 rate limit
+                const retryCount = campaign?.sheetRetryCount || 0;
+                if (retryCount < 1) {
+                  const postponeTime = Date.now() + 2 * 60 * 1000;
+                  console.warn(`[GmailAutomator] ⏳ Google Sheet access delay. Auto-retrying in 2 minutes for campaign ${campaignId}...`);
+                  if (campaignId && root.IDBStore) {
+                    await root.IDBStore.updateCampaign(campaignId, {
+                      status: 'QUEUED',
+                      scheduledAt: new Date(postponeTime).toISOString(),
+                      sheetRetryCount: 1
+                    }).catch(() => {});
+                    await root.IDBStore.addLog(
+                      campaignId,
+                      'WARN',
+                      'Google reported "Can\'t open the sheet" (temporary Drive rate limit or sync delay). Automatically retrying in 2 minutes.'
+                    ).catch(() => {});
+                  }
+                  if (chrome.runtime && chrome.runtime.sendMessage) {
+                    chrome.runtime.sendMessage({
+                      action: 'RESCHEDULE_CAMPAIGN',
+                      campaignId: campaignId,
+                      scheduledTime: postponeTime
+                    }).catch(() => {});
+                  }
+                  const postErr = new Error('Google Sheet access delayed. Auto-retrying in 2 minutes.');
+                  postErr.isPostponed = true;
+                  postErr.isFatal = true;
+                  throw postErr;
+                }
+
+                const fatalErr = new Error('Google Sheet Access Error: Gmail reported "Can\'t open the sheet" after retry. Please verify Google Sheet permissions for this account in Google Drive, ensure the sheet was not moved or deleted, and complete any "Verify it\'s you" security prompts in Chrome.');
                 fatalErr.isFatal = true;
                 throw fatalErr;
               }
@@ -1153,7 +1189,9 @@
         if (alertEl) {
           const alertText = (alertEl.textContent || '').toLowerCase();
           if (alertText.includes('reached a limit') || alertText.includes('sending limit')) {
-            throw new Error('Google Daily Sending Limit Reached: Gmail has blocked sending for this account due to 24-hour quota limits.');
+            const quotaErr = new Error('Google Daily Sending Limit Reached: Gmail has blocked sending for this account due to 24-hour quota limits.');
+            quotaErr.isQuotaLimit = true;
+            throw quotaErr;
           }
         }
 
@@ -1193,6 +1231,12 @@
 
         return { success: true, campaignId, sentCount: liveRecipientCount };
       } catch (error) {
+        if (error && error.isPostponed) {
+          console.warn('[GmailAutomator] ⏳ Campaign execution postponed:', error.message);
+          try { ExecutionHUD.remove(); } catch (_) {}
+          return { success: false, postponed: true, message: error.message };
+        }
+
         console.error('[GmailAutomator] ❌ Error executing scheduled native merge:', error);
         try {
           ExecutionHUD.error(error.message, currentStep);
@@ -1212,7 +1256,9 @@
             action: 'CAMPAIGN_STATUS_UPDATE',
             campaignId,
             status: 'FAILED',
-            logMessage: error.message
+            logMessage: error.message,
+            isQuotaLimit: !!error.isQuotaLimit,
+            accountEmail: campaign?.accountEmail
           }).catch(() => {});
         }
 

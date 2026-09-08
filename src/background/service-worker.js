@@ -20,6 +20,9 @@ const POLL_INTERVAL_MINUTES = 1;
 // Tracks active campaign execution tabs: campaignId -> { tabId, timeoutId }
 const activeCampaignTabs = new Map();
 
+// Tracks actively executing accounts to prevent concurrent campaign clashes
+const executingAccounts = new Set();
+
 // =============================================================================
 // LIFECYCLE & ALARM MANAGEMENT
 // =============================================================================
@@ -53,6 +56,9 @@ async function injectIntoExistingGmailTabs() {
 
     for (const tab of tabs) {
       try {
+        // Protect tab from Chrome Memory Saver / Sleeping Tabs
+        await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
+
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           files: [
@@ -139,37 +145,15 @@ async function checkAndExecuteDueCampaigns() {
     for (const camp of dueCampaigns) {
       if (camp.scheduledAt) {
         const schedTime = new Date(camp.scheduledAt).getTime();
-        // If overdue by more than 5 minutes, the PC was asleep or turned off during scheduled time
+        // Ponytail: Auto-execute overdue campaigns regardless of sleep/wake delay per user policy
         if (now - schedTime > FIVE_MINUTES_MS) {
-          console.warn(`[ServiceWorker] Campaign ${camp.id} was missed while offline. Scheduled at: ${camp.scheduledAt}. Requiring user confirmation.`);
-          await self.IDBStore.updateCampaign(camp.id, {
-            status: 'MISSED_OFFLINE',
-            missedAt: new Date().toISOString()
-          });
+          const overdueMinutes = Math.round((now - schedTime) / 60000);
+          console.log(`[ServiceWorker] Campaign ${camp.id} was scheduled for ${camp.scheduledAt} (${overdueMinutes}m ago). Executing now after wake-up.`);
           await self.IDBStore.addLog(
             camp.id,
-            'WARN',
-            `Campaign missed while PC was asleep/offline. Was scheduled for ${new Date(schedTime).toLocaleString()}. Waiting for user confirmation.`
+            'INFO',
+            `Executing overdue campaign (scheduled for ${new Date(schedTime).toLocaleTimeString()}, ${overdueMinutes}m late due to PC sleep/interval).`
           );
-
-          // Desktop Notification with warning
-          notifyDesktop(
-            '⚠️ Campaign Missed While Offline',
-            `"${camp.subject || 'Campaign'}" was scheduled for ${new Date(schedTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Open Gmail to Send Now or Reschedule.`
-          );
-
-          // Broadcast to Gmail tabs to show in-tab banner
-          try {
-            const tabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
-            for (const t of tabs) {
-              chrome.tabs.sendMessage(t.id, {
-                action: 'SHOW_MISSED_OFFLINE_BANNER',
-                campaign: camp
-              }).catch(() => {});
-            }
-          } catch (_) {}
-
-          continue; // Do NOT auto-send overdue campaigns!
         }
       }
       readyCampaigns.push(camp);
@@ -180,12 +164,12 @@ async function checkAndExecuteDueCampaigns() {
       return;
     }
 
-    console.log(`[ServiceWorker] Found ${readyCampaigns.length} on-time due campaign(s). Grouping by account...`);
+    console.log(`[ServiceWorker] Found ${readyCampaigns.length} ready due campaign(s). Grouping by account...`);
 
-    // Group due campaigns by account index
+    // Group due campaigns strictly by account email (or userIndex fallback)
     const accountGroups = {};
     for (const campaign of readyCampaigns) {
-      const key = campaign.userIndex || '0';
+      const key = (campaign.accountEmail || '').toLowerCase().trim() || String(campaign.userIndex !== undefined ? campaign.userIndex : '0');
       if (!accountGroups[key]) accountGroups[key] = [];
       accountGroups[key].push(campaign);
     }
@@ -214,6 +198,38 @@ async function checkAndExecuteDueCampaigns() {
  */
 async function executeCampaign(campaign) {
   let createdBackgroundTabId = null;
+  const accountKey = (campaign.accountEmail || '').toLowerCase().trim() || String(campaign.userIndex !== undefined ? campaign.userIndex : '0');
+
+  // Concurrency guard: Do not run two campaigns for the same account simultaneously
+  if (executingAccounts.has(accountKey)) {
+    console.log(`[ServiceWorker] ⏳ Account "${accountKey}" is currently executing another campaign. Will execute on next scheduler cycle.`);
+    return;
+  }
+
+  // Pre-execution network connectivity check
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    const retryCount = (campaign.networkRetryCount || 0) + 1;
+    if (retryCount <= 5) {
+      const postponeTime = Date.now() + 3 * 60 * 1000;
+      console.warn(`[ServiceWorker] 🌐 Internet offline. Postponing campaign ${campaign.id} by 3 minutes (attempt ${retryCount}/5).`);
+      await self.IDBStore.updateCampaign(campaign.id, {
+        status: 'QUEUED',
+        scheduledAt: new Date(postponeTime).toISOString(),
+        networkRetryCount: retryCount
+      });
+      await self.IDBStore.addLog(
+        campaign.id,
+        'WARN',
+        `Internet connection is offline. Campaign postponed by 3 minutes (retry attempt ${retryCount}/5).`
+      );
+      chrome.alarms.create(`CAMPAIGN_${campaign.id}`, { when: postponeTime });
+      return;
+    } else {
+      throw new Error('Network Offline: Internet connection was unavailable after 5 retry attempts.');
+    }
+  }
+
+  executingAccounts.add(accountKey);
 
   try {
     // 1. Check if user is actively editing this exact draft in any open Gmail tab
@@ -337,11 +353,61 @@ async function executeCampaign(campaign) {
     });
     await self.IDBStore.addLog(campaign.id, 'ERROR', `Execution trigger error: ${err.message}`);
 
+    // If Daily Sending Limit was reached, pause remaining campaigns for 12 hours
+    if (err.message && err.message.includes('Daily Sending Limit')) {
+      await pauseAccountCampaignsForQuota(campaign.accountEmail);
+    }
+
     notifyDesktop(
       '❌ Mail Merge Error',
       `Failed to send "${campaign.subject || 'Campaign'}": ${err.message}`,
       true
     );
+  } finally {
+    // 5-second buffer before releasing lock so Gmail DOM settles cleanly
+    setTimeout(() => {
+      executingAccounts.delete(accountKey);
+      checkAndExecuteDueCampaigns().catch(() => {});
+    }, 5000);
+  }
+}
+
+/**
+ * Pauses all pending campaigns for an account for 12 hours when Google Daily Sending Limit is hit.
+ * @param {string} accountEmail
+ */
+async function pauseAccountCampaignsForQuota(accountEmail) {
+  try {
+    if (!self.IDBStore) return;
+    const targetEmail = (accountEmail || '').toLowerCase().trim();
+    const campaigns = await self.IDBStore.getCampaigns();
+    const twelveHoursLater = new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString();
+    let count = 0;
+
+    for (const c of campaigns) {
+      if (c.status === 'QUEUED') {
+        const cEmail = (c.accountEmail || '').toLowerCase().trim();
+        if (!targetEmail || cEmail === targetEmail) {
+          await self.IDBStore.updateCampaign(c.id, {
+            scheduledAt: twelveHoursLater
+          });
+          await self.IDBStore.addLog(
+            c.id,
+            'WARN',
+            `Campaign postponed by 12 hours due to Google Daily Sending Limit reached on account "${targetEmail || 'default'}".`
+          );
+          count++;
+        }
+      }
+    }
+
+    notifyDesktop(
+      '⚠️ Google Sending Limit Reached',
+      `Daily limit reached for ${targetEmail || 'your account'}. ${count} pending campaign(s) paused for 12 hours.`,
+      true
+    );
+  } catch (err) {
+    console.error('[ServiceWorker] Error pausing campaigns for quota limit:', err);
   }
 }
 
@@ -372,7 +438,13 @@ async function findGmailTab(campaign) {
     return null;
   }
 
+  // Ensure all Gmail tabs are protected from Chrome Memory Saver
+  for (const t of tabs) {
+    chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
+  }
+
   const targetEmail = (campaign?.accountEmail || '').toLowerCase().trim();
+  let matchedTab = null;
 
   // 1. Highest Priority: Match by actual logged-in email in pinned tabs!
   if (targetEmail) {
@@ -380,40 +452,52 @@ async function findGmailTab(campaign) {
       try {
         const info = await chrome.tabs.sendMessage(t.id, { action: 'GET_TAB_ACCOUNT_INFO' }).catch(() => null);
         if (info && info.email && info.email.toLowerCase() === targetEmail) {
-          return t;
+          matchedTab = t;
+          break;
         }
       } catch (_) {}
     }
   }
 
   // Determine target account path (/mail/u/0/, /mail/u/1/, etc.) if known
-  let targetPath = null;
-  if (campaign) {
-    if (campaign.accountUrl) {
-      const match = campaign.accountUrl.match(/\/mail\/u\/(\d+)/);
-      if (match) targetPath = `/mail/u/${match[1]}/`;
+  if (!matchedTab) {
+    let targetPath = null;
+    if (campaign) {
+      if (campaign.accountUrl) {
+        const match = campaign.accountUrl.match(/\/mail\/u\/(\d+)/);
+        if (match) targetPath = `/mail/u/${match[1]}/`;
+      }
+      if (!targetPath && campaign.userIndex !== undefined) {
+        targetPath = `/mail/u/${campaign.userIndex}/`;
+      }
     }
-    if (!targetPath && campaign.userIndex !== undefined) {
-      targetPath = `/mail/u/${campaign.userIndex}/`;
+
+    // 2. If active tab matches target account (or no specific account required), use active tab immediately!
+    const activeTab = tabs.find((t) => t.active);
+    if (activeTab && (!targetPath || (activeTab.url && activeTab.url.includes(targetPath)))) {
+      matchedTab = activeTab;
+    } else if (targetPath) {
+      matchedTab = tabs.find((t) => t.url && t.url.includes(targetPath));
+    } else {
+      matchedTab = activeTab || tabs[0];
     }
   }
 
-  // 2. If active tab matches target account (or no specific account required), use active tab immediately!
-  const activeTab = tabs.find((t) => t.active);
-  if (activeTab) {
-    if (!targetPath || (activeTab.url && activeTab.url.includes(targetPath))) {
-      return activeTab;
-    }
+  // Check if tab was discarded by Chrome Memory Saver
+  if (matchedTab && matchedTab.discarded) {
+    console.log(`[ServiceWorker] 💤 Gmail tab ${matchedTab.id} was discarded by Chrome. Reloading...`);
+    await chrome.tabs.reload(matchedTab.id);
+    await waitForTabComplete(matchedTab.id, 25000);
+    await delay(2500);
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: matchedTab.id },
+        files: ['src/db/idb-store.js', 'src/content/gmail-automator.js', 'src/content/content.js']
+      });
+    } catch (_) {}
   }
 
-  // 3. Otherwise find any open tab for the target account
-  if (targetPath) {
-    const accountTab = tabs.find((t) => t.url && t.url.includes(targetPath));
-    if (accountTab) return accountTab;
-  }
-
-  // 4. Fallback to active tab or first available tab
-  return activeTab || tabs[0];
+  return matchedTab;
 }
 
 /**
@@ -768,6 +852,9 @@ async function handleRuntimeMessage(message, sender) {
             `Campaign sent${message.sentCount ? ' to ' + message.sentCount + ' recipients' : ''}.`
           );
         } else if (message.status === 'FAILED') {
+          if (message.isQuotaLimit || (message.logMessage && message.logMessage.includes('Daily Sending Limit'))) {
+            pauseAccountCampaignsForQuota(message.accountEmail);
+          }
           notifyDesktop(
             '❌ Mail Merge Error',
             `Campaign failed: ${message.logMessage || 'Execution failed'}`,
