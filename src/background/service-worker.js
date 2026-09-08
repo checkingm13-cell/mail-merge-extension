@@ -1031,6 +1031,128 @@ async function handleRuntimeMessage(message, sender) {
       return { success: true, count: retryable.length };
     }
 
+    case 'SCAN_OPEN_GMAIL_DRAFTS': {
+      const tabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
+      if (!tabs || tabs.length === 0) {
+        return { success: true, drafts: [], message: 'No open Gmail tabs detected' };
+      }
+
+      const targetEmail = (message.accountEmail || '').toLowerCase().trim();
+      const targetUserIndex = message.userIndex !== undefined && message.userIndex !== null ? String(message.userIndex) : null;
+      const allDrafts = [];
+      const seenDraftIds = new Set();
+
+      for (const t of tabs) {
+        try {
+          const resp = await chrome.tabs.sendMessage(t.id, { action: 'SCAN_COMPOSE_WINDOWS' });
+          if (resp && resp.success && Array.isArray(resp.drafts)) {
+            for (const d of resp.drafts) {
+              const draftKey = d.draftId || `${t.id}_${d.subject}_${d.sheetTitle || ''}`;
+              if (seenDraftIds.has(draftKey)) continue;
+              seenDraftIds.add(draftKey);
+
+              const draftEmail = (d.accountEmail || '').toLowerCase().trim();
+              const draftUserIndex = d.userIndex !== undefined ? String(d.userIndex) : null;
+
+              const matchesEmail = Boolean(targetEmail && draftEmail && draftEmail === targetEmail);
+              const matchesUserIndex = Boolean(targetUserIndex !== null && draftUserIndex !== null && draftUserIndex === targetUserIndex);
+              const matchesAccount = matchesEmail || matchesUserIndex || (!targetEmail && targetUserIndex === null);
+
+              allDrafts.push({
+                ...d,
+                tabId: t.id,
+                matchesAccount
+              });
+            }
+          }
+        } catch (_) {
+          // Tab may not have content script injected yet or is loading
+        }
+      }
+
+      // Sort matching drafts first
+      allDrafts.sort((a, b) => (b.matchesAccount ? 1 : 0) - (a.matchesAccount ? 1 : 0));
+
+      return { success: true, drafts: allDrafts };
+    }
+
+    case 'REBIND_AND_QUEUE_CAMPAIGN': {
+      if (!message.campaignId || !message.draftId) {
+        return { success: false, error: 'Missing campaignId or draftId' };
+      }
+      if (!self.IDBStore) {
+        return { success: false, error: 'Database not initialized' };
+      }
+
+      const campaign = await self.IDBStore.getCampaignById(message.campaignId);
+      if (!campaign) {
+        return { success: false, error: `Campaign "${message.campaignId}" not found.` };
+      }
+
+      const updates = {
+        draftId: message.draftId,
+        errorMessage: null,
+        errorCategory: null,
+        failedAt: null,
+        canAutoRetry: true
+      };
+
+      if (message.subject) updates.subject = message.subject;
+      if (message.sheetTitle) {
+        updates.sheetTitle = message.sheetTitle;
+        updates.spreadsheetTitle = message.sheetTitle;
+      }
+      if (message.sheetUrl) {
+        updates.sheetUrl = message.sheetUrl;
+        updates.spreadsheetUrl = message.sheetUrl;
+      }
+      if (message.recipientCount !== undefined && message.recipientCount > 0) {
+        updates.recipientCount = message.recipientCount;
+      }
+
+      if (message.dispatchTiming === 'scheduled' && message.scheduledTime) {
+        const schedTime = new Date(message.scheduledTime).getTime();
+        const isoDate = new Date(schedTime).toISOString();
+        updates.status = 'QUEUED';
+        updates.progressStep = 'SCHEDULED';
+        updates.progressMessage = `Scheduled for ${new Date(schedTime).toLocaleString()}`;
+        updates.progressPct = 0;
+        updates.scheduledAt = isoDate;
+
+        await self.IDBStore.updateCampaign(campaign.id, updates);
+        await self.IDBStore.addLog(campaign.id, 'INFO', `Draft rebound to "${message.draftId}". Rescheduled for ${isoDate}`);
+
+        if (schedTime <= Date.now() + 5000) {
+          checkAndExecuteDueCampaigns().catch(() => {});
+        } else {
+          chrome.alarms.create(`CAMPAIGN_${campaign.id}`, { when: schedTime });
+        }
+        await refreshBadge();
+        return { success: true, mode: 'scheduled', scheduledAt: isoDate };
+      } else {
+        // Immediate queue dispatch
+        updates.status = 'QUEUED';
+        updates.progressStep = 'QUEUED';
+        updates.progressMessage = 'Waiting in queue...';
+        updates.progressPct = 0;
+        updates.scheduledAt = new Date().toISOString();
+
+        await self.IDBStore.updateCampaign(campaign.id, updates);
+        await self.IDBStore.addLog(campaign.id, 'INFO', `Draft rebound to "${message.draftId}". Queued for immediate execution.`);
+
+        const accountKey = (campaign.accountEmail || '').toLowerCase().trim() || String(campaign.userIndex !== undefined ? campaign.userIndex : '0');
+        if (executingAccounts.has(accountKey)) {
+          await refreshBadge();
+          return { success: true, mode: 'queued', message: `Campaign queued in line for account #${campaign.userIndex || '0'}.` };
+        } else {
+          const updatedCampaign = await self.IDBStore.getCampaignById(campaign.id);
+          executeCampaign(updatedCampaign).catch((err) => console.error('[ServiceWorker] Rebind trigger error:', err));
+          await refreshBadge();
+          return { success: true, mode: 'immediate', message: `Campaign dispatched immediately.` };
+        }
+      }
+    }
+
     case 'AUTOMATE_DRIVE_PICKER': {
       // Executes picker script into all frames of the active tab
       const tabId = sender.tab?.id || (await findGmailTab())?.id;

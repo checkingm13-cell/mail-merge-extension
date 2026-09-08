@@ -403,9 +403,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const isMissingDraft = camp.errorCategory === 'DRAFT_NOT_FOUND' || camp.canAutoRetry === false || (camp.errorMessage && camp.errorMessage.includes('[DRAFT_NOT_FOUND]'));
         actionsHtml = `
           ${isMissingDraft ? `
-            <span style="font-size: 11px; color: var(--rose); font-weight: 500; display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; background: rgba(244, 63, 94, 0.1); border-radius: 4px;" title="Target draft missing in Gmail. Cannot retry without re-scheduling.">
-              ⚠️ Draft Missing (Re-schedule)
-            </span>
+            <button class="btn-action btn-fix-draft" data-action="fix-draft" data-id="${camp.id}" title="Fix missing draft in Dashboard" style="background: rgba(251, 146, 60, 0.18); border-color: #fb923c; color: #fb923c; font-weight: 600;">
+              🔧 Fix Draft
+            </button>
           ` : `
             <button class="btn-action btn-run" data-action="run" data-id="${camp.id}" title="Retry execution now">
               ↻ Retry Now
@@ -430,7 +430,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       // Warning message if missed offline
       const missedWarningHtml = (camp.status === 'MISSED_OFFLINE')
-        ? `<div class="campaign-error" style="color: #fbbf24; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.35);">⚠️ Missed while PC was offline. Click "Run Now" to dispatch immediately.</div>`
+        ? `<div class="campaign-error" style="color: #fbbf24; background: rgba(255, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.35);">⚠️ Missed while PC was offline. Click "Run Now" to dispatch immediately.</div>`
         : '';
 
       // Expandable Details Drawer
@@ -473,10 +473,20 @@ document.addEventListener('DOMContentLoaded', async () => {
       `;
 
       // Attach button event listeners
+      const btnFix = card.querySelector('[data-action="fix-draft"]');
       const btnRun = card.querySelector('[data-action="run"]');
       const btnCancel = card.querySelector('[data-action="cancel"]');
       const btnDelete = card.querySelector('[data-action="delete"]');
       const btnDrawer = card.querySelector('[data-toggle]');
+
+      if (btnFix) {
+        btnFix.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const targetUrl = chrome.runtime.getURL(`src/dashboard/dashboard.html?fixDraft=${encodeURIComponent(camp.id)}#tab-campaigns`);
+          chrome.tabs.create({ url: targetUrl });
+          window.close();
+        });
+      }
 
       if (btnDrawer) {
         btnDrawer.addEventListener('click', (e) => {
