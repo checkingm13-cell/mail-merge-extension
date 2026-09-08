@@ -315,6 +315,20 @@ async function executeCampaign(campaign) {
       console.log(`[ServiceWorker] ⚡ Reusing existing open Gmail tab ${targetTab.id} for campaign ${campaign.id}`);
     }
 
+    // Ensure the Chrome window containing this tab is NOT minimized (prevents Windows 11 EcoQoS timer clamping)
+    try {
+      if (targetTab && targetTab.windowId) {
+        const win = await chrome.windows.get(targetTab.windowId);
+        if (win && win.state === 'minimized') {
+          console.log(`[ServiceWorker] 🪟 Restoring minimized Chrome window ${targetTab.windowId} to normal state for reliable automation...`);
+          await chrome.windows.update(targetTab.windowId, { state: 'normal' });
+          await delay(1000);
+        }
+      }
+    } catch (winErr) {
+      console.warn('[ServiceWorker] Note on window state check:', winErr.message);
+    }
+
     // 4. Send message to content script in target tab and await handshake ACK
     const sent = await sendMessageWithRetry(targetTab.id, {
       action: 'EXECUTE_CAMPAIGN',

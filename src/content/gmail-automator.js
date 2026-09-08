@@ -116,7 +116,9 @@
    */
   async function humanClick(el) {
     if (!el) return;
-    el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    try {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    } catch (_) {}
     await sleep(80);
 
     const rect = el.getBoundingClientRect();
@@ -135,12 +137,19 @@
     el.dispatchEvent(new PointerEvent('pointerdown', eventOpts));
     el.dispatchEvent(new MouseEvent('mousedown', eventOpts));
     if (typeof el.focus === 'function') {
-      el.focus();
+      try { el.focus(); } catch (_) {}
     }
     await sleep(60);
     el.dispatchEvent(new PointerEvent('pointerup', eventOpts));
     el.dispatchEvent(new MouseEvent('mouseup', eventOpts));
     el.dispatchEvent(new MouseEvent('click', eventOpts));
+
+    // Dual-layer native click fallback: ensures triggers fire even if synthetic event was swallowed
+    if (typeof el.click === 'function') {
+      try {
+        el.click();
+      } catch (_) {}
+    }
   }
 
   /**
@@ -1258,6 +1267,20 @@
         } catch (_) {}
 
         await sleep(2000);
+
+        // Pre-check: Check if Google disabled "Send all" due to daily sending quota limits
+        const modalTextCheck = (modal.textContent || '').toLowerCase();
+        if (
+          modalTextCheck.includes('exceeds your daily sending limit') ||
+          modalTextCheck.includes('reached your daily sending limit') ||
+          modalTextCheck.includes('reached your limit for sending') ||
+          modalTextCheck.includes('exceeded your sending limit')
+        ) {
+          const quotaErr = new Error('Google Daily Sending Limit Exceeded: Google Mail Merge disabled "Send all" because this campaign exceeds your remaining 24-hour quota.');
+          quotaErr.isQuotaLimit = true;
+          quotaErr.isFatal = true;
+          throw quotaErr;
+        }
 
         // 5. Click "Send all" with state verification and up to 3 retries
         await reportProgress('SEND_ALL', 'Clicking Send all...', 95);
