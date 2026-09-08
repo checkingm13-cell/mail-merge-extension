@@ -1329,7 +1329,8 @@ async function handleRuntimeMessage(message, sender) {
               scheduledAt: new Date(nextTime).toISOString(),
               autoRetryCount: retryCount,
               errorMessage: message.logMessage || message.error || 'Execution interrupted',
-              progressMessage: `Auto-recovering in ${Math.round(delayMs / 1000)}s (attempt ${retryCount}/${RETRY_CONFIG.maxRetries})...`
+              progressMessage: `Auto-recovering in ${Math.round(delayMs / 1000)}s (attempt ${retryCount}/${RETRY_CONFIG.maxRetries})...`,
+              domAutopsy: message.domAutopsy || undefined
             });
             await self.IDBStore.addLog(
               message.campaignId,
@@ -1343,7 +1344,8 @@ async function handleRuntimeMessage(message, sender) {
               errorMessage: message.logMessage || message.error || 'Execution failed',
               errorCategory: message.errorCategory || undefined,
               canAutoRetry: !isDraftMissing && !isQuota,
-              failedAt: new Date().toISOString()
+              failedAt: new Date().toISOString(),
+              domAutopsy: message.domAutopsy || undefined
             });
           }
         } else {

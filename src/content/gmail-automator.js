@@ -313,6 +313,81 @@
   }
 
   /**
+   * Captures a lightweight, searchable snapshot of the DOM state at the exact moment of failure.
+   * Complements visual screenshots with exact text, button labels, URL hash, and DOM snippets.
+   * Overhead is negligible (~1.5 - 2.5 KB JSON), causing zero UI or DB lag.
+   * @param {string} [currentStep]
+   * @returns {Object}
+   */
+  function captureFailureContext(currentStep = 'UNKNOWN') {
+    try {
+      // 1. Capture all open dialogs (Compose, Modals, Popups)
+      const dialogElements = Array.from(
+        document.querySelectorAll('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, div.M9, div.AD')
+      ).filter((d) => d.offsetWidth > 0 && d.offsetHeight > 0);
+
+      const dialogs = dialogElements.map((d) => {
+        // Extract all clickable buttons inside the dialog
+        const buttons = Array.from(d.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'))
+          .map((b) => (b.textContent || b.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' '))
+          .filter((t) => t.length > 0 && t.length < 50);
+
+        // Deduplicate buttons
+        const uniqueButtons = Array.from(new Set(buttons));
+
+        // Truncate HTML snippet (max 1500 chars to prevent any DB bloat)
+        const htmlSnippet = d.outerHTML ? d.outerHTML.substring(0, 1500) : '';
+
+        return {
+          role: d.getAttribute('role') || 'unknown',
+          ariaLabel: d.getAttribute('aria-label') || '',
+          className: (d.className || '').toString().slice(0, 80),
+          visibleButtons: uniqueButtons,
+          htmlSnippet: htmlSnippet
+        };
+      });
+
+      // 2. Visible notification banners / alerts (e.g. daily limit, temporary error)
+      const alerts = Array.from(
+        document.querySelectorAll('.vh, [role="alert"], div[aria-live="assertive"]')
+      )
+        .filter((el) => el.offsetWidth > 0 && el.offsetHeight > 0)
+        .map((el) => (el.textContent || '').trim().replace(/\s+/g, ' '))
+        .filter((t) => t.length > 0 && t.length < 160);
+
+      // 3. Capture active focused element
+      const ae = document.activeElement;
+      let activeElDesc = 'none';
+      if (ae && ae !== document.body) {
+        const tag = (ae.tagName || '').toLowerCase();
+        const cls = ae.className && typeof ae.className === 'string'
+          ? '.' + ae.className.trim().split(/\s+/).slice(0, 2).join('.')
+          : '';
+        const aria = ae.getAttribute('aria-label') ? `[aria-label="${ae.getAttribute('aria-label')}"]` : '';
+        activeElDesc = `${tag}${cls}${aria}`;
+      }
+
+      return {
+        timestamp: new Date().toISOString(),
+        url: window.location.href,
+        hash: window.location.hash || '',
+        activeElement: activeElDesc,
+        lastKnownStep: currentStep || (typeof window !== 'undefined' && window.__MM_LAST_STEP__) || 'UNKNOWN',
+        visibleDialogs: dialogs,
+        visibleAlerts: Array.from(new Set(alerts))
+      };
+    } catch (err) {
+      return {
+        error: 'Failed to capture DOM autopsy',
+        message: err.message,
+        timestamp: new Date().toISOString(),
+        url: window.location.href,
+        hash: window.location.hash || ''
+      };
+    }
+  }
+
+  /**
    * Automatically detects and dismisses interfering Google dialogs:
    * 1. Bulk sender / spam policy warning ("Help fight junk mail") -> checks "Don't show again" + "Got it"
    * 2. "Missing merge tags" dialog -> clicks "Send anyway" so 24/7 campaigns never stall
@@ -1274,6 +1349,9 @@
       // Helper to report live progress to IDB, popup, and in-tab HUD
       const reportProgress = async (step, message, pct) => {
         currentStep = step;
+        if (typeof window !== 'undefined') {
+          window.__MM_LAST_STEP__ = step;
+        }
         console.log(`[GmailAutomator] [${pct}%] ${step}: ${message}`);
         try {
           ExecutionHUD.update(step, message, pct);
@@ -1701,7 +1779,18 @@
           ExecutionHUD.error(error.message, currentStep);
         } catch (_) {}
 
-        // Capture visual snapshot of the screen at the moment of failure
+        // 1. Capture lightweight DOM Autopsy (~2 KB JSON snapshot of exact DOM, buttons, hash, alerts)
+        let domAutopsy = null;
+        try {
+          domAutopsy = captureFailureContext(currentStep);
+          if (typeof window !== 'undefined') {
+            window.__MM_LAST_STEP__ = null;
+          }
+        } catch (e) {
+          console.warn('[GmailAutomator] DOM autopsy capture warning:', e);
+        }
+
+        // 2. Capture visual snapshot of the screen at the moment of failure (Screenshots preserved!)
         await captureForensicSnapshot(
           'EXECUTION_FAILED',
           document.querySelector('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, div.AD') || document.body,
@@ -1719,7 +1808,8 @@
             errorMessage: error.message,
             errorCategory: errorCategory,
             canAutoRetry: canAutoRetry,
-            failedAt: new Date().toISOString()
+            failedAt: new Date().toISOString(),
+            domAutopsy: domAutopsy
           }).catch(() => {});
           await root.IDBStore.addLog(campaignId, 'ERROR', 'Scheduled dispatch failed: ' + error.message).catch(() => {});
         }
@@ -1733,7 +1823,8 @@
             errorCategory: errorCategory,
             canAutoRetry: canAutoRetry,
             isQuotaLimit: !!error.isQuotaLimit,
-            accountEmail: campaign?.accountEmail
+            accountEmail: campaign?.accountEmail,
+            domAutopsy: domAutopsy
           }).catch(() => {});
         }
 

@@ -1486,6 +1486,58 @@ document.addEventListener('DOMContentLoaded', async () => {
           </div>
         ` : ''}
 
+        ${camp.domAutopsy ? `
+          <div>
+            <label style="font-size: 11px; font-weight: 600; color: #38bdf8; text-transform: uppercase; display: flex; align-items: center; justify-content: space-between;">
+              <span style="display: flex; align-items: center; gap: 6px;">
+                🔬 DOM Autopsy &amp; Machine Forensics
+              </span>
+              <span style="font-size: 10px; color: var(--text-muted); font-weight: 400; text-transform: none;">(~2 KB lightweight DOM state)</span>
+            </label>
+            <div style="background: #090d16; border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 6px; padding: 12px; margin-top: 6px; font-size: 11px;">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; color: var(--text-muted);">
+                <div><strong>URL:</strong> <span style="color: var(--text-primary); word-break: break-all;">${escapeHtml(camp.domAutopsy.url || '')}</span></div>
+                <div><strong>Hash:</strong> <span style="color: #38bdf8; font-family: var(--font-mono);">${escapeHtml(camp.domAutopsy.hash || '(none)')}</span></div>
+                <div><strong>Last Step:</strong> <span style="color: #f59e0b; font-family: var(--font-mono); font-weight: 600;">${escapeHtml(camp.domAutopsy.lastKnownStep || 'UNKNOWN')}</span></div>
+                <div><strong>Active Focus:</strong> <span style="color: var(--text-primary); font-family: var(--font-mono);">${escapeHtml(camp.domAutopsy.activeElement || 'none')}</span></div>
+              </div>
+
+              ${camp.domAutopsy.visibleAlerts && camp.domAutopsy.visibleAlerts.length > 0 ? `
+                <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 4px; padding: 6px 10px; margin-bottom: 10px; color: #fca5a5;">
+                  <strong>⚠️ Visible Banner/Alert:</strong> ${camp.domAutopsy.visibleAlerts.map(a => escapeHtml(a)).join(' | ')}
+                </div>
+              ` : ''}
+
+              ${camp.domAutopsy.visibleDialogs && camp.domAutopsy.visibleDialogs.length > 0 ? `
+                <div style="margin-bottom: 6px;">
+                  <strong style="color: var(--text-secondary);">Visible Dialogs Found (${camp.domAutopsy.visibleDialogs.length}):</strong>
+                </div>
+                ${camp.domAutopsy.visibleDialogs.map((d, idx) => `
+                  <div style="background: rgba(56, 189, 248, 0.04); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 4px; padding: 8px; margin-bottom: 6px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                      <span style="color: #38bdf8; font-weight: 600;">Dialog ${idx + 1} (Role: ${escapeHtml(d.role)}${d.ariaLabel ? ' – "' + escapeHtml(d.ariaLabel) + '"' : ''})</span>
+                    </div>
+                    <div style="color: var(--text-muted); margin-bottom: 6px;">
+                      <strong style="color: var(--text-secondary);">Visible Buttons:</strong>
+                      ${d.visibleButtons && d.visibleButtons.length > 0
+                        ? d.visibleButtons.map(b => `<span style="display: inline-block; background: rgba(56, 189, 248, 0.15); color: #7dd3fc; padding: 1px 6px; border-radius: 3px; margin: 2px 3px; font-family: var(--font-mono); font-size: 10px;">${escapeHtml(b)}</span>`).join('')
+                        : '<span style="color: #f87171;">[None detected]</span>'}
+                    </div>
+                    ${d.htmlSnippet ? `
+                      <details style="cursor: pointer;">
+                        <summary style="color: var(--text-secondary); font-size: 10px;">View Truncated HTML Snippet (Ctrl+F to search)</summary>
+                        <pre style="background: #020617; color: #34d399; padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 10px; margin-top: 4px; white-space: pre-wrap; word-break: break-all; max-height: 120px;">${escapeHtml(d.htmlSnippet)}</pre>
+                      </details>
+                    ` : ''}
+                  </div>
+                `).join('')}
+              ` : `
+                <div style="color: #f87171; font-weight: 500; padding: 4px 0;">⚠️ No visible modal or compose dialogs found on screen at time of failure.</div>
+              `}
+            </div>
+          </div>
+        ` : ''}
+
         <div>
           <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase;">Body Template Preview</label>
           <div style="background: var(--bg-input); padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); font-family: var(--font-mono); font-size: 11px; max-height: 140px; overflow-y: auto; white-space: pre-wrap; margin-top: 4px;">
@@ -1564,9 +1616,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         errorTextEl.textContent = camp.errorMessage || 'No visual or DOM snapshot recorded.';
         imageEl.style.display = 'none';
         noImgPlaceholder.style.display = 'block';
-        noImgPlaceholder.textContent = 'No visual screenshot captured for this campaign.';
-        domSectionEl.style.display = 'none';
+        noImgPlaceholder.textContent = 'No visual screenshot captured for this campaign. DOM autopsy state preserved below.';
         btnDownload.style.display = 'none';
+
+        if (camp.domAutopsy) {
+          domSectionEl.style.display = 'block';
+          let snippet = `=== DOM AUTOPSY (MACHINE FORENSICS) ===\n`;
+          snippet += `Last Step: ${camp.domAutopsy.lastKnownStep || 'UNKNOWN'}\n`;
+          snippet += `URL: ${camp.domAutopsy.url || ''}\n`;
+          snippet += `Hash: ${camp.domAutopsy.hash || '(none)'}\n`;
+          snippet += `Active Element: ${camp.domAutopsy.activeElement || 'none'}\n`;
+          if (camp.domAutopsy.visibleAlerts && camp.domAutopsy.visibleAlerts.length > 0) {
+            snippet += `Visible Alerts: ${camp.domAutopsy.visibleAlerts.join(' | ')}\n`;
+          }
+          if (camp.domAutopsy.visibleDialogs && camp.domAutopsy.visibleDialogs.length > 0) {
+            snippet += `Visible Dialogs (${camp.domAutopsy.visibleDialogs.length}):\n`;
+            camp.domAutopsy.visibleDialogs.forEach((d, i) => {
+              snippet += `  [#${i + 1}] Role="${d.role}" Aria="${d.ariaLabel || ''}" Buttons=[${(d.visibleButtons || []).join(', ')}]\n`;
+            });
+          }
+          domSnippetEl.textContent = snippet.trim();
+        } else {
+          domSectionEl.style.display = 'none';
+        }
         return;
       }
 
@@ -1590,10 +1662,33 @@ document.addEventListener('DOMContentLoaded', async () => {
         btnDownload.style.display = 'none';
       }
 
-      if (capture.domSnippet || capture.popupTitle) {
+      if (capture.domSnippet || capture.popupTitle || camp.domAutopsy) {
         domSectionEl.style.display = 'block';
-        const snippet = (capture.popupTitle ? `[Popup/Modal Title: ${capture.popupTitle}]\n\n` : '') + (capture.domSnippet || '');
-        domSnippetEl.textContent = snippet;
+        let snippet = '';
+        if (camp.domAutopsy) {
+          snippet += `=== DOM AUTOPSY (MACHINE FORENSICS) ===\n`;
+          snippet += `Last Step: ${camp.domAutopsy.lastKnownStep || 'UNKNOWN'}\n`;
+          snippet += `URL: ${camp.domAutopsy.url || ''}\n`;
+          snippet += `Hash: ${camp.domAutopsy.hash || '(none)'}\n`;
+          snippet += `Active Element: ${camp.domAutopsy.activeElement || 'none'}\n`;
+          if (camp.domAutopsy.visibleAlerts && camp.domAutopsy.visibleAlerts.length > 0) {
+            snippet += `Visible Alerts: ${camp.domAutopsy.visibleAlerts.join(' | ')}\n`;
+          }
+          if (camp.domAutopsy.visibleDialogs && camp.domAutopsy.visibleDialogs.length > 0) {
+            snippet += `Visible Dialogs (${camp.domAutopsy.visibleDialogs.length}):\n`;
+            camp.domAutopsy.visibleDialogs.forEach((d, i) => {
+              snippet += `  [#${i + 1}] Role="${d.role}" Aria="${d.ariaLabel || ''}" Buttons=[${(d.visibleButtons || []).join(', ')}]\n`;
+            });
+          }
+          snippet += `\n=== CAPTURED ELEMENT SNIPPET ===\n`;
+        }
+        if (capture.popupTitle) {
+          snippet += `[Popup/Modal Title: ${capture.popupTitle}]\n\n`;
+        }
+        if (capture.domSnippet) {
+          snippet += capture.domSnippet;
+        }
+        domSnippetEl.textContent = snippet.trim();
       } else {
         domSectionEl.style.display = 'none';
       }
