@@ -388,6 +388,158 @@
   }
 
   /**
+   * Detects Google multi-modal limit, daily sending limit, or quota error alerts
+   * across visible banners, toasts, and snackbars.
+   * Recognizes "multi-modal limit exceeded", red error snackbars, and all variations.
+   * @returns {{ detected: boolean, element: Element, message: string } | null}
+   */
+  function detectGoogleQuotaOrLimitAlert() {
+    try {
+      const candidates = Array.from(
+        document.querySelectorAll(
+          '.vh, [role="alert"], div[aria-live="assertive"], .bBe, .a8, .b8.UC, .aYF, div.Kj-JD, div[role="alertdialog"], span.bAf, span.bAg, div[class*="snackbar"], div[class*="toast"]'
+        )
+      );
+
+      for (const el of candidates) {
+        if (!el || !el.isConnected) continue;
+
+        // Verify element has physical presence / visibility
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+
+        const text = (el.textContent || '').toLowerCase().trim();
+        if (!text || text.length < 5) continue;
+
+        // 1. Textual patterns for Google sending limits, multi-modal blocks, and quota alerts
+        const isQuotaText =
+          text.includes('multi-modal limit') ||
+          text.includes('multi modal limit') ||
+          text.includes('multimodal limit') ||
+          text.includes('multi-merge limit') ||
+          text.includes('multi merge limit') ||
+          text.includes('limit exceeded') ||
+          (text.includes('exceeded') && text.includes('limit')) ||
+          text.includes('reached a limit') ||
+          text.includes('reached your limit') ||
+          text.includes('sending limit') ||
+          text.includes('daily sending limit') ||
+          text.includes('exceeded your sending limit') ||
+          text.includes('exceeds your daily sending limit') ||
+          text.includes('blocked sending') ||
+          (text.includes('quota') && (text.includes('exceeded') || text.includes('limit'))) ||
+          ((text.includes('unable to send') || text.includes('could not be sent')) && (text.includes('limit') || text.includes('try again later')));
+
+        // 2. Red toast / snackbar visual color check (Google error red #d93025 / rgb(217, 48, 37))
+        let isRedAlert = false;
+        try {
+          const style = window.getComputedStyle(el);
+          const bg = style.backgroundColor || '';
+          isRedAlert =
+            bg.includes('217, 48, 37') ||
+            bg.includes('217, 48, 38') ||
+            bg.includes('234, 67, 53') ||
+            bg.includes('220, 38, 38');
+        } catch (_) {}
+
+        if (isQuotaText || (isRedAlert && (text.includes('limit') || text.includes('error') || text.includes('failed')))) {
+          return {
+            detected: true,
+            element: el,
+            message: (el.textContent || '').trim()
+          };
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  let activeRetroactiveGuardInterval = null;
+
+  /**
+   * Spawns a 15-second retroactive safety guard.
+   * If Google displays a late asynchronous rejection red box ("multi-modal limit exceeded"),
+   * it intercepts it, retroactively flips the campaign status from COMPLETED -> FAILED (QUOTA_EXCEEDED),
+   * captures a screenshot & DOM autopsy, and triggers the 12-hour account pause.
+   */
+  function startRetroactiveQuotaGuard(campaignId, campaign, recipientCount) {
+    if (!campaignId) return;
+    if (activeRetroactiveGuardInterval) {
+      clearInterval(activeRetroactiveGuardInterval);
+    }
+
+    const guardStart = Date.now();
+    const GUARD_DURATION_MS = 15000; // 15 seconds
+
+    console.log(`[GmailAutomator] 🛡️ 15s Retroactive Quota Guard armed for campaign ${campaignId}...`);
+
+    activeRetroactiveGuardInterval = setInterval(async () => {
+      if (Date.now() - guardStart > GUARD_DURATION_MS) {
+        clearInterval(activeRetroactiveGuardInterval);
+        activeRetroactiveGuardInterval = null;
+        return;
+      }
+
+      const alert = detectGoogleQuotaOrLimitAlert();
+      if (alert) {
+        clearInterval(activeRetroactiveGuardInterval);
+        activeRetroactiveGuardInterval = null;
+
+        console.error(`[GmailAutomator] 🚨 Late Google Quota Alert Intercepted (${Math.round((Date.now() - guardStart) / 1000)}s post-send):`, alert.message);
+
+        // 1. Capture visual screenshot of the red box
+        await captureForensicSnapshot(
+          'LATE_QUOTA_REJECTION',
+          alert.element,
+          `Late Google Server Rejection: ${alert.message}`,
+          campaign
+        );
+
+        // 2. Capture DOM Autopsy
+        const domAutopsy = captureFailureContext('LATE_QUOTA_REJECTION');
+
+        // 3. Retroactively update campaign in IDB
+        if (root.IDBStore) {
+          await root.IDBStore.updateCampaign(campaignId, {
+            status: 'FAILED',
+            errorCategory: 'QUOTA_EXCEEDED',
+            errorMessage: `Late Google Server Rejection: "${alert.message.slice(0, 160)}"`,
+            canAutoRetry: false,
+            failedAt: new Date().toISOString(),
+            domAutopsy: domAutopsy
+          }).catch(() => {});
+
+          await root.IDBStore.addLog(
+            campaignId,
+            'ERROR',
+            `Campaign retroactively marked FAILED: Google returned asynchronous error "${alert.message}". Account sending paused for 12 hours.`
+          ).catch(() => {});
+        }
+
+        // 4. Update floating in-tab Execution HUD
+        try {
+          ExecutionHUD.error(`Quota Exceeded: ${alert.message.slice(0, 60)}`, 'POST_SEND');
+        } catch (_) {}
+
+        // 5. Notify service worker to pause account campaigns for 12 hours
+        if (chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({
+            action: 'CAMPAIGN_STATUS_UPDATE',
+            campaignId,
+            status: 'FAILED',
+            errorCategory: 'QUOTA_EXCEEDED',
+            isQuotaLimit: true,
+            logMessage: `Late Google multi-modal limit exceeded: ${alert.message}`,
+            canAutoRetry: false,
+            accountEmail: campaign?.accountEmail || campaign?.senderEmail,
+            domAutopsy: domAutopsy
+          }).catch(() => {});
+        }
+      }
+    }, 1000);
+  }
+
+  /**
    * Automatically detects and dismisses interfering Google dialogs:
    * 1. Bulk sender / spam policy warning ("Help fight junk mail") -> checks "Don't show again" + "Got it"
    * 2. "Missing merge tags" dialog -> clicks "Send anyway" so 24/7 campaigns never stall
@@ -1719,17 +1871,29 @@
           { maxRetries: 3, actionName: 'Click "Send all"', retryDelay: 1200, timeoutPerAttempt: 3000 }
         );
 
-        await sleep(1500);
+        // 5-Second Active Post-Send Watchdog Window:
+        // Actively watch for Google red alert box ("multi-modal limit exceeded", daily sending limit, etc.)
+        await reportProgress('VERIFYING_DISPATCH', 'Verifying Gmail acceptance (watching for quota/limit alerts)...', 98);
+        const watchdogStart = Date.now();
+        const WATCHDOG_DURATION = 5000;
+        let quotaAlertFound = null;
 
-        // Check for Google daily sending limit alert
-        const alertEl = document.querySelector('.vh, [role="alert"], div[aria-live="assertive"]');
-        if (alertEl) {
-          const alertText = (alertEl.textContent || '').toLowerCase();
-          if (alertText.includes('reached a limit') || alertText.includes('sending limit')) {
-            const quotaErr = new Error('Google Daily Sending Limit Reached: Gmail has blocked sending for this account due to 24-hour quota limits.');
-            quotaErr.isQuotaLimit = true;
-            throw quotaErr;
+        while (Date.now() - watchdogStart < WATCHDOG_DURATION) {
+          const alert = detectGoogleQuotaOrLimitAlert();
+          if (alert) {
+            quotaAlertFound = alert;
+            break;
           }
+          await sleep(300);
+        }
+
+        if (quotaAlertFound) {
+          const quotaErrMsg = `Google Multi-Modal / Daily Sending Limit Exceeded: "${quotaAlertFound.message.slice(0, 160)}"`;
+          const quotaErr = new Error(quotaErrMsg);
+          quotaErr.isQuotaLimit = true;
+          quotaErr.category = 'QUOTA_EXCEEDED';
+          quotaErr.alertElement = quotaAlertFound.element;
+          throw quotaErr;
         }
 
         await reportProgress('COMPLETED', 'Sent successfully!', 100);
@@ -1766,6 +1930,9 @@
           }).catch(() => {});
         }
 
+        // 7. Arm 15-Second Retroactive Quota Guard for slow network server rejections
+        startRetroactiveQuotaGuard(campaignId, campaign, liveRecipientCount);
+
         return { success: true, campaignId, sentCount: liveRecipientCount };
       } catch (error) {
         if (error && error.isPostponed) {
@@ -1791,16 +1958,18 @@
         }
 
         // 2. Capture visual snapshot of the screen at the moment of failure (Screenshots preserved!)
+        const alertOrModal = error?.alertElement || document.querySelector('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, div.AD, .vh, [role="alert"], .bBe') || document.body;
         await captureForensicSnapshot(
-          'EXECUTION_FAILED',
-          document.querySelector('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, div.AD') || document.body,
+          error?.isQuotaLimit ? 'QUOTA_LIMIT_EXCEEDED' : 'EXECUTION_FAILED',
+          alertOrModal,
           error.message,
           campaign
         );
 
+        const isQuota = !!error?.isQuotaLimit || (error?.category === 'QUOTA_EXCEEDED');
         const isDraftNotFound = (error && (error.category === 'DRAFT_NOT_FOUND' || (error.message && error.message.includes('[DRAFT_NOT_FOUND]'))));
-        const errorCategory = error?.category || (isDraftNotFound ? 'DRAFT_NOT_FOUND' : 'EXECUTION_ERROR');
-        const canAutoRetry = error?.canAutoRetry !== undefined ? error.canAutoRetry : !isDraftNotFound;
+        const errorCategory = isQuota ? 'QUOTA_EXCEEDED' : (error?.category || (isDraftNotFound ? 'DRAFT_NOT_FOUND' : 'EXECUTION_ERROR'));
+        const canAutoRetry = isQuota ? false : (error?.canAutoRetry !== undefined ? error.canAutoRetry : !isDraftNotFound);
 
         if (campaignId && root.IDBStore) {
           await root.IDBStore.updateCampaign(campaignId, {
@@ -1822,8 +1991,8 @@
             logMessage: error.message,
             errorCategory: errorCategory,
             canAutoRetry: canAutoRetry,
-            isQuotaLimit: !!error.isQuotaLimit,
-            accountEmail: campaign?.accountEmail,
+            isQuotaLimit: isQuota,
+            accountEmail: campaign?.accountEmail || campaign?.senderEmail,
             domAutopsy: domAutopsy
           }).catch(() => {});
         }

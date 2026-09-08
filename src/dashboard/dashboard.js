@@ -703,9 +703,71 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       renderCampaignsTable();
       updateQueueStatusWidget();
+      await checkAndRenderQuotaBanner();
     } catch (err) {
       console.error('[Dashboard] Error loading campaigns:', err);
       campaignsTableBody.innerHTML = `<tr><td colspan="7" class="table-empty" style="color: var(--rose);">Error loading campaigns: ${escapeHtml(err.message)}</td></tr>`;
+    }
+  }
+
+  async function checkAndRenderQuotaBanner() {
+    const bannerContainer = document.getElementById('quotaWarningBannerContainer');
+    if (!bannerContainer) return;
+
+    try {
+      const resp = await chrome.runtime.sendMessage({ action: 'GET_ACCOUNT_QUOTA_LOCKS' }).catch(() => null);
+      const locks = resp?.locks || {};
+      const activeKeys = Object.keys(locks);
+
+      if (activeKeys.length === 0) {
+        bannerContainer.style.display = 'none';
+        bannerContainer.innerHTML = '';
+        return;
+      }
+
+      bannerContainer.style.display = 'block';
+      bannerContainer.innerHTML = activeKeys.map((key) => {
+        const lock = locks[key];
+        const resumesTimeStr = lock.resumesAt ? new Date(lock.resumesAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'in 12h';
+        return `
+          <div class="quota-warning-banner">
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <span style="font-size: 22px;">⚠️</span>
+              <div>
+                <div style="font-weight: 700; color: #fca5a5; font-size: 13px;">
+                  Google Multi-Modal / Daily Sending Limit Active: <span style="color: #fff; text-decoration: underline;">${escapeHtml(lock.accountEmail)}</span>
+                </div>
+                <div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">
+                  Pending campaigns for this account are postponed until <strong>${resumesTimeStr}</strong> to protect account health. Other sender accounts continue dispatching normally.
+                </div>
+              </div>
+            </div>
+            <button class="btn btn-sm btn-secondary btn-force-unpause-quota" data-account="${escapeHtml(lock.accountEmail)}" style="border-color: rgba(239, 68, 68, 0.5); color: #fca5a5; font-weight: 700; padding: 6px 12px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer;">
+              <span>⚡ Force Unpause Now</span>
+            </button>
+          </div>
+        `;
+      }).join('');
+
+      bannerContainer.querySelectorAll('.btn-force-unpause-quota').forEach((btn) => {
+        btn.onclick = async () => {
+          const account = btn.dataset.account;
+          btn.disabled = true;
+          btn.textContent = 'Unpausing...';
+          const unpauseResp = await chrome.runtime.sendMessage({ action: 'UNPAUSE_ACCOUNT_QUOTA', accountEmail: account }).catch(() => null);
+          if (unpauseResp && unpauseResp.success) {
+            showToast(`Account "${account}" unpaused! Campaigns re-queued.`);
+            await loadCampaigns();
+          } else {
+            alert('Failed to unpause account: ' + (unpauseResp?.error || 'Unknown error'));
+            btn.disabled = false;
+            btn.textContent = '⚡ Force Unpause Now';
+          }
+        };
+      });
+    } catch (err) {
+      console.warn('[Dashboard] Quota banner note:', err);
+      bannerContainer.style.display = 'none';
     }
   }
 
@@ -721,12 +783,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         remedy: 'Open Google Drive and grant Viewer access on this Google Sheet to the sender account.'
       };
     }
-    if (msg.includes("sending limit") || msg.includes("reached a limit") || msg.includes("quota")) {
+    if (msg.includes("sending limit") || msg.includes("reached a limit") || msg.includes("quota") || msg.includes("multi-modal") || msg.includes("multi modal") || msg.includes("multimodal") || msg.includes("multi-merge") || msg.includes("limit exceeded")) {
       return {
         category: 'DAILY_QUOTA',
-        badge: '⏳ Google Daily Quota Reached',
+        badge: '⏳ Multi-Modal / Daily Limit Reached',
         color: '#fbbf24',
-        remedy: 'Google 24-hour sending limit reached. Quota resets automatically in 12-24h.'
+        remedy: 'Google multi-merge sending limit reached. Account dispatches are postponed for 12 hours.'
       };
     }
     if (msg.includes("verify it's you") || msg.includes("login required") || msg.includes("auth required") || msg.includes("accounts.google.com")) {
@@ -885,11 +947,28 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       // Status Badge Style
       let badgeClass = 'badge-queued';
-      if (camp.status === 'PROCESSING') badgeClass = 'badge-processing';
-      else if (camp.status === 'COMPLETED') badgeClass = 'badge-completed';
-      else if (camp.status === 'FAILED') badgeClass = 'badge-failed';
-      else if (camp.status === 'CANCELLED') badgeClass = 'badge-cancelled';
-      else if (camp.status === 'MISSED_OFFLINE') badgeClass = 'badge-missed-offline';
+      let statusLabel = escapeHtml(camp.status);
+      if (camp.status === 'PROCESSING') {
+        badgeClass = 'badge-processing';
+        statusLabel = '● PROCESSING';
+      } else if (camp.status === 'COMPLETED') {
+        badgeClass = 'badge-completed';
+        statusLabel = 'COMPLETED';
+      } else if (camp.status === 'FAILED') {
+        badgeClass = 'badge-failed';
+        statusLabel = camp.errorCategory === 'QUOTA_EXCEEDED' ? '⚠️ LIMIT EXCEEDED' : 'FAILED';
+      } else if (camp.status === 'CANCELLED') {
+        badgeClass = 'badge-cancelled';
+        statusLabel = 'CANCELLED';
+      } else if (camp.status === 'MISSED_OFFLINE') {
+        badgeClass = 'badge-missed-offline';
+        statusLabel = '⚠️ MISSED (OFFLINE)';
+      }
+
+      if (camp.status === 'QUEUED' && camp.isQuotaPaused) {
+        badgeClass = 'badge-quota-paused';
+        statusLabel = '⏸️ QUOTA PAUSED';
+      }
 
       // Sheet Link & Title
       const sheetTitle = camp.spreadsheetTitle || extractSheetName(camp.spreadsheetUrl) || 'Google Sheet';
@@ -958,15 +1037,20 @@ document.addEventListener('DOMContentLoaded', async () => {
           </div>
         `;
       } else if (camp.status === 'QUEUED') {
-        const accountKey = (camp.accountEmail || '').toLowerCase().trim() || String(camp.userIndex !== undefined ? camp.userIndex : '0');
-        const isBusy = allCampaigns.some((c) => c.status === 'PROCESSING' && ((c.accountEmail || '').toLowerCase().trim() || String(c.userIndex !== undefined ? c.userIndex : '0')) === accountKey);
-        if (isBusy) {
-          const queuedList = allCampaigns
-            .filter((c) => c.status === 'QUEUED' && ((c.accountEmail || '').toLowerCase().trim() || String(c.userIndex !== undefined ? c.userIndex : '0')) === accountKey)
-            .sort((a, b) => new Date(a.scheduledAt || a.createdAt || 0) - new Date(b.scheduledAt || b.createdAt || 0));
-          const idx = queuedList.findIndex((c) => c.id === camp.id);
-          const pos = idx >= 0 ? idx + 1 : 1;
-          stageDisplayHtml = `<div style="font-size: 10px; color: #fbbf24; margin-top: 2px;">⏳ In line (#${pos})</div>`;
+        if (camp.isQuotaPaused) {
+          const resumeStr = camp.quotaPausedUntil ? formatTimeShort(camp.quotaPausedUntil) : 'in 12h';
+          stageDisplayHtml = `<div style="font-size: 10px; color: #fcd34d; margin-top: 2px;">⏳ Resumes ${resumeStr}</div>`;
+        } else {
+          const accountKey = (camp.accountEmail || '').toLowerCase().trim() || String(camp.userIndex !== undefined ? camp.userIndex : '0');
+          const isBusy = allCampaigns.some((c) => c.status === 'PROCESSING' && ((c.accountEmail || '').toLowerCase().trim() || String(c.userIndex !== undefined ? c.userIndex : '0')) === accountKey);
+          if (isBusy) {
+            const queuedList = allCampaigns
+              .filter((c) => c.status === 'QUEUED' && ((c.accountEmail || '').toLowerCase().trim() || String(c.userIndex !== undefined ? c.userIndex : '0')) === accountKey)
+              .sort((a, b) => new Date(a.scheduledAt || a.createdAt || 0) - new Date(b.scheduledAt || b.createdAt || 0));
+            const idx = queuedList.findIndex((c) => c.id === camp.id);
+            const pos = idx >= 0 ? idx + 1 : 1;
+            stageDisplayHtml = `<div style="font-size: 10px; color: #fbbf24; margin-top: 2px;">⏳ In line (#${pos})</div>`;
+          }
         }
       }
 
@@ -997,7 +1081,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         </td>
         <td>
           <span class="badge ${badgeClass}">
-            ${camp.status === 'PROCESSING' ? '● PROCESSING' : (camp.status === 'MISSED_OFFLINE' ? '⚠️ MISSED (OFFLINE)' : escapeHtml(camp.status))}
+            ${statusLabel}
           </span>
           ${stageDisplayHtml}
         </td>

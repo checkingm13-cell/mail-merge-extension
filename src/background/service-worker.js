@@ -825,21 +825,36 @@ async function pauseAccountCampaignsForQuota(accountEmail) {
         const cEmail = (c.accountEmail || '').toLowerCase().trim();
         if (!targetEmail || cEmail === targetEmail) {
           await self.IDBStore.updateCampaign(c.id, {
-            scheduledAt: twelveHoursLater
+            scheduledAt: twelveHoursLater,
+            isQuotaPaused: true,
+            quotaPausedUntil: twelveHoursLater
           });
           await self.IDBStore.addLog(
             c.id,
             'WARN',
-            `Campaign postponed by 12 hours due to Google Daily Sending Limit reached on account "${targetEmail || 'default'}".`
+            `Campaign postponed by 12 hours due to Google Daily Sending / Multi-Modal Limit reached on account "${targetEmail || 'default'}". Resumes at ${new Date(twelveHoursLater).toLocaleTimeString()}.`
           );
           count++;
         }
       }
     }
 
+    // Save quota lock in chrome.storage.local
+    try {
+      const storage = await chrome.storage.local.get(['accountQuotaLocks']);
+      const locks = storage.accountQuotaLocks || {};
+      locks[targetEmail || 'default'] = {
+        accountEmail: targetEmail || 'default',
+        lockedAt: new Date().toISOString(),
+        resumesAt: twelveHoursLater,
+        count
+      };
+      await chrome.storage.local.set({ accountQuotaLocks: locks });
+    } catch (_) {}
+
     notifyDesktop(
       '⚠️ Google Sending Limit Reached',
-      `Daily limit reached for ${targetEmail || 'your account'}. ${count} pending campaign(s) paused for 12 hours.`,
+      `Multi-modal limit reached for ${targetEmail || 'your account'}. ${count} pending campaign(s) paused for 12 hours.`,
       true
     );
   } catch (err) {
@@ -1230,6 +1245,63 @@ async function handleRuntimeMessage(message, sender) {
       return { success: true, campaigns: [] };
     }
 
+    case 'GET_ACCOUNT_QUOTA_LOCKS': {
+      try {
+        const storage = await chrome.storage.local.get(['accountQuotaLocks']);
+        const locks = storage.accountQuotaLocks || {};
+        const now = Date.now();
+        let changed = false;
+        for (const [key, lock] of Object.entries(locks)) {
+          if (new Date(lock.resumesAt).getTime() <= now) {
+            delete locks[key];
+            changed = true;
+          }
+        }
+        if (changed) {
+          await chrome.storage.local.set({ accountQuotaLocks: locks });
+        }
+        return { success: true, locks };
+      } catch (err) {
+        return { success: false, error: err.message, locks: {} };
+      }
+    }
+
+    case 'UNPAUSE_ACCOUNT_QUOTA': {
+      const targetEmail = (message.accountEmail || '').toLowerCase().trim();
+      try {
+        const storage = await chrome.storage.local.get(['accountQuotaLocks']);
+        const locks = storage.accountQuotaLocks || {};
+        delete locks[targetEmail || 'default'];
+        await chrome.storage.local.set({ accountQuotaLocks: locks });
+
+        if (self.IDBStore) {
+          const campaigns = await self.IDBStore.getCampaigns();
+          const nowIso = new Date().toISOString();
+          for (const c of campaigns) {
+            const cEmail = (c.accountEmail || '').toLowerCase().trim();
+            if (c.status === 'QUEUED' && c.isQuotaPaused && (!targetEmail || cEmail === targetEmail)) {
+              await self.IDBStore.updateCampaign(c.id, {
+                scheduledAt: nowIso,
+                isQuotaPaused: false,
+                quotaPausedUntil: null
+              });
+              await self.IDBStore.addLog(
+                c.id,
+                'INFO',
+                `Quota pause manually overridden by user. Campaign rescheduled to immediate dispatch.`
+              );
+            }
+          }
+        }
+
+        checkAndExecuteDueCampaigns().catch(() => {});
+        await refreshBadge();
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
+    }
+
     case 'RESCHEDULE_CAMPAIGN': {
       if (!message.campaignId || !message.scheduledTime) {
         return { success: false, error: 'Missing campaignId or scheduledTime' };
@@ -1386,11 +1458,23 @@ async function handleRuntimeMessage(message, sender) {
             `Campaign sent${message.sentCount ? ' to ' + message.sentCount + ' recipients' : ''}.`
           );
         } else if (message.status === 'FAILED' && !willAutoRetry) {
-          if (message.isQuotaLimit || (message.logMessage && message.logMessage.includes('Daily Sending Limit'))) {
+          const isQuota = message.isQuotaLimit ||
+            message.errorCategory === 'QUOTA_EXCEEDED' ||
+            (message.logMessage && (
+              message.logMessage.includes('Daily Sending Limit') ||
+              message.logMessage.includes('multi-modal') ||
+              message.logMessage.includes('multi modal') ||
+              message.logMessage.includes('multimodal') ||
+              message.logMessage.includes('multi-merge') ||
+              message.logMessage.includes('quota') ||
+              message.logMessage.includes('limit exceeded')
+            ));
+
+          if (isQuota) {
             pauseAccountCampaignsForQuota(message.accountEmail);
           }
           notifyDesktop(
-            '❌ Mail Merge Error',
+            isQuota ? '⚠️ Google Sending Limit Reached' : '❌ Mail Merge Error',
             `Campaign failed: ${message.logMessage || 'Execution failed'}`,
             true
           );
