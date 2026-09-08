@@ -22,6 +22,18 @@
   const MODAL_BTN_CLASS = 'mm-schedule-modal-btn';
   const INLINE_BTN_CLASS = 'mm-schedule-inline';
 
+  function normalizeText(input) {
+    if (!input || typeof input !== 'string') return '';
+    return input
+      .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-')
+      .replace(/[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/g, ' ')
+      .replace(/[\u2018\u2019\u201a\u201b]/g, "'")
+      .replace(/[\u201c\u201d\u201e\u201f]/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
   // =========================================================================
   // DOM OBSERVERS (Modal & Compose "Continue" Button & Spam Policy Guard)
   // =========================================================================
@@ -895,7 +907,7 @@
         const campaign = {
           id: 'camp_' + Date.now(),
           draftId: verifiedDraftId,
-          subject: subject,
+          subject: currentSubject,
           userIndex: userIndex,
           accountEmail: accountEmail,
           accountUrl: window.location.origin + (userMatch ? `/mail/u/${userIndex}/` : '/mail/u/0/'),
@@ -1045,10 +1057,12 @@
     if (composeDialog) {
       const subjectInput = composeDialog.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
       if (subjectInput && subjectInput.value.trim()) return subjectInput.value.trim();
+      const headerTitle = composeDialog.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp, span.aYF')?.textContent || '';
+      if (headerTitle.trim()) return headerTitle.trim();
     }
     const globalSubject = document.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
     if (globalSubject && globalSubject.value.trim()) return globalSubject.value.trim();
-    return 'Mail Merge (' + new Date().toLocaleDateString() + ')';
+    return '';
   }
 
   // Ponytail-lean: extracts all draft metadata in ~35 lines
@@ -1253,7 +1267,7 @@
 
       if (message.action === 'CHECK_IS_USER_EDITING_DRAFT') {
         const targetDraftId = message.draftId;
-        const targetSubject = (message.subject || '').trim().toLowerCase();
+        const targetSubject = normalizeText(message.subject);
         const now = Date.now();
         const isRecentlyActive = (now - lastUserTypingTime) < 30000; // within 30 seconds
 
@@ -1262,7 +1276,7 @@
           const activeCompose = getComposeDialog();
           if (activeCompose) {
             const activeId = getDraftId(activeCompose);
-            const activeSub = (getSubject(activeCompose) || '').trim().toLowerCase();
+            const activeSub = normalizeText(getSubject(activeCompose));
             if ((targetDraftId && targetDraftId !== 'unknown' && activeId === targetDraftId) ||
                 (targetSubject && activeSub && (activeSub.includes(targetSubject) || targetSubject.includes(activeSub)))) {
               isEditingTarget = true;

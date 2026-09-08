@@ -35,6 +35,23 @@
   }
 
   /**
+   * Standardizes dashes, non-breaking spaces, quotes, and whitespace across Gmail DOM and user input
+   * @param {string} input
+   * @returns {string}
+   */
+  function normalizeText(input) {
+    if (!input || typeof input !== 'string') return '';
+    return input
+      .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-')
+      .replace(/[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]/g, ' ')
+      .replace(/[\u2018\u2019\u201a\u201b]/g, "'")
+      .replace(/[\u201c\u201d\u201e\u201f]/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  /**
    * Polls until a predicate returns a truthy value or timeout expires
    * @param {Function} predicate
    * @param {Object} options
@@ -767,9 +784,10 @@
      */
     static findStrictMatchingComposeDialog(draftId, campaign, doc = document) {
       const dialogs = doc.querySelectorAll('div[role="dialog"], div.M9, div.AD');
-      const expectedSubject = (campaign?.subject || '').trim().toLowerCase();
+      const expectedSubject = normalizeText(campaign?.subject);
+      const isGenericSubject = !expectedSubject || expectedSubject.startsWith('mail merge (');
       const expectedSheetId = campaign?.sheetId;
-      const expectedSheetTitle = (campaign?.sheetTitle || '').trim().toLowerCase();
+      const expectedSheetTitle = normalizeText(campaign?.sheetTitle);
 
       const candidates = [];
 
@@ -777,21 +795,23 @@
         if (!isElementVisible(d)) continue;
 
         const subjectInput = d.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
+        const headerTitle = (d.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp, span.aYF')?.textContent || '').trim();
         const bodyEl = d.querySelector('[aria-label="Message Body"]');
-        if (!subjectInput && !bodyEl) continue; // Not a compose window
+        if (!subjectInput && !bodyEl && !headerTitle) continue; // Not a compose window
 
-        const actualSubject = (subjectInput?.value || '').trim().toLowerCase();
+        const actualSubject = normalizeText(subjectInput?.value || headerTitle);
         const actualDraftId = d.querySelector('input[name="draft"]')?.value || d.getAttribute('data-compose-id');
 
-        // Check 1: Subject match
+        // Check 1: Subject match with Unicode dash, quote, and NBSP normalization
         let subjectMatches = false;
-        if (expectedSubject) {
+        if (!isGenericSubject && actualSubject) {
           subjectMatches = (actualSubject === expectedSubject) ||
             (actualSubject.length > 3 && expectedSubject.includes(actualSubject)) ||
             (expectedSubject.length > 3 && actualSubject.includes(expectedSubject));
         } else {
-          // If no subject expected, match by draftId or compose token
-          subjectMatches = !!(draftId && draftId !== 'unknown' && (actualDraftId === draftId || (window.location.hash && window.location.hash.includes(draftId))));
+          // If expected subject is a generic fallback ("Mail Merge (9/8/2026)") or empty,
+          // do not block the open draft on subject mismatch!
+          subjectMatches = true;
         }
 
         // Check 2: Attached Google Sheet or Mail Merge Continue button
@@ -803,16 +823,14 @@
         if (sheetLink && expectedSheetId) {
           sheetMatches = (sheetLink.href || '').includes(expectedSheetId);
         } else if (sheetChip && expectedSheetTitle) {
-          sheetMatches = (sheetChip.textContent || '').toLowerCase().includes(expectedSheetTitle);
+          sheetMatches = normalizeText(sheetChip.textContent).includes(expectedSheetTitle);
         } else {
           sheetMatches = !!(sheetLink || sheetChip || continueBtn);
         }
 
         // Check 3: Draft ID match
-        // Note: Gmail draftId can be a URL token (compose=GTv...) or an internal draft id (input[name="draft"]).
-        // When the subject matches and the Continue button is present, that is a confirmed match.
         let draftIdMatches = true;
-        if (draftId && draftId !== 'unknown' && actualDraftId) {
+        if (draftId && draftId !== 'unknown') {
           draftIdMatches = (actualDraftId === draftId) ||
             (window.location.hash && window.location.hash.includes(draftId)) ||
             (subjectMatches && continueBtn);
@@ -820,10 +838,11 @@
 
         if (subjectMatches && (sheetMatches || continueBtn) && draftIdMatches) {
           let score = 0;
-          if (actualDraftId && draftId && actualDraftId === draftId) score += 20;
-          if (actualSubject === expectedSubject) score += 15;
+          if (actualDraftId && draftId && actualDraftId === draftId) score += 30;
+          if (window.location.hash && draftId && window.location.hash.includes(draftId)) score += 25;
+          if (actualSubject && expectedSubject && actualSubject === expectedSubject) score += 20;
           if (sheetMatches) score += 10;
-          if (continueBtn) score += 10;
+          if (continueBtn) score += 15;
           candidates.push({ dialog: d, score });
         }
       }
@@ -861,19 +880,20 @@
      */
     static findMinimizedMatchingComposeDialog(draftId, campaign, doc = document) {
       const dialogs = doc.querySelectorAll('div[role="dialog"], div.M9, div.AD');
-      const expectedSubject = (campaign?.subject || '').trim().toLowerCase();
+      const expectedSubject = normalizeText(campaign?.subject);
+      const isGenericSubject = !expectedSubject || expectedSubject.startsWith('mail merge (');
 
       for (const d of dialogs) {
         if (!d || !d.isConnected) continue;
         const rect = d.getBoundingClientRect();
         if (rect.width === 0) continue;
 
-        const headerTitle = (d.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp, span')?.textContent || '').trim().toLowerCase();
-        const subjectInput = (d.querySelector('input[name="subjectbox"], input[aria-label="Subject"]')?.value || '').trim().toLowerCase();
+        const headerTitle = (d.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp, span')?.textContent || '').trim();
+        const subjectInput = (d.querySelector('input[name="subjectbox"], input[aria-label="Subject"]')?.value || '').trim();
         const actualDraftId = d.querySelector('input[name="draft"]')?.value || d.getAttribute('data-compose-id');
 
-        const actualSubject = subjectInput || headerTitle;
-        if (expectedSubject && actualSubject) {
+        const actualSubject = normalizeText(subjectInput || headerTitle);
+        if (!isGenericSubject && actualSubject && expectedSubject) {
           if (actualSubject === expectedSubject ||
               (actualSubject.length > 3 && expectedSubject.includes(actualSubject)) ||
               (expectedSubject.length > 3 && actualSubject.includes(expectedSubject))) {
@@ -881,8 +901,13 @@
           }
         }
 
-        if (draftId && draftId !== 'unknown' && actualDraftId === draftId) {
+        if (draftId && draftId !== 'unknown' && (actualDraftId === draftId || (window.location.hash && window.location.hash.includes(draftId)))) {
           return d;
+        }
+
+        if (isGenericSubject) {
+          const hasContinue = Array.from(d.querySelectorAll('button, div[role="button"]')).some((b) => /^(Continue|Send all)$/i.test((b.textContent || '').trim()));
+          if (hasContinue) return d;
         }
       }
       return null;
@@ -1107,17 +1132,20 @@
             await dismissGoogleSpamDisclaimerIfNeeded(document);
             // Fallback: search draft rows in drafts list by expected subject
             if (subject) {
-              const cleanSub = subject.toLowerCase().trim();
-              const draftRows = Array.from(document.querySelectorAll('tr[role="row"], div[role="row"]'))
-                .filter((r) => (r.textContent || '').toLowerCase().includes(cleanSub));
+              const cleanSub = normalizeText(subject);
+              const isGeneric = !cleanSub || cleanSub.startsWith('mail merge (');
+              if (!isGeneric) {
+                const draftRows = Array.from(document.querySelectorAll('tr[role="row"], div[role="row"]'))
+                  .filter((r) => normalizeText(r.textContent || '').includes(cleanSub));
 
-              for (const row of draftRows) {
-                await humanClick(row);
-                await sleep(1500);
-                const dialog = await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
-                if (dialog) {
-                  composeDialog = dialog;
-                  break;
+                for (const row of draftRows) {
+                  await humanClick(row);
+                  await sleep(1500);
+                  const dialog = await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
+                  if (dialog) {
+                    composeDialog = dialog;
+                    break;
+                  }
                 }
               }
             }
@@ -1142,10 +1170,21 @@
           throw new Error(`Draft Not Found: Could not locate draft "${subject || 'Campaign'}" in your Gmail Drafts folder. It may have been sent or deleted.`);
         }
 
-        // Verify Subject
-        const verifySubject = (composeDialog.querySelector('input[name="subjectbox"]')?.value || '').trim();
-        if (subject && verifySubject && !verifySubject.toLowerCase().includes(subject.toLowerCase())) {
+        // Verify Subject with Unicode normalization and generic fallback support
+        const verifySubject = (composeDialog.querySelector('input[name="subjectbox"]')?.value ||
+          composeDialog.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp, span.aYF')?.textContent || '').trim();
+        const normExpectedSub = normalizeText(subject);
+        const normVerifySub = normalizeText(verifySubject);
+        const isGenericSub = !normExpectedSub || normExpectedSub.startsWith('mail merge (');
+
+        if (!isGenericSub && normVerifySub && !normVerifySub.includes(normExpectedSub) && !normExpectedSub.includes(normVerifySub)) {
           throw new Error(`Subject Mismatch: Compose window subject "${verifySubject}" does not match campaign subject "${subject}".`);
+        }
+
+        // Auto-heal legacy campaigns with generic subject placeholders
+        if (isGenericSub && verifySubject && campaignId && root.IDBStore) {
+          await root.IDBStore.updateCampaign(campaignId, { subject: verifySubject }).catch(() => {});
+          console.log(`[GmailAutomator] 🔄 Auto-updated legacy campaign subject from "${subject}" to "${verifySubject}".`);
         }
 
         // Verify Mail Merge session
