@@ -194,6 +194,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             await loadCampaigns();
           };
         }
+
+        const btnRefreshTabs = document.getElementById('btnRefreshTabs');
+        if (btnRefreshTabs && !btnRefreshTabs.dataset.bound) {
+          btnRefreshTabs.dataset.bound = 'true';
+          btnRefreshTabs.onclick = async () => {
+            btnRefreshTabs.disabled = true;
+            btnRefreshTabs.textContent = 'Refreshing...';
+            const resp = await chrome.runtime.sendMessage({ action: 'RELOAD_GMAIL_TABS' }).catch(() => null);
+            showToast(resp?.count ? `Refreshed ${resp.count} Gmail tab(s)` : 'Gmail tabs refreshed');
+            setTimeout(() => {
+              btnRefreshTabs.disabled = false;
+              btnRefreshTabs.textContent = '🔄 Refresh Tabs';
+            }, 2000);
+          };
+        }
       } else {
         retryBanner.style.display = 'none';
       }

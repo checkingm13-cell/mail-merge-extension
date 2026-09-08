@@ -11,11 +11,12 @@
 (function (root) {
   'use strict';
 
-  if (root.__GMAIL_MAIL_MERGE_CONTENT_INITIALIZED__) {
-    console.log('[MailMerge ContentScript] Already initialized in this tab.');
-    return;
+  // Cleanup any stale observers or listeners from a previous extension version if re-injected
+  if (root.__GMAIL_MAIL_MERGE_CLEANUP__ && typeof root.__GMAIL_MAIL_MERGE_CLEANUP__ === 'function') {
+    try {
+      root.__GMAIL_MAIL_MERGE_CLEANUP__();
+    } catch (_) {}
   }
-  root.__GMAIL_MAIL_MERGE_CONTENT_INITIALIZED__ = true;
 
   console.log('[MailMerge ContentScript] Master Protocol Initialized: Zero-UI Native Scheduling active.');
 
@@ -51,6 +52,11 @@
     checkAndDismissSpamDisclaimer();
   });
   composeObserver.observe(document.body, { childList: true, subtree: true });
+
+  root.__GMAIL_MAIL_MERGE_CLEANUP__ = () => {
+    try { modalObserver.disconnect(); } catch (_) {}
+    try { composeObserver.disconnect(); } catch (_) {}
+  };
 
   // Track active user typing in compose windows to detect when a draft is actively being edited by human
   let lastUserTypingTime = 0;

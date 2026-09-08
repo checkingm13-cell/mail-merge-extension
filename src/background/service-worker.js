@@ -59,6 +59,12 @@ async function injectIntoExistingGmailTabs() {
         // Protect tab from Chrome Memory Saver / Sleeping Tabs
         await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
 
+        if (tab.discarded) {
+          console.log(`[ServiceWorker] Pinned Gmail tab ${tab.id} was discarded. Auto-reloading to restore...`);
+          await chrome.tabs.reload(tab.id).catch(() => {});
+          continue;
+        }
+
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           files: [
@@ -560,7 +566,7 @@ function waitForTabComplete(tabId, timeoutMs = 20000) {
  * @param {Object} message
  * @param {number} maxRetries
  */
-async function sendMessageWithRetry(tabId, message, maxRetries = 3) {
+async function sendMessageWithRetry(tabId, message, maxRetries = 4) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const response = await chrome.tabs.sendMessage(tabId, message);
@@ -587,7 +593,7 @@ async function sendMessageWithRetry(tabId, message, maxRetries = 3) {
                 'src/content/content.js'
               ]
             });
-            await delay(1000);
+            await delay(1200);
             continue;
           } catch (injectErr) {
             console.warn('[ServiceWorker] Dynamic script injection failed:', injectErr.message);
@@ -600,7 +606,7 @@ async function sendMessageWithRetry(tabId, message, maxRetries = 3) {
             console.log(`[ServiceWorker] Auto-reloading pinned Gmail tab ${tabId} to restore fresh extension context...`);
             await chrome.tabs.reload(tabId);
             await waitForTabComplete(tabId, 25000);
-            await delay(2500);
+            await delay(4000); // 4s buffer for Gmail client hydration
             continue;
           } catch (reloadErr) {
             console.warn('[ServiceWorker] Tab reload recovery failed:', reloadErr.message);
@@ -828,6 +834,16 @@ async function handleRuntimeMessage(message, sender) {
         const newTab = await chrome.tabs.create({ url: targetUrl });
         return { success: true, tabId: newTab.id, existing: false };
       }
+    }
+
+    case 'RELOAD_GMAIL_TABS': {
+      const tabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
+      console.log(`[ServiceWorker] 🔄 Manual refresh requested for ${tabs.length} Gmail tab(s)...`);
+      for (const t of tabs) {
+        await chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
+        await chrome.tabs.reload(t.id).catch(() => {});
+      }
+      return { success: true, count: tabs.length };
     }
 
     case 'CAMPAIGN_STATUS_UPDATE': {
