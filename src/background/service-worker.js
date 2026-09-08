@@ -17,6 +17,9 @@ try {
 const ALARM_NAME = 'POLL_CAMPAIGNS_ALARM';
 const POLL_INTERVAL_MINUTES = 1;
 
+// Tracks active campaign execution tabs: campaignId -> { tabId, timeoutId }
+const activeCampaignTabs = new Map();
+
 // =============================================================================
 // LIFECYCLE & ALARM MANAGEMENT
 // =============================================================================
@@ -55,7 +58,6 @@ async function injectIntoExistingGmailTabs() {
           files: [
             'src/db/idb-store.js',
             'src/content/gmail-automator.js',
-            'src/content/compose-injector.js',
             'src/content/content.js'
           ]
         });
@@ -277,29 +279,37 @@ async function executeCampaign(campaign) {
     createdBackgroundTabId = gmailTab.id;
 
     await waitForTabComplete(gmailTab.id, 25000);
-    await delay(3000);
+    await delay(2000);
 
-    // 4. Send message to content script in isolated tab and await execution result
+    // Check if user is logged out and tab redirected to accounts.google.com
+    try {
+      const currentTab = await chrome.tabs.get(gmailTab.id);
+      if (currentTab && currentTab.url && currentTab.url.includes('accounts.google.com')) {
+        throw new Error('Google account login required (redirected to accounts.google.com). Please sign in to Gmail.');
+      }
+    } catch (checkErr) {
+      if (checkErr.message && checkErr.message.includes('Google account login required')) {
+        throw checkErr;
+      }
+    }
+
+    // 4. Send message to content script in isolated tab and await handshake ACK
     const sent = await sendMessageWithRetry(gmailTab.id, {
       action: 'EXECUTE_CAMPAIGN',
       campaign
     });
 
     if (sent) {
-      console.log(`[ServiceWorker] Dispatched campaign ${campaign.id} to tab ${gmailTab.id}`);
-      const effectiveCount = (typeof sent === 'object' && sent?.sentCount) || campaign.recipientCount;
-      // Show desktop notification on successful dispatch/completion
-      notifyDesktop(
-        '✅ Mail Merge Completed',
-        `"${campaign.subject || 'Campaign'}" sent${effectiveCount ? ' to ' + effectiveCount + ' recipients' : ''}.`
-      );
-
-      // Clean Auto-Close: Always close the dedicated background tab after completion
-      if (createdBackgroundTabId) {
-        setTimeout(() => {
-          chrome.tabs.remove(createdBackgroundTabId).catch(() => {});
-        }, 4000);
-      }
+      console.log(`[ServiceWorker] Dispatched campaign ${campaign.id} to tab ${gmailTab.id} (ACK received). Execution running in background tab.`);
+      // Track the execution tab and set 5-minute safety timeout to auto-close if hanging
+      activeCampaignTabs.set(campaign.id, {
+        tabId: gmailTab.id,
+        timeoutId: setTimeout(() => {
+          console.warn(`[ServiceWorker] Campaign ${campaign.id} safety timeout (5 min). Closing tab ${gmailTab.id}.`);
+          chrome.tabs.remove(gmailTab.id).catch(() => {});
+          activeCampaignTabs.delete(campaign.id);
+        }, 5 * 60 * 1000)
+      });
     } else {
       throw new Error(`Failed to deliver EXECUTE_CAMPAIGN message to isolated Gmail tab ${gmailTab.id}`);
     }
@@ -309,7 +319,7 @@ async function executeCampaign(campaign) {
     if (createdBackgroundTabId) {
       setTimeout(() => {
         chrome.tabs.remove(createdBackgroundTabId).catch(() => {});
-      }, 5000);
+      }, 2000);
     }
 
     await self.IDBStore.updateCampaign(campaign.id, {
@@ -374,8 +384,13 @@ async function findGmailTab(campaign) {
  * @param {number} timeoutMs
  */
 function waitForTabComplete(tabId, timeoutMs = 20000) {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     let timer = null;
+
+    const cleanup = () => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      if (timer) clearTimeout(timer);
+    };
 
     const listener = (updatedTabId, changeInfo) => {
       if (updatedTabId === tabId && changeInfo.status === 'complete') {
@@ -384,17 +399,21 @@ function waitForTabComplete(tabId, timeoutMs = 20000) {
       }
     };
 
-    const cleanup = () => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      if (timer) clearTimeout(timer);
-    };
-
     timer = setTimeout(() => {
       cleanup();
       resolve(false);
     }, timeoutMs);
 
     chrome.tabs.onUpdated.addListener(listener);
+
+    // Fast path: check if tab is already complete
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab && tab.status === 'complete') {
+        cleanup();
+        resolve(true);
+      }
+    } catch (_) {}
   });
 }
 
@@ -421,7 +440,6 @@ async function sendMessageWithRetry(tabId, message, maxRetries = 3) {
             files: [
               'src/db/idb-store.js',
               'src/content/gmail-automator.js',
-              'src/content/compose-injector.js',
               'src/content/content.js'
             ]
           });
@@ -661,16 +679,41 @@ async function handleRuntimeMessage(message, sender) {
           sentCount: message.sentCount !== undefined ? message.sentCount : undefined,
           recipientCount: message.recipientCount !== undefined ? message.recipientCount : undefined,
           failedCount: message.failedCount !== undefined ? message.failedCount : undefined,
+          errorMessage: message.status === 'FAILED' ? (message.logMessage || message.error) : undefined,
           completedAt: (message.status === 'COMPLETED' || message.status === 'COMPLETED (DRY RUN)') ? new Date().toISOString() : undefined
         });
         if (message.logMessage) {
           await self.IDBStore.addLog(
             message.campaignId,
-            message.logLevel || 'INFO',
+            message.logLevel || (message.status === 'FAILED' ? 'ERROR' : 'INFO'),
             message.logMessage
           );
         }
         await refreshBadge();
+
+        // Clean Auto-Close: close the dedicated execution tab on completion or failure
+        const activeTabInfo = activeCampaignTabs.get(message.campaignId);
+        if (activeTabInfo && (message.status === 'COMPLETED' || message.status === 'COMPLETED (DRY RUN)' || message.status === 'FAILED')) {
+          if (activeTabInfo.timeoutId) clearTimeout(activeTabInfo.timeoutId);
+          setTimeout(() => {
+            chrome.tabs.remove(activeTabInfo.tabId).catch(() => {});
+          }, 3000);
+          activeCampaignTabs.delete(message.campaignId);
+        }
+
+        if (message.status === 'COMPLETED' || message.status === 'COMPLETED (DRY RUN)') {
+          notifyDesktop(
+            '✅ Mail Merge Completed',
+            `Campaign sent${message.sentCount ? ' to ' + message.sentCount + ' recipients' : ''}.`
+          );
+        } else if (message.status === 'FAILED') {
+          notifyDesktop(
+            '❌ Mail Merge Error',
+            `Campaign failed: ${message.logMessage || 'Execution failed'}`,
+            true
+          );
+        }
+
         return { success: true };
       }
       return { success: false, error: 'Missing campaignId or status' };

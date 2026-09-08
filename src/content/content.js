@@ -1208,12 +1208,16 @@
           return false;
         }
 
-        // Asynchronous execution - properly waits for completion
-        root.GmailAutomator.executeScheduledNativeMerge(campaign.draftId, campaign)
-          .then((result) => sendResponse(result || { success: true }))
-          .catch((err) => sendResponse({ success: false, error: err.message }));
+        // Acknowledge receipt immediately so message channel does not time out during long merge
+        sendResponse({ success: true, acknowledged: true });
 
-        return true; // keep message channel open
+        // Run mail merge asynchronously; completion/failure is reported via CAMPAIGN_STATUS_UPDATE
+        root.GmailAutomator.executeScheduledNativeMerge(campaign.draftId, campaign)
+          .catch((err) => {
+            console.error('[MailMerge ContentScript] Async execution error:', err);
+          });
+
+        return false;
       }
 
       if (message.action === 'SHOW_MISSED_OFFLINE_BANNER') {

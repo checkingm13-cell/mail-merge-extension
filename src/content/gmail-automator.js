@@ -841,6 +841,14 @@
           if (existing && existing.status === 'COMPLETED') {
             console.log('[GmailAutomator] Campaign ' + campaignId + ' is already COMPLETED. Skipping.');
             try { ExecutionHUD.remove(); } catch (_) {}
+            if (chrome.runtime && chrome.runtime.sendMessage) {
+              chrome.runtime.sendMessage({
+                action: 'CAMPAIGN_STATUS_UPDATE',
+                campaignId,
+                status: 'COMPLETED',
+                logMessage: 'Campaign was already completed.'
+              }).catch(() => {});
+            }
             return { success: true, campaignId, status: 'COMPLETED' };
           }
         } catch (_) {}
