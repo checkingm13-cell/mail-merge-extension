@@ -56,6 +56,10 @@
         <span class="diag-label">Scheduler:</span>
         <span class="diag-value" id="diagSchedulerStatus">Active (1m)</span>
       </div>
+      <div class="diag-item">
+        <span class="diag-label">Health Monitor:</span>
+        <span class="diag-value" id="diagHealthStatus" style="color: var(--emerald);">NOMINAL (5m)</span>
+      </div>
     </div>
 
     <!-- Navigation Tabs -->
@@ -98,14 +102,51 @@
               <button class="filter-pill" data-status="COMPLETED">Completed (<span id="countFilterCompleted">0</span>)</button>
               <button class="filter-pill" data-status="FAILED">Failed (<span id="countFilterFailed">0</span>)</button>
               <button class="filter-pill" data-status="CANCELLED">Cancelled (<span id="countFilterCancelled">0</span>)</button>
+              <button id="btnRemoveAllFailedFilter" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4); margin-left: 6px;" title="Delete all failed campaigns from database (solves Unique ID conflicts)">
+                <span>🗑️ Remove All Failed</span>
+              </button>
             </div>
-            <div style="display: flex; gap: 8px;">
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+              <button id="btnTopRemoveAllFailed" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4);" title="Archive and remove all failed campaigns from active queue (solves Unique ID conflicts)">
+                <span>🗑️ Remove All Failed (<span id="countTopFailed">0</span>)</span>
+              </button>
+              <button id="btnTopViewArchived" class="btn btn-secondary btn-sm" style="color: #93c5fd; border-color: rgba(59, 130, 246, 0.4);" title="View archived campaigns and 1-click clone/restore">
+                <span>📦 Archived (<span id="countTopArchived">0</span>)</span>
+              </button>
               <button id="btnRefreshCampaigns" class="btn btn-secondary btn-sm" title="Refresh list">
                 <span>🔄 Refresh</span>
               </button>
+              <button id="btnExportBackup" class="btn btn-secondary btn-sm" title="Backup all campaigns, templates & data to JSON">
+                <span>💾 Backup JSON</span>
+              </button>
+              <button id="btnImportBackup" class="btn btn-secondary btn-sm" title="Restore campaigns & templates from JSON backup">
+                <span>📂 Restore</span>
+              </button>
+              <input type="file" id="importFileInput" accept=".json" style="display: none;">
               <button id="btnJumpToQueue" class="btn btn-primary btn-sm">
                 <span>➕ New Campaign</span>
               </button>
+            </div>
+          </div>
+
+          <!-- Real-Time Hybrid Parallel Queue Status Card (Account-Locked Concurrency Pool) -->
+          <div id="queueStatusCard" class="queue-status-card" style="background: linear-gradient(135deg, rgba(37, 99, 235, 0.08) 0%, rgba(30, 41, 59, 0.5) 100%); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 8px; padding: 12px 18px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;">
+            <div style="display: flex; align-items: center; gap: 16px; flex-wrap: wrap;">
+              <div style="font-weight: 700; font-size: 13px; color: #60a5fa; display: flex; align-items: center; gap: 6px;">
+                <span>⚡</span> <span>Parallel Concurrency Pool:</span>
+              </div>
+              <div id="queueStatusProcessingText" style="font-size: 12px; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
+                <span id="queuePulseDot" class="status-pulse-dot idle"></span>
+                <span><strong>Active Slots:</strong> <span id="queueActiveSlotsLabel" style="color: #38bdf8; font-weight: 600;">0 / 3 Accounts</span></span>
+                <span style="color: var(--text-muted);">&bull;</span>
+                <span><strong>Executing:</strong> <span id="queueProcessingLabel" style="color: var(--text-secondary);">Idle (No active campaign)</span></span>
+              </div>
+              <div id="queueStatusWaitingText" style="font-size: 12px; color: var(--text-muted);">
+                ⏳ <strong>Waiting:</strong> <span id="queueWaitingCount">0</span> in queue
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span id="queueLockStateBadge" class="badge badge-idle">● IDLE</span>
             </div>
           </div>
 
@@ -124,6 +165,9 @@
               <div style="display: flex; gap: 8px; align-items: center;">
                 <button id="btnRetryAllFailed" class="btn btn-primary btn-sm" style="background: #ef4444; border-color: #dc2626;">
                   <span>↻ Retry All Failed</span>
+                </button>
+                <button id="btnRemoveAllFailedBanner" class="btn btn-secondary btn-sm" style="color: #fca5a5; border-color: rgba(239, 68, 68, 0.4);" title="Permanently delete all failed campaigns from database (solves Unique ID conflicts)">
+                  <span>🗑️ Remove All Failed</span>
                 </button>
                 <button id="btnDismissSummary" class="btn btn-secondary btn-sm">
                   <span>Dismiss</span>
@@ -373,6 +417,10 @@
               <span style="color: var(--text-secondary);">Next Poll:</span>
               <span id="diagNextPollCountdown" style="font-family: var(--font-mono);">--</span>
             </div>
+            <div class="diag-row">
+              <span style="color: var(--text-secondary);">Overnight Wake-Lock:</span>
+              <span id="diagWakeLockStatus" style="font-family: var(--font-mono); font-weight: 600; color: var(--text-muted);">STANDBY</span>
+            </div>
           </div>
 
           <!-- Card 3: Storage & DB Stats -->
@@ -575,6 +623,85 @@
       <div class="modal-footer">
         <button class="btn btn-secondary btn-sm" data-close-modal="modalFixDraft">Cancel</button>
         <button id="btnConfirmFixDraft" class="btn btn-primary btn-sm">Save &amp; Re-queue Campaign</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Overnight Screen Forensics Lightbox Modal -->
+  <div class="modal-overlay" id="modalForensicsViewer">
+    <div class="modal-card" style="max-width: 900px; width: 95%;">
+      <div class="modal-header">
+        <h3 class="modal-title">📸 Overnight Screen Forensics &amp; Observation</h3>
+        <button class="modal-close" data-close-modal="modalForensicsViewer">&times;</button>
+      </div>
+      <div class="modal-body" style="max-height: 80vh; overflow-y: auto;">
+        <div id="forensicsCaptureSelectorRow" style="display: none; align-items: center; justify-content: space-between; margin-bottom: 12px; background: var(--bg-surface); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-color);">
+          <label for="forensicsCaptureSelect" style="font-size: 12px; font-weight: 600; color: var(--text-secondary);">Recorded Captures for this Run:</label>
+          <select id="forensicsCaptureSelect" class="form-input" style="width: auto; max-width: 360px; font-size: 11px; padding: 4px 8px;"></select>
+        </div>
+
+        <div class="forensics-meta-card" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; background: var(--bg-surface); padding: 12px; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 14px; font-size: 12px;">
+          <div><strong style="color: var(--text-secondary);">Campaign:</strong> <span id="forensicsCampaignTitle" style="color: var(--text-white); font-weight: 600;">--</span></div>
+          <div><strong style="color: var(--text-secondary);">Timestamp:</strong> <span id="forensicsTimestamp" style="color: var(--text-white);">--</span></div>
+          <div><strong style="color: var(--text-secondary);">Stage:</strong> <span id="forensicsStage" class="badge badge-queued">--</span></div>
+          <div style="grid-column: 1 / -1;"><strong style="color: var(--text-secondary);">Observation / Issue:</strong> <span id="forensicsErrorText" style="color: #ef4444; font-weight: 600;">--</span></div>
+        </div>
+
+        <div id="forensicsImageWrapper" class="forensics-image-wrapper" style="text-align: center; background: #000; border-radius: 8px; overflow: hidden; border: 1px solid var(--border-color); margin-bottom: 14px; min-height: 240px; display: flex; align-items: center; justify-content: center;">
+          <img id="forensicsImage" src="" alt="Overnight Screen Observation" style="max-width: 100%; max-height: 55vh; object-fit: contain; display: none;" />
+          <div id="forensicsNoImagePlaceholder" style="color: var(--text-muted); padding: 40px; font-size: 13px;">No visual screenshot captured for this record.</div>
+        </div>
+
+        <div id="forensicsDomSection" class="forensics-dom-section" style="background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px;">
+          <h4 style="font-size: 12px; margin-bottom: 8px; color: var(--text-secondary);">DOM &amp; Popup Text Details:</h4>
+          <pre id="forensicsDomSnippet" style="background: #0f172a; padding: 10px; border-radius: 6px; font-family: var(--font-mono); font-size: 11px; color: #94a3b8; max-height: 140px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; margin: 0;"></pre>
+        </div>
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+        <a id="btnDownloadForensicImg" class="btn btn-secondary btn-sm" download="mailmerge_capture.jpg" style="display: none;">💾 Download Screenshot</a>
+        <div style="display: flex; gap: 8px; margin-left: auto;">
+          <button class="btn btn-secondary btn-sm" data-close-modal="modalForensicsViewer">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Archived Campaigns Modal (Drawer / Recovery) -->
+  <div class="modal-overlay" id="modalArchivedCampaigns">
+    <div class="modal-card" style="max-width: 950px; width: 95%;">
+      <div class="modal-header">
+        <h3 class="modal-title">📦 Archived Campaigns &amp; 1-Click Recovery</h3>
+        <button class="modal-close" data-close-modal="modalArchivedCampaigns">&times;</button>
+      </div>
+      <div class="modal-body" style="max-height: 75vh; overflow-y: auto;">
+        <p style="color: var(--text-secondary); font-size: 12px; margin-bottom: 14px;">
+          Removed campaigns are safely preserved here. Click <strong>"♻️ Clone to Queue"</strong> to instantly pre-fill all campaign settings into the Queue Form without re-typing anything.
+        </p>
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Archived</th>
+                <th>Subject &amp; Reason</th>
+                <th>Sheet</th>
+                <th>Sender Account</th>
+                <th>Status</th>
+                <th style="text-align: right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="archivedTableBody">
+              <tr>
+                <td colspan="6" class="table-empty">Loading archived campaigns...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+        <button id="btnClearAllArchived" class="btn btn-secondary btn-sm" style="color: #fca5a5; border-color: rgba(239, 68, 68, 0.4);">
+          🗑️ Clear All Archive
+        </button>
+        <button class="btn btn-secondary btn-sm" data-close-modal="modalArchivedCampaigns">Close</button>
       </div>
     </div>
   </div>

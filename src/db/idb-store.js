@@ -10,7 +10,7 @@
   }
 
   const DB_NAME = 'GmailMailMergeDB';
-  const DB_VERSION = 1;
+  const DB_VERSION = 3;
 
   let dbInstance = null;
   let initPromise = null;
@@ -27,7 +27,8 @@
   ];
 
   function generateId(prefix = 'id') {
-    return `${prefix}_${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`;
+    const randomSuffix = Math.random().toString(36).substring(2, 7);
+    return `${prefix}_${Date.now()}_${randomSuffix}`;
   }
 
   const IDBStore = {
@@ -74,6 +75,21 @@
           // 4. settings store
           if (!db.objectStoreNames.contains('settings')) {
             db.createObjectStore('settings', { keyPath: 'key' });
+          }
+
+          // 5. forensics store (overnight visual proof & error captures)
+          if (!db.objectStoreNames.contains('forensics')) {
+            const forensicsStore = db.createObjectStore('forensics', { keyPath: 'id', autoIncrement: true });
+            forensicsStore.createIndex('campaignId', 'campaignId', { unique: false });
+            forensicsStore.createIndex('timestamp', 'timestamp', { unique: false });
+            forensicsStore.createIndex('stage', 'stage', { unique: false });
+          }
+
+          // 6. archived_campaigns store (preserves failed / removed campaigns for 1-click recovery)
+          if (!db.objectStoreNames.contains('archived_campaigns')) {
+            const archivedStore = db.createObjectStore('archived_campaigns', { keyPath: 'id' });
+            archivedStore.createIndex('archivedAt', 'archivedAt', { unique: false });
+            archivedStore.createIndex('originalStatus', 'originalStatus', { unique: false });
           }
         };
 
@@ -286,10 +302,155 @@
      * @returns {Promise<boolean>}
      */
     async deleteCampaign(id) {
+      await this.deleteForensicsByCampaign(id).catch(() => {});
       await this._transaction('campaigns', 'readwrite', (store) => {
         store.delete(id);
       });
       return true;
+    },
+
+    /**
+     * Deletes all campaigns matching a specific status (e.g. 'FAILED').
+     * @param {string} status
+     * @returns {Promise<number>} Number of deleted campaigns
+     */
+    async deleteCampaignsByStatus(status) {
+      const db = await this.init();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction('campaigns', 'readwrite');
+        const store = tx.objectStore('campaigns');
+        const index = store.index('status');
+        const req = index.openCursor(IDBKeyRange.only(status));
+        let count = 0;
+
+        req.onsuccess = (e) => {
+          const cursor = e.target.result;
+          if (cursor) {
+            const campId = cursor.value?.id || cursor.primaryKey;
+            if (campId) {
+              this.deleteForensicsByCampaign(campId).catch(() => {});
+            }
+            cursor.delete();
+            count++;
+            cursor.continue();
+          }
+        };
+
+        tx.oncomplete = () => resolve(count);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
+    },
+
+    /**
+     * Removes all failed campaigns from IndexedDB.
+     * @returns {Promise<number>}
+     */
+    async deleteFailedCampaigns() {
+      return this.archiveFailedCampaigns();
+    },
+
+    /**
+     * Archives a campaign from the active 'campaigns' store into 'archived_campaigns'.
+     * Preserves all campaign data (subject, bodyTemplate, spreadsheetUrl, column, etc.)
+     * for instant 1-click clone/recovery, while clearing the active queue and Unique ID.
+     * @param {string} campaignId
+     * @returns {Promise<Object|null>}
+     */
+    async archiveCampaign(campaignId) {
+      const camp = await this.getCampaignById(campaignId);
+      if (!camp) return null;
+
+      const db = await this.init();
+      const archivedRecord = {
+        ...camp,
+        originalStatus: camp.status,
+        archivedAt: new Date().toISOString()
+      };
+
+      // Save to archived_campaigns
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(['archived_campaigns'], 'readwrite');
+        const store = tx.objectStore('archived_campaigns');
+        const req = store.put(archivedRecord);
+        req.onsuccess = () => resolve(true);
+        req.onerror = () => reject(req.error);
+      });
+
+      // Delete from active campaigns
+      await this.deleteCampaign(campaignId);
+      return archivedRecord;
+    },
+
+    /**
+     * Archives all campaigns matching status === 'FAILED' into 'archived_campaigns'
+     * and removes them from active queue.
+     * @returns {Promise<number>}
+     */
+    async archiveFailedCampaigns() {
+      const all = await this.getCampaigns();
+      const failedList = all.filter((c) => c.status === 'FAILED');
+      let count = 0;
+      for (const camp of failedList) {
+        try {
+          await this.archiveCampaign(camp.id);
+          count++;
+        } catch (err) {
+          console.warn('[IDBStore] Error archiving failed campaign:', camp.id, err);
+        }
+      }
+      return count;
+    },
+
+    /**
+     * Retrieves all archived campaigns, ordered newest archived first.
+     * @returns {Promise<Array<Object>>}
+     */
+    async getArchivedCampaigns() {
+      const db = await this.init();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(['archived_campaigns'], 'readonly');
+        const store = tx.objectStore('archived_campaigns');
+        const req = store.getAll();
+        req.onsuccess = () => {
+          const list = req.result || [];
+          list.sort((a, b) => new Date(b.archivedAt || 0) - new Date(a.archivedAt || 0));
+          resolve(list);
+        };
+        req.onerror = () => reject(req.error);
+      });
+    },
+
+    /**
+     * Permanently deletes a campaign from the 'archived_campaigns' store.
+     * @param {string} campaignId
+     * @returns {Promise<boolean>}
+     */
+    async deleteArchivedCampaign(campaignId) {
+      const db = await this.init();
+      await this.deleteForensicsByCampaign(campaignId).catch(() => {});
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(['archived_campaigns'], 'readwrite');
+        const store = tx.objectStore('archived_campaigns');
+        const req = store.delete(campaignId);
+        req.onsuccess = () => resolve(true);
+        req.onerror = () => reject(req.error);
+      });
+    },
+
+    /**
+     * Permanently purges all records in 'archived_campaigns'.
+     * @returns {Promise<boolean>}
+     */
+    async clearAllArchivedCampaigns() {
+      const db = await this.init();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(['archived_campaigns'], 'readwrite');
+        const store = tx.objectStore('archived_campaigns');
+        const req = store.clear();
+        req.onsuccess = () => resolve(true);
+        req.onerror = () => reject(req.error);
+      });
     },
 
     /**
@@ -424,6 +585,102 @@
     },
 
     // =========================================================================
+    // FORENSICS & VISUAL SCREENSHOTS
+    // =========================================================================
+
+    /**
+     * Saves a visual/DOM forensic capture for a campaign.
+     * @param {Object} capture
+     * @returns {Promise<Object>}
+     */
+    async saveForensicCapture(capture) {
+      if (!capture) return null;
+      const record = {
+        campaignId: capture.campaignId || null,
+        stage: capture.stage || 'UNKNOWN',
+        screenshotUrl: capture.screenshotUrl || capture.screenshotDataUrl || null,
+        screenshotDataUrl: capture.screenshotDataUrl || capture.screenshotUrl || null,
+        popupTitle: capture.popupTitle || null,
+        popupBody: capture.popupBody || null,
+        domSnippet: capture.domSnippet || null,
+        errorMessage: capture.errorMessage || null,
+        url: capture.url || null,
+        timestamp: capture.timestamp || new Date().toISOString()
+      };
+
+      const id = await this._transaction('forensics', 'readwrite', (store) => {
+        return new Promise((resolve, reject) => {
+          const req = store.add(record);
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+      });
+
+      // Also set flag on campaign so UI can immediately render the camera icon without full query
+      if (record.campaignId) {
+        try {
+          await this.updateCampaign(record.campaignId, { hasForensic: true, lastForensicId: id });
+        } catch (_) {}
+      }
+
+      return { ...record, id };
+    },
+
+    /**
+     * Retrieves all forensic captures for a campaign.
+     * @param {string} campaignId
+     * @returns {Promise<Array<Object>>}
+     */
+    async getForensicsByCampaign(campaignId) {
+      if (!campaignId) return [];
+      const results = await this._transaction('forensics', 'readonly', (store) => {
+        return new Promise((resolve, reject) => {
+          const idx = store.index('campaignId');
+          const req = idx.getAll(IDBKeyRange.only(campaignId));
+          req.onsuccess = () => resolve(req.result || []);
+          req.onerror = () => reject(req.error);
+        });
+      });
+      return results.sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+    },
+
+    /**
+     * Retrieves the latest forensic capture for a campaign.
+     * @param {string} campaignId
+     * @returns {Promise<Object|null>}
+     */
+    async getLatestForensic(campaignId) {
+      const all = await this.getForensicsByCampaign(campaignId);
+      return all[0] || null;
+    },
+
+    /**
+     * Deletes all forensic records for a campaign.
+     * @param {string} campaignId
+     * @returns {Promise<boolean>}
+     */
+    async deleteForensicsByCampaign(campaignId) {
+      if (!campaignId) return false;
+      await this._transaction('forensics', 'readwrite', (store) => {
+        return new Promise((resolve, reject) => {
+          const idx = store.index('campaignId');
+          const req = idx.openKeyCursor(IDBKeyRange.only(campaignId));
+          req.onsuccess = (e) => {
+            const cursor = e.target.result;
+            if (cursor) {
+              store.delete(cursor.primaryKey);
+              cursor.continue();
+            } else {
+              resolve(true);
+            }
+          };
+          req.onerror = () => reject(req.error);
+        });
+      });
+      return true;
+    },
+
+    // =========================================================================
     // SETTINGS
     // =========================================================================
 
@@ -465,6 +722,65 @@
       });
 
       return value;
+    },
+
+    /**
+     * Exports all object stores (campaigns, templates, logs, settings) as a plain JS backup object.
+     * @returns {Promise<Object>}
+     */
+    async exportAllData() {
+      const campaigns = await this.getCampaigns();
+      const templates = await this.getTemplates();
+      const logs = await this.getLogs(null, 500);
+      const settings = await this._transaction('settings', 'readonly', (store) => {
+        return new Promise((resolve, reject) => {
+          const req = store.getAll();
+          req.onsuccess = () => resolve(req.result || []);
+          req.onerror = () => reject(req.error);
+        });
+      });
+
+      return {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        campaigns: campaigns || [],
+        templates: templates || [],
+        logs: logs || [],
+        settings: settings || []
+      };
+    },
+
+    /**
+     * Imports campaigns and templates from a backup payload.
+     * @param {Object} data
+     * @returns {Promise<{campaignsImported: number, templatesImported: number}>}
+     */
+    async importAllData(data) {
+      if (!data || typeof data !== 'object') {
+        throw new Error('Invalid backup file format.');
+      }
+      let campaignsCount = 0;
+      let templatesCount = 0;
+
+      if (Array.isArray(data.campaigns)) {
+        for (const camp of data.campaigns) {
+          if (camp && camp.id) {
+            await this.saveCampaign(camp);
+            campaignsCount++;
+          }
+        }
+      }
+
+      if (Array.isArray(data.templates)) {
+        for (const tmpl of data.templates) {
+          if (tmpl && tmpl.id) {
+            await this.saveTemplate(tmpl);
+            templatesCount++;
+          }
+        }
+      }
+
+      return { campaignsImported: campaignsCount, templatesImported: templatesCount };
     }
   };
 

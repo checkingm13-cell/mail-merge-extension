@@ -48,6 +48,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   const countFilterCompleted = document.getElementById('countFilterCompleted');
   const countFilterFailed = document.getElementById('countFilterFailed');
   const countFilterCancelled = document.getElementById('countFilterCancelled');
+  const btnTopRemoveAllFailed = document.getElementById('btnTopRemoveAllFailed');
+  const countTopFailed = document.getElementById('countTopFailed');
+  const btnTopViewArchived = document.getElementById('btnTopViewArchived');
+  const countTopArchived = document.getElementById('countTopArchived');
+  const btnExportBackup = document.getElementById('btnExportBackup');
+  const btnImportBackup = document.getElementById('btnImportBackup');
+  const importFileInput = document.getElementById('importFileInput');
+  const queueStatusCard = document.getElementById('queueStatusCard');
+  const queuePulseDot = document.getElementById('queuePulseDot');
+  const queueProcessingLabel = document.getElementById('queueProcessingLabel');
+  const queueWaitingCount = document.getElementById('queueWaitingCount');
+  const queueLockStateBadge = document.getElementById('queueLockStateBadge');
 
   // Queue Tab elements
   const newCampaignForm = document.getElementById('newCampaignForm');
@@ -209,6 +221,78 @@ document.addEventListener('DOMContentLoaded', async () => {
       await loadCampaigns();
       showToast('Campaigns list refreshed');
     });
+
+    if (btnTopRemoveAllFailed) {
+      btnTopRemoveAllFailed.addEventListener('click', removeAllFailedCampaigns);
+    }
+
+    if (btnTopViewArchived) {
+      btnTopViewArchived.addEventListener('click', openArchivedCampaignsModal);
+    }
+
+    const btnClearAllArchived = document.getElementById('btnClearAllArchived');
+    if (btnClearAllArchived) {
+      btnClearAllArchived.addEventListener('click', clearAllArchived);
+    }
+
+    // Backup & Export Data (JSON)
+    if (btnExportBackup) {
+      btnExportBackup.addEventListener('click', async () => {
+        try {
+          btnExportBackup.disabled = true;
+          showToast('Generating JSON backup...');
+          if (!window.IDBStore) throw new Error('IDBStore not initialized');
+          const backupData = await window.IDBStore.exportAllData();
+          const jsonStr = JSON.stringify(backupData, null, 2);
+          const blob = new Blob([jsonStr], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          const dateStamp = new Date().toISOString().slice(0, 10);
+          a.href = url;
+          a.download = `gmail-mailmerge-backup-${dateStamp}.json`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          showToast('💾 Backup file downloaded successfully!');
+        } catch (err) {
+          console.error('[Dashboard] Export error:', err);
+          showToast('Export failed: ' + err.message);
+        } finally {
+          btnExportBackup.disabled = false;
+        }
+      });
+    }
+
+    // Restore & Import Data (JSON)
+    if (btnImportBackup && importFileInput) {
+      btnImportBackup.addEventListener('click', () => {
+        importFileInput.value = '';
+        importFileInput.click();
+      });
+
+      importFileInput.addEventListener('change', async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        try {
+          btnImportBackup.disabled = true;
+          showToast('Reading backup file...');
+          const text = await file.text();
+          const parsed = JSON.parse(text);
+          if (!window.IDBStore) throw new Error('IDBStore not initialized');
+          const result = await window.IDBStore.importAllData(parsed);
+          showToast(`✅ Restored ${result.campaignsImported} campaign(s) & ${result.templatesImported} template(s)!`);
+          await loadCampaigns();
+          await loadTemplates();
+          await loadLogs();
+        } catch (err) {
+          console.error('[Dashboard] Restore error:', err);
+          showToast('Restore failed: ' + err.message);
+        } finally {
+          btnImportBackup.disabled = false;
+        }
+      });
+    }
 
     campaignFilterPills.forEach((pill) => {
       pill.addEventListener('click', () => {
@@ -419,12 +503,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       console.warn('[Dashboard] Error querying tabs:', err);
     }
 
-    // 2. Check Background Scheduler Status
+    // 2. Check Background Scheduler Status & Overnight Wake-Lock
     try {
       const response = await chrome.runtime.sendMessage({ action: 'GET_SCHEDULER_STATUS' });
       if (response && response.success && response.status) {
-        const { alarmActive, nextScheduledPoll } = response.status;
+        const { alarmActive, nextScheduledPoll, isWakeLockActive } = response.status;
         applySchedulerStatusUI(alarmActive, nextScheduledPoll);
+        const diagWakeLock = document.getElementById('diagWakeLockStatus');
+        if (diagWakeLock) {
+          if (isWakeLockActive) {
+            diagWakeLock.textContent = 'ACTIVE (Keep-Awake)';
+            diagWakeLock.style.color = 'var(--emerald)';
+          } else {
+            diagWakeLock.textContent = 'STANDBY';
+            diagWakeLock.style.color = 'var(--text-muted)';
+          }
+        }
       } else {
         // Fallback to chrome.alarms
         const alarm = await chrome.alarms.get('POLL_CAMPAIGNS_ALARM');
@@ -440,7 +534,37 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     }
 
-    // 3. Update DB Counts
+    // 3. Check 5-Minute Health Monitor status
+    try {
+      if (window.IDBStore) {
+        const lastHealth = await window.IDBStore.getSetting('lastHealthCheck', null);
+        const diagHealthStatus = document.getElementById('diagHealthStatus');
+        if (diagHealthStatus) {
+          if (lastHealth) {
+            const isNominal = lastHealth.online && lastHealth.sessionValid && lastHealth.gmailTabsOpen > 0;
+            if (isNominal) {
+              diagHealthStatus.textContent = 'NOMINAL (5m)';
+              diagHealthStatus.style.color = 'var(--emerald)';
+              diagHealthStatus.title = `Last health check: ${new Date(lastHealth.timestamp).toLocaleTimeString()}`;
+            } else if (!lastHealth.online) {
+              diagHealthStatus.textContent = 'OFFLINE';
+              diagHealthStatus.style.color = 'var(--rose)';
+            } else if (!lastHealth.sessionValid) {
+              diagHealthStatus.textContent = 'AUTH NEEDED';
+              diagHealthStatus.style.color = 'var(--amber)';
+            } else {
+              diagHealthStatus.textContent = 'STANDBY (5m)';
+              diagHealthStatus.style.color = 'var(--sky)';
+            }
+          } else {
+            diagHealthStatus.textContent = 'ACTIVE (5m)';
+            diagHealthStatus.style.color = 'var(--emerald)';
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 4. Update DB Counts
     if (window.IDBStore) {
       diagStatCampaigns.textContent = String(allCampaigns.length);
       diagStatTemplates.textContent = String(allTemplates.length);
@@ -564,7 +688,21 @@ document.addEventListener('DOMContentLoaded', async () => {
       countFilterFailed.textContent = String(counts.FAILED);
       countFilterCancelled.textContent = String(counts.CANCELLED);
 
+      if (countTopFailed) countTopFailed.textContent = String(counts.FAILED);
+      if (btnTopRemoveAllFailed) {
+        btnTopRemoveAllFailed.style.display = counts.FAILED > 0 ? 'inline-flex' : 'none';
+      }
+
+      // Check archived count
+      try {
+        if (window.IDBStore && typeof window.IDBStore.getArchivedCampaigns === 'function') {
+          const archivedList = await window.IDBStore.getArchivedCampaigns();
+          if (countTopArchived) countTopArchived.textContent = String(archivedList.length);
+        }
+      } catch (_) {}
+
       renderCampaignsTable();
+      updateQueueStatusWidget();
     } catch (err) {
       console.error('[Dashboard] Error loading campaigns:', err);
       campaignsTableBody.innerHTML = `<tr><td colspan="7" class="table-empty" style="color: var(--rose);">Error loading campaigns: ${escapeHtml(err.message)}</td></tr>`;
@@ -623,6 +761,37 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
   }
 
+  async function removeAllFailedCampaigns() {
+    const failedList = allCampaigns.filter((c) => c.status === 'FAILED');
+    if (failedList.length === 0) {
+      showToast('No failed campaigns to remove');
+      return;
+    }
+
+    const confirmMsg = `Are you sure you want to remove all ${failedList.length} failed campaign(s)?\n\nThey will be safely preserved in "📦 Archived Campaigns" where you can 1-click clone or retrieve them anytime. This resolves Unique ID conflicts and clears the active table.`;
+    if (!confirm(confirmMsg)) {
+      return;
+    }
+
+    try {
+      showToast(`Archiving & removing ${failedList.length} failed campaign(s)...`);
+      const resp = await chrome.runtime.sendMessage({ action: 'DELETE_ALL_FAILED' }).catch(() => null);
+      if (resp && resp.success) {
+        showToast(`📦 Safely archived and removed ${resp.count} failed campaign(s)!`);
+      } else if (window.IDBStore && typeof window.IDBStore.archiveFailedCampaigns === 'function') {
+        const count = await window.IDBStore.archiveFailedCampaigns();
+        showToast(`📦 Safely archived and removed ${count} failed campaign(s)!`);
+      } else {
+        showToast('Failed to remove: ' + (resp?.error || 'Unknown error'));
+      }
+      await loadCampaigns();
+      await loadLogs();
+    } catch (err) {
+      console.error('[Dashboard] Error removing failed campaigns:', err);
+      showToast('Error: ' + err.message);
+    }
+  }
+
   function renderCampaignsTable() {
     // 1. Overnight / Night Run Summary Banner
     const failedCampaigns = allCampaigns.filter((c) => c.status === 'FAILED');
@@ -631,6 +800,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const summaryTitle = document.getElementById('summaryBannerTitle');
     const summaryDesc = document.getElementById('summaryBannerDesc');
     const btnRetryAllFailed = document.getElementById('btnRetryAllFailed');
+    const btnRemoveAllFailedBanner = document.getElementById('btnRemoveAllFailedBanner');
+    const btnRemoveAllFailedFilter = document.getElementById('btnRemoveAllFailedFilter');
     const btnDismissSummary = document.getElementById('btnDismissSummary');
 
     if (summaryBanner) {
@@ -662,6 +833,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             btnRetryAllFailed.style.display = 'none';
           }
         }
+        if (btnRemoveAllFailedBanner) {
+          btnRemoveAllFailedBanner.onclick = removeAllFailedCampaigns;
+        }
         if (btnDismissSummary) {
           btnDismissSummary.onclick = () => {
             summaryBanner.style.display = 'none';
@@ -669,6 +843,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       } else {
         summaryBanner.style.display = 'none';
+      }
+    }
+
+    if (btnRemoveAllFailedFilter) {
+      if (failedCampaigns.length > 0 && (currentCampaignFilter === 'FAILED' || currentCampaignFilter === 'ALL')) {
+        btnRemoveAllFailedFilter.style.display = 'inline-flex';
+        btnRemoveAllFailedFilter.onclick = removeAllFailedCampaigns;
+      } else {
+        btnRemoveAllFailedFilter.style.display = 'none';
       }
     }
 
@@ -720,8 +903,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Scheduled Time formatting
       const scheduleDisplay = formatFullScheduledTime(camp.scheduledAt);
 
-      // Short ID
-      const shortId = camp.id ? camp.id.substring(0, 10) : 'camp';
+      // Distinct short ID (shows unique suffix or trailing characters e.g. #A8DF1)
+      let shortId = '#CAMP';
+      if (camp.id) {
+        const parts = camp.id.split('_');
+        const uniquePart = parts.length > 1 ? parts[parts.length - 1] : camp.id;
+        shortId = '#' + (uniquePart.length > 7 ? uniquePart.slice(-6) : uniquePart).toUpperCase();
+      }
 
       // Inline Error Callout if FAILED
       let inlineErrorHtml = '';
@@ -815,17 +1003,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         </td>
         <td style="text-align: right; white-space: nowrap;">
           <div style="display: inline-flex; gap: 6px; justify-content: flex-end;">
+            ${(camp.hasForensic || camp.status === 'FAILED')
+              ? `<button class="btn btn-secondary btn-sm btn-table-forensics" data-id="${camp.id}" title="View Overnight Screen Capture & Observation">
+                   📸 Capture
+                 </button>`
+              : ''}
             ${camp.status === 'FAILED'
               ? (camp.errorCategory === 'DRAFT_NOT_FOUND' || camp.canAutoRetry === false || (camp.errorMessage && camp.errorMessage.includes('[DRAFT_NOT_FOUND]'))
                   ? `<button class="btn btn-warning btn-sm btn-table-fix-draft" style="background: rgba(251, 146, 60, 0.2); border: 1px solid #fb923c; color: #fb923c;" data-id="${camp.id}" title="Fix missing draft & re-schedule">
                        🔧 Fix Draft
                      </button>`
                   : `<button class="btn btn-primary btn-sm btn-table-run" style="background: #ef4444; border-color: #dc2626;" data-id="${camp.id}" title="Retry immediately">
-                      ↻ Retry Now
-                    </button>`)
+                       ↻ Retry Now
+                     </button>`)
               : `<button class="btn btn-secondary btn-sm btn-table-run" data-id="${camp.id}" title="Run immediately">
                   ▶ Run Now
                 </button>`}
+            <button class="btn btn-secondary btn-sm btn-table-clone" data-id="${camp.id}" title="1-Click Clone: Pre-fill all campaign settings into Queue Form without re-typing">
+              ♻️ Clone
+            </button>
             <button class="btn btn-secondary btn-sm btn-table-reschedule" data-id="${camp.id}" title="Reschedule">
               ⏰ Reschedule
             </button>
@@ -840,13 +1036,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       `;
 
       // Actions
+      tr.querySelector('.btn-table-forensics')?.addEventListener('click', () => openForensicsViewer(camp));
+      tr.querySelector('.btn-table-clone')?.addEventListener('click', () => cloneCampaignToForm(camp));
       const btnFix = tr.querySelector('.btn-table-fix-draft');
       if (btnFix) {
         btnFix.addEventListener('click', () => openFixDraftModal(camp));
       }
       const btnRun = tr.querySelector('.btn-table-run');
       if (btnRun) {
-        btnRun.addEventListener('click', () => triggerCampaign(camp.id));
+        btnRun.addEventListener('click', () => triggerCampaign(camp.id, btnRun));
       }
       tr.querySelector('.btn-table-reschedule')?.addEventListener('click', () => openRescheduleModal(camp));
       tr.querySelector('.btn-table-details')?.addEventListener('click', () => openDetailsModal(camp));
@@ -856,7 +1054,80 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  async function triggerCampaign(campaignId) {
+  function updateQueueStatusWidget() {
+    if (!queueStatusCard) return;
+
+    const activeCamps = allCampaigns.filter((c) => c.status === 'PROCESSING');
+    const waitingList = allCampaigns
+      .filter((c) => c.status === 'QUEUED' || c.status === 'MISSED_OFFLINE')
+      .sort((a, b) => new Date(a.scheduledAt || a.createdAt || 0) - new Date(b.scheduledAt || b.createdAt || 0));
+
+    const queueActiveSlotsLabel = document.getElementById('queueActiveSlotsLabel');
+    if (queueWaitingCount) {
+      queueWaitingCount.textContent = String(waitingList.length);
+    }
+
+    if (activeCamps.length > 0) {
+      if (queuePulseDot) {
+        queuePulseDot.className = 'status-pulse-dot';
+      }
+      if (queueActiveSlotsLabel) {
+        queueActiveSlotsLabel.textContent = `${activeCamps.length} / 3 Accounts`;
+      }
+      if (queueProcessingLabel) {
+        const items = activeCamps.map((camp) => {
+          const campSubject = camp.subject || camp.name || ('#' + camp.id.slice(-6));
+          const campAccount = camp.accountEmail || camp.senderEmail || 'Default Account';
+          const progressInfo = camp.progressPct ? ` (${camp.progressPct}%)` : '';
+          return `<strong>"${escapeHtml(campSubject)}"</strong> <span style="color: var(--text-muted); font-size: 11px;">(${escapeHtml(campAccount)})</span><span style="color: #60a5fa; font-weight: 600; margin-left: 2px;">${progressInfo}</span>`;
+        });
+        queueProcessingLabel.innerHTML = items.join(' &bull; ');
+      }
+      if (queueLockStateBadge) {
+        queueLockStateBadge.className = 'badge badge-busy';
+        queueLockStateBadge.textContent = `⚡ RUNNING (${activeCamps.length}/3)`;
+      }
+    } else if (waitingList.length > 0) {
+      if (queuePulseDot) {
+        queuePulseDot.className = 'status-pulse-dot idle';
+      }
+      if (queueActiveSlotsLabel) {
+        queueActiveSlotsLabel.textContent = `0 / 3 Accounts`;
+      }
+      if (queueProcessingLabel) {
+        const nextCamp = waitingList[0];
+        const nextSubject = nextCamp.subject || nextCamp.name || ('#' + nextCamp.id.slice(-6));
+        const nextAccount = nextCamp.accountEmail || nextCamp.senderEmail || 'Default Account';
+        queueProcessingLabel.innerHTML = `<span style="color: var(--text-muted);">Ready to dispatch:</span> <strong>"${escapeHtml(nextSubject)}"</strong> <span style="font-size: 11px; color: var(--text-muted);">(${escapeHtml(nextAccount)})</span>`;
+      }
+      if (queueLockStateBadge) {
+        queueLockStateBadge.className = 'badge badge-queued';
+        queueLockStateBadge.textContent = '⏳ IN QUEUE';
+      }
+    } else {
+      if (queuePulseDot) {
+        queuePulseDot.className = 'status-pulse-dot idle';
+      }
+      if (queueActiveSlotsLabel) {
+        queueActiveSlotsLabel.textContent = `0 / 3 Accounts`;
+      }
+      if (queueProcessingLabel) {
+        queueProcessingLabel.textContent = 'Idle (No active campaign)';
+      }
+      if (queueLockStateBadge) {
+        queueLockStateBadge.className = 'badge badge-idle';
+        queueLockStateBadge.textContent = '● IDLE';
+      }
+    }
+  }
+
+  async function triggerCampaign(campaignId, btnElement) {
+    if (btnElement) {
+      if (btnElement.disabled) return;
+      btnElement.disabled = true;
+      btnElement._origHtml = btnElement.innerHTML;
+      btnElement.innerHTML = '⏳ Dispatched...';
+    }
     try {
       showToast('Triggering campaign execution...');
       const response = await chrome.runtime.sendMessage({
@@ -875,6 +1146,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (err) {
       console.error('[Dashboard] Trigger campaign error:', err);
       showToast('Trigger failed: ' + err.message);
+    } finally {
+      if (btnElement) {
+        setTimeout(() => {
+          btnElement.disabled = false;
+          if (btnElement._origHtml) btnElement.innerHTML = btnElement._origHtml;
+        }, 2000);
+      }
     }
   }
 
@@ -900,6 +1178,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const isoDate = new Date(newTime).toISOString();
 
+    if (btnConfirmReschedule) {
+      btnConfirmReschedule.disabled = true;
+      btnConfirmReschedule.textContent = '⏳ Rescheduling...';
+    }
+
     try {
       await window.IDBStore.updateCampaign(id, {
         scheduledAt: isoDate,
@@ -921,6 +1204,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (err) {
       console.error('[Dashboard] Reschedule error:', err);
       alert('Failed to reschedule: ' + err.message);
+    } finally {
+      if (btnConfirmReschedule) {
+        btnConfirmReschedule.disabled = false;
+        btnConfirmReschedule.textContent = 'Confirm Reschedule';
+      }
     }
   }
 
@@ -1205,6 +1493,17 @@ document.addEventListener('DOMContentLoaded', async () => {
           </div>
         </div>
 
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button id="btnDetailsCloneCampaign" class="btn btn-secondary btn-sm btn-table-clone" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 8px;">
+            <span>♻️ Clone to Queue Form (Zero Re-typing)</span>
+          </button>
+          ${(camp.hasForensic || camp.status === 'FAILED') ? `
+            <button id="btnDetailsForensicsViewer" class="btn btn-secondary btn-sm btn-table-forensics" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 8px;">
+              <span>📸 View Screen Capture &amp; Observation</span>
+            </button>
+          ` : ''}
+        </div>
+
         <div>
           <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase;">Activity & Execution Logs</label>
           <div style="background: #050811; border: 1px solid var(--border-color); border-radius: 6px; padding: 10px; max-height: 160px; overflow-y: auto; margin-top: 4px;">
@@ -1214,7 +1513,304 @@ document.addEventListener('DOMContentLoaded', async () => {
       </div>
     `;
 
+    modalDetailsContent.querySelector('#btnDetailsCloneCampaign')?.addEventListener('click', () => {
+      closeModal('modalCampaignDetails');
+      cloneCampaignToForm(camp);
+    });
+
+    modalDetailsContent.querySelector('#btnDetailsForensicsViewer')?.addEventListener('click', () => {
+      closeModal('modalCampaignDetails');
+      openForensicsViewer(camp);
+    });
+
     openModal('modalCampaignDetails');
+  }
+
+  async function openForensicsViewer(campOrId) {
+    const camp = typeof campOrId === 'string'
+      ? (allCampaigns.find((c) => c.id === campOrId) || (await window.IDBStore?.getCampaignById(campOrId)) || { id: campOrId })
+      : campOrId;
+
+    if (!camp || !camp.id) return;
+
+    let captures = [];
+    if (window.IDBStore && typeof window.IDBStore.getForensicsByCampaign === 'function') {
+      captures = await window.IDBStore.getForensicsByCampaign(camp.id);
+    }
+    if (captures.length === 0 && window.IDBStore && typeof window.IDBStore.getLatestForensic === 'function') {
+      const latest = await window.IDBStore.getLatestForensic(camp.id);
+      if (latest) captures = [latest];
+    }
+
+    const campaignTitleEl = document.getElementById('forensicsCampaignTitle');
+    const timestampEl = document.getElementById('forensicsTimestamp');
+    const stageEl = document.getElementById('forensicsStage');
+    const errorTextEl = document.getElementById('forensicsErrorText');
+    const imageEl = document.getElementById('forensicsImage');
+    const noImgPlaceholder = document.getElementById('forensicsNoImagePlaceholder');
+    const domSnippetEl = document.getElementById('forensicsDomSnippet');
+    const domSectionEl = document.getElementById('forensicsDomSection');
+    const btnDownload = document.getElementById('btnDownloadForensicImg');
+    const selectorRow = document.getElementById('forensicsCaptureSelectorRow');
+    const captureSelect = document.getElementById('forensicsCaptureSelect');
+
+    campaignTitleEl.textContent = camp.subject || camp.name || camp.id;
+
+    function displayCapture(capture) {
+      if (!capture) {
+        timestampEl.textContent = camp.updatedAt ? new Date(camp.updatedAt).toLocaleString() : '--';
+        stageEl.textContent = camp.status || 'FAILED';
+        stageEl.className = 'badge badge-failed';
+        errorTextEl.textContent = camp.errorMessage || 'No visual or DOM snapshot recorded.';
+        imageEl.style.display = 'none';
+        noImgPlaceholder.style.display = 'block';
+        noImgPlaceholder.textContent = 'No visual screenshot captured for this campaign.';
+        domSectionEl.style.display = 'none';
+        btnDownload.style.display = 'none';
+        return;
+      }
+
+      timestampEl.textContent = capture.timestamp ? new Date(capture.timestamp).toLocaleString() : '--';
+      stageEl.textContent = capture.stage || camp.status || 'UNKNOWN';
+      stageEl.className = capture.stage === 'READY_TO_SEND' ? 'badge badge-completed' : 'badge badge-failed';
+      errorTextEl.textContent = capture.errorMessage || camp.errorMessage || 'No error message recorded.';
+
+      const imgData = capture.screenshotDataUrl || capture.screenshotUrl;
+      if (imgData) {
+        imageEl.src = imgData;
+        imageEl.style.display = 'block';
+        noImgPlaceholder.style.display = 'none';
+        btnDownload.href = imgData;
+        btnDownload.download = `mailmerge_${camp.id}_${capture.stage || 'capture'}.jpg`;
+        btnDownload.style.display = 'inline-flex';
+      } else {
+        imageEl.style.display = 'none';
+        noImgPlaceholder.style.display = 'block';
+        noImgPlaceholder.textContent = 'Visual screenshot unavailable (window may have been minimized). DOM text preserved below.';
+        btnDownload.style.display = 'none';
+      }
+
+      if (capture.domSnippet || capture.popupTitle) {
+        domSectionEl.style.display = 'block';
+        const snippet = (capture.popupTitle ? `[Popup/Modal Title: ${capture.popupTitle}]\n\n` : '') + (capture.domSnippet || '');
+        domSnippetEl.textContent = snippet;
+      } else {
+        domSectionEl.style.display = 'none';
+      }
+    }
+
+    if (captures.length > 1) {
+      selectorRow.style.display = 'flex';
+      captureSelect.innerHTML = '';
+      captures.forEach((c, idx) => {
+        const opt = document.createElement('option');
+        opt.value = String(idx);
+        const time = formatTimeShort(c.timestamp);
+        opt.textContent = `#${idx + 1} [${time}] ${c.stage} ${c.errorMessage ? '– ' + c.errorMessage.slice(0, 35) : ''}`;
+        captureSelect.appendChild(opt);
+      });
+      captureSelect.value = String(captures.length - 1);
+      captureSelect.onchange = () => {
+        const selectedIdx = parseInt(captureSelect.value, 10);
+        displayCapture(captures[selectedIdx]);
+      };
+      displayCapture(captures[captures.length - 1]);
+    } else if (captures.length === 1) {
+      selectorRow.style.display = 'none';
+      displayCapture(captures[0]);
+    } else {
+      selectorRow.style.display = 'none';
+      displayCapture(null);
+    }
+
+    openModal('modalForensicsViewer');
+  }
+
+  // =========================================================================
+  // 1-CLICK CLONE / RECOVERY & ARCHIVED STORAGE
+  // =========================================================================
+
+  function cloneCampaignToForm(camp) {
+    if (!camp) return;
+
+    // 1. Sender account
+    if (camp.senderEmail || camp.accountEmail) {
+      const email = (camp.accountEmail || camp.senderEmail).toLowerCase().trim();
+      let matched = false;
+      if (formSenderEmail) {
+        for (let i = 0; i < formSenderEmail.options.length; i++) {
+          if (formSenderEmail.options[i].value.toLowerCase().trim() === email) {
+            formSenderEmail.selectedIndex = i;
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) {
+          const opt = document.createElement('option');
+          opt.value = camp.accountEmail || camp.senderEmail;
+          opt.textContent = `${camp.accountEmail || camp.senderEmail} (Cloned Account)`;
+          formSenderEmail.appendChild(opt);
+          formSenderEmail.value = opt.value;
+        }
+      }
+    }
+
+    // 2. Recipient column
+    if (formRecipientCol) {
+      formRecipientCol.value = camp.recipientColumn || 'Email';
+    }
+
+    // 3. Spreadsheet URL & Title
+    if (formSheetUrl) {
+      formSheetUrl.value = camp.spreadsheetUrl || '';
+      formSheetUrl.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    if (formSheetTitle) {
+      formSheetTitle.value = camp.spreadsheetTitle || '';
+    }
+
+    // 4. Subject & Body Template
+    if (formSubject) {
+      formSubject.value = camp.subject || '';
+    }
+    if (formBodyTemplate) {
+      formBodyTemplate.value = camp.bodyTemplate || '';
+      if (camp.bodyHtmlTemplate) {
+        formBodyTemplate.dataset.bodyHtml = camp.bodyHtmlTemplate;
+      }
+    }
+
+    // 5. Checkboxes
+    if (formIncludeUnsub) {
+      formIncludeUnsub.checked = !!camp.includeUnsub;
+    }
+    if (formDryRun) {
+      formDryRun.checked = camp.dryRun !== false;
+    }
+
+    // 6. Reset schedule timing to immediate by default (user can toggle to scheduled if desired)
+    if (modeImmediate) {
+      modeImmediate.checked = true;
+      const schedGroup = document.getElementById('scheduledTimeGroup');
+      if (schedGroup) schedGroup.style.display = 'none';
+    }
+
+    // 7. Switch to Queue Tab smoothly
+    switchTab('tab-queue');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    showToast('✨ Campaign cloned into form! Check details and click Queue.');
+  }
+
+  async function openArchivedCampaignsModal() {
+    const tableBody = document.getElementById('archivedTableBody');
+    if (!tableBody) return;
+
+    tableBody.innerHTML = `<tr><td colspan="6" class="table-empty">Loading archived campaigns...</td></tr>`;
+    openModal('modalArchivedCampaigns');
+
+    try {
+      let list = [];
+      if (window.IDBStore && typeof window.IDBStore.getArchivedCampaigns === 'function') {
+        list = await window.IDBStore.getArchivedCampaigns();
+      }
+
+      const countTopArchived = document.getElementById('countTopArchived');
+      if (countTopArchived) countTopArchived.textContent = String(list.length);
+
+      if (list.length === 0) {
+        tableBody.innerHTML = `
+          <tr>
+            <td colspan="6" class="table-empty">
+              <div style="font-size: 14px; font-weight: 600; margin-bottom: 4px;">No archived campaigns</div>
+              <div style="font-size: 12px; color: var(--text-muted);">
+                When failed campaigns are removed, they are safely preserved here so you can 1-click clone them at any time without re-typing.
+              </div>
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      tableBody.innerHTML = '';
+      list.forEach((c) => {
+        const tr = document.createElement('tr');
+        const archivedTimeStr = formatTimeShort(c.archivedAt);
+        const sheetTitle = c.spreadsheetTitle || extractSheetName(c.spreadsheetUrl) || 'Google Sheet';
+        const sheetLinkHtml = c.spreadsheetUrl
+          ? `<a href="${escapeHtml(c.spreadsheetUrl)}" target="_blank" style="color: var(--sky); text-decoration: none;">${escapeHtml(sheetTitle)}</a>`
+          : `<span style="color: var(--text-muted);">None</span>`;
+
+        tr.innerHTML = `
+          <td style="font-size: 11px; white-space: nowrap; color: var(--text-muted);">
+            ${escapeHtml(archivedTimeStr)}
+          </td>
+          <td style="font-weight: 600; color: var(--text-white); max-width: 260px;">
+            <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(c.subject || '')}">
+              ${escapeHtml(c.subject || 'Untitled Subject')}
+            </div>
+            ${c.errorMessage ? `
+              <div style="color: #fca5a5; font-size: 10px; font-family: var(--font-mono); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(c.errorMessage)}">
+                ⚠️ ${escapeHtml(c.errorMessage)}
+              </div>
+            ` : ''}
+          </td>
+          <td style="max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+            ${sheetLinkHtml}
+          </td>
+          <td style="font-size: 11px; color: var(--text-secondary);">
+            ${escapeHtml(c.accountEmail || c.senderEmail || 'Default Account')}
+          </td>
+          <td>
+            <span class="badge ${c.originalStatus === 'FAILED' ? 'badge-failed' : 'badge-queued'}">
+              ${escapeHtml(c.originalStatus || 'ARCHIVED')}
+            </span>
+          </td>
+          <td style="text-align: right; white-space: nowrap;">
+            <div style="display: inline-flex; gap: 6px; justify-content: flex-end;">
+              <button class="btn btn-secondary btn-sm btn-archived-clone" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8;" title="1-Click Clone: Pre-fill into Queue Form">
+                ♻️ Clone to Queue
+              </button>
+              <button class="btn btn-danger btn-sm btn-archived-del" title="Permanently delete from archive">
+                ✕
+              </button>
+            </div>
+          </td>
+        `;
+
+        tr.querySelector('.btn-archived-clone')?.addEventListener('click', () => {
+          closeModal('modalArchivedCampaigns');
+          cloneCampaignToForm(c);
+        });
+
+        tr.querySelector('.btn-archived-del')?.addEventListener('click', async () => {
+          if (!confirm(`Permanently delete "${c.subject || c.id}" from archive?`)) return;
+          if (window.IDBStore && typeof window.IDBStore.deleteArchivedCampaign === 'function') {
+            await window.IDBStore.deleteArchivedCampaign(c.id);
+            showToast('Deleted from archive');
+            await openArchivedCampaignsModal();
+            await loadCampaigns();
+          }
+        });
+
+        tableBody.appendChild(tr);
+      });
+    } catch (err) {
+      console.error('[Dashboard] Error rendering archived campaigns:', err);
+      tableBody.innerHTML = `<tr><td colspan="6" class="table-empty" style="color: var(--rose);">Error: ${escapeHtml(err.message)}</td></tr>`;
+    }
+  }
+
+  async function clearAllArchived() {
+    if (!confirm('Are you sure you want to permanently delete ALL archived campaigns? This action cannot be undone.')) {
+      return;
+    }
+    if (window.IDBStore && typeof window.IDBStore.clearAllArchivedCampaigns === 'function') {
+      await window.IDBStore.clearAllArchivedCampaigns();
+      showToast('🗑️ All archived campaigns permanently cleared.');
+      await openArchivedCampaignsModal();
+      await loadCampaigns();
+    }
   }
 
   // =========================================================================
@@ -1529,14 +2125,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       entry.className = 'log-entry';
 
       const timeStr = formatTimeFull(log.timestamp);
-      const campIdStr = log.campaignId ? `[${log.campaignId.substring(0, 10)}]` : '[SYS]';
+      const isForensic = log.message && log.message.includes('[FORENSIC]');
+      const forensicBtnHtml = (isForensic && log.campaignId)
+        ? `<button class="btn-log-forensic badge-forensic" data-camp-id="${escapeHtml(log.campaignId)}" style="cursor: pointer; border: none; margin-left: 6px;" title="View Screen Capture & Observation">📸 View Capture</button>`
+        : '';
 
       entry.innerHTML = `
         <span class="log-time">${timeStr}</span>
         <span class="log-level ${log.level}">${log.level}</span>
         <span class="log-campaign">${escapeHtml(campIdStr)}</span>
-        <span class="log-msg">${escapeHtml(log.message || '')}</span>
+        <span class="log-msg">${escapeHtml(log.message || '')}${forensicBtnHtml}</span>
       `;
+
+      entry.querySelector('.btn-log-forensic')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openForensicsViewer(log.campaignId);
+      });
 
       logConsole.appendChild(entry);
     });

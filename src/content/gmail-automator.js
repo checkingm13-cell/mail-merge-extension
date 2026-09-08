@@ -264,6 +264,54 @@
       .replace(/'/g, '&#039;');
   }
 
+  let currentActiveCampaign = null;
+
+  /**
+   * Captures visual tab screenshot and DOM state for overnight diagnostics
+   * @param {string} stage
+   * @param {Element|null} [element]
+   * @param {string|null} [errorMessage]
+   * @param {Object|null} [campaign]
+   * @returns {Promise<Object|null>}
+   */
+  async function captureForensicSnapshot(stage, element = null, errorMessage = null, campaign = null) {
+    try {
+      if (!chrome.runtime || !chrome.runtime.sendMessage) return null;
+
+      const activeCampaign = campaign || currentActiveCampaign;
+      const campaignId = activeCampaign?.id || null;
+
+      let popupInfo = null;
+      let domSnippet = null;
+
+      if (element) {
+        const titleEl = element.querySelector('h1, h2, h3, div[role="heading"], .modal-header, .Kj-JD-title');
+        const title = (titleEl?.textContent || '').trim() || (element.getAttribute('aria-label') || '').trim();
+        const bodyText = (element.textContent || '').slice(0, 300).trim();
+        popupInfo = { title: title.slice(0, 100), body: bodyText };
+
+        try {
+          domSnippet = element.outerHTML ? element.outerHTML.slice(0, 1200) : null;
+        } catch (_) {}
+      }
+
+      console.log(`[GmailAutomator] 📸 Capturing overnight visual forensic snapshot at stage "${stage}"...`);
+      const resp = await chrome.runtime.sendMessage({
+        action: 'CAPTURE_TAB_FORENSIC',
+        campaignId,
+        stage,
+        popupInfo,
+        errorMessage: errorMessage ? String(errorMessage).slice(0, 400) : null,
+        domSnippet
+      }).catch(() => null);
+
+      return resp;
+    } catch (err) {
+      console.warn('[GmailAutomator] Forensic capture note:', err);
+      return null;
+    }
+  }
+
   /**
    * Automatically detects and dismisses interfering Google dialogs:
    * 1. Bulk sender / spam policy warning ("Help fight junk mail") -> checks "Don't show again" + "Got it"
@@ -276,7 +324,21 @@
    */
   async function dismissGoogleInterferingModalsIfNeeded(root = document, campaign = null) {
     try {
-      const dialogs = root.querySelectorAll('div[role="dialog"]');
+      const dialogs = Array.from(root.querySelectorAll('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, [aria-modal="true"], dialog, div[class*="modal"]'));
+
+      // Direct detection: Find any visible element that contains "Help fight junk" or spam policy notice
+      if (!dialogs.some((d) => (d.textContent || '').toLowerCase().includes('fight junk'))) {
+        const candidates = Array.from(root.querySelectorAll('div, section, article')).filter((el) => {
+          if (!isElementVisible(el)) return false;
+          const t = (el.textContent || '').toLowerCase();
+          return t.includes('help fight junk') || (t.includes('marked as spam') && t.includes('got it'));
+        });
+        candidates.sort((a, b) => (a.textContent || '').length - (b.textContent || '').length);
+        if (candidates.length > 0 && candidates[0]) {
+          dialogs.push(candidates[0]);
+        }
+      }
+
       for (const dialog of dialogs) {
         if (!isElementVisible(dialog)) continue;
         const text = (dialog.textContent || '').toLowerCase();
@@ -286,13 +348,14 @@
         if (isCompose) continue;
         if (text.includes('ready to send') || text.includes('separate emails') || text.includes('send all')) continue;
 
-        // 1. Check for spam / junk / bulk email disclaimer patterns
+        // 1. Check for spam / junk / bulk email disclaimer patterns ("Help fight junk emails")
         const isSpamNotice = (
           text.includes('spam') ||
           text.includes('junk') ||
           text.includes('bulk email') ||
           text.includes('bulk sender') ||
-          text.includes('best practices')
+          text.includes('best practices') ||
+          text.includes('fight junk')
         ) && (
           text.includes("don't show") ||
           text.includes("dont show") ||
@@ -302,8 +365,10 @@
         );
 
         if (isSpamNotice) {
-          console.log('[GmailAutomator] 🛡️ Detected Google spam/junk policy disclaimer. Auto-handling...');
-          const checkbox = dialog.querySelector('input[type="checkbox"], div[role="checkbox"]');
+          console.log('[GmailAutomator] 🛡️ Detected Google spam/junk policy disclaimer ("Help fight junk emails"). Auto-handling...');
+          await captureForensicSnapshot('POPUP_INTERCEPTED', dialog, 'Detected Google spam policy disclaimer ("Help fight junk emails")', campaign);
+          const checkbox = dialog.querySelector('input[type="checkbox"], [role="checkbox"], div[role="checkbox"], span[role="checkbox"]')
+            || Array.from(dialog.querySelectorAll('label, div, span')).find((el) => /don't show|dont show/i.test(el.textContent || ''))?.querySelector('input, [role="checkbox"]');
           if (checkbox) {
             const isChecked = checkbox.checked || checkbox.getAttribute('aria-checked') === 'true';
             if (!isChecked) {
@@ -311,16 +376,29 @@
               await sleep(150);
             }
           }
-          const buttons = Array.from(dialog.querySelectorAll('button, div[role="button"]'));
-          const confirmBtn = buttons.find((b) => {
+          const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="Got it" i]'));
+          let confirmBtn = buttons.find((b) => {
             const btnText = (b.textContent || '').trim().toLowerCase();
             return /^(got it|continue|ok|i understand|proceed|acknowledge|agree)$/i.test(btnText);
           }) || buttons.find((b) => /got it|continue|ok/i.test((b.textContent || '').trim()));
 
+          if (!confirmBtn) {
+            confirmBtn = Array.from(dialog.querySelectorAll('*')).find((el) => {
+              const txt = (el.textContent || '').trim().toLowerCase();
+              return (txt === 'got it' || txt === 'ok') && isElementVisible(el);
+            });
+          }
+
           if (confirmBtn) {
             await humanClick(confirmBtn);
+            // Native fallback & keyboard trigger for Google Closure / Material buttons
+            try {
+              if (typeof confirmBtn.click === 'function') confirmBtn.click();
+              confirmBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              confirmBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+            } catch (_) {}
             await sleep(500);
-            console.log('[GmailAutomator] ✅ Google spam/junk disclaimer automatically dismissed.');
+            console.log('[GmailAutomator] ✅ Google spam/junk disclaimer ("Help fight junk emails") automatically dismissed.');
             return true;
           }
         }
@@ -338,10 +416,19 @@
 
         if (isMissingTagsDialog) {
           console.warn('[GmailAutomator] ⚠️ Detected Google "Missing merge tags" modal. Auto-clicking "Send anyway" per unattended policy...');
-          const buttons = Array.from(dialog.querySelectorAll('button, div[role="button"]'));
-          const sendAnywayBtn = buttons.find((b) => /send anyway/i.test((b.textContent || '').trim()));
+          await captureForensicSnapshot('MISSING_MERGE_TAGS', dialog, 'Google warned of missing merge tags in draft body', campaign);
+          const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="Send anyway" i]'));
+          let sendAnywayBtn = buttons.find((b) => /send anyway/i.test((b.textContent || '').trim()));
+          if (!sendAnywayBtn) {
+            sendAnywayBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /send anyway/i.test((el.textContent || '').trim()));
+          }
           if (sendAnywayBtn) {
             await humanClick(sendAnywayBtn);
+            try {
+              if (typeof sendAnywayBtn.click === 'function') sendAnywayBtn.click();
+              sendAnywayBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              sendAnywayBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+            } catch (_) {}
             await sleep(500);
             if (campaign?.id && root.IDBStore) {
               await root.IDBStore.addLog(campaign.id, 'WARN', 'Google warned of missing merge tags in draft body. Auto-clicked "Send anyway" per unattended 24/7 policy.').catch(() => {});
@@ -364,6 +451,7 @@
 
         if (isColumnSelectDialog) {
           console.log('[GmailAutomator] 🔍 Detected Google column selection prompt. Auto-selecting email column...');
+          await captureForensicSnapshot('COLUMN_SELECTION_PROMPT', dialog, 'Google prompted for recipient email column selection', campaign);
           const selectEl = dialog.querySelector('select');
           if (selectEl) {
             const targetCol = (campaign?.recipientColumn || 'email').toLowerCase().trim();
@@ -374,10 +462,18 @@
               selectEl.dispatchEvent(new Event('change', { bubbles: true }));
             }
           }
-          const doneBtn = Array.from(dialog.querySelectorAll('button, div[role="button"]'))
-            .find((b) => /^(done|insert|select|ok)$/i.test((b.textContent || '').trim()));
+          const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button'));
+          let doneBtn = buttons.find((b) => /^(done|insert|select|ok)$/i.test((b.textContent || '').trim()));
+          if (!doneBtn) {
+            doneBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(done|insert|select|ok)$/i.test((el.textContent || '').trim()));
+          }
           if (doneBtn) {
             await humanClick(doneBtn);
+            try {
+              if (typeof doneBtn.click === 'function') doneBtn.click();
+              doneBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              doneBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+            } catch (_) {}
             await sleep(500);
             console.log('[GmailAutomator] ✅ Recipient column auto-confirmed.');
             return true;
@@ -397,11 +493,20 @@
 
         if (isPromoModal) {
           console.log('[GmailAutomator] 🛡️ Dismissing promotional / onboarding popup...');
-          const buttons = Array.from(dialog.querySelectorAll('button, div[role="button"]'));
-          const dismissBtn = buttons.find((b) => /^(got it|not now|dismiss|done|close|no thanks)$/i.test((b.textContent || '').trim()))
+          await captureForensicSnapshot('PROMOTIONAL_POPUP', dialog, 'Google promotional modal detected', campaign);
+          const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="close" i], [aria-label*="dismiss" i]'));
+          let dismissBtn = buttons.find((b) => /^(got it|not now|dismiss|done|close|no thanks)$/i.test((b.textContent || '').trim()))
             || dialog.querySelector('[aria-label="Close" i], [aria-label="Dismiss" i]');
+          if (!dismissBtn) {
+            dismissBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(got it|not now|dismiss|done|close|no thanks)$/i.test((el.textContent || '').trim()));
+          }
           if (dismissBtn) {
             await humanClick(dismissBtn);
+            try {
+              if (typeof dismissBtn.click === 'function') dismissBtn.click();
+              dismissBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              dismissBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+            } catch (_) {}
             await sleep(400);
             console.log('[GmailAutomator] ✅ Promotional modal dismissed.');
             return true;
@@ -436,6 +541,10 @@
       console.log(`[GmailAutomator] 🎯 ${actionName}: Attempt ${attempt}/${maxRetries}...`);
 
       try {
+        // Clear any blocking Google modal or disclaimer before attempting click
+        await dismissGoogleInterferingModalsIfNeeded(document);
+        await sleep(150);
+
         // 1. Wait for element to be present, visible, and enabled
         const el = await waitFor(
           () => {
@@ -497,6 +606,13 @@
         await sleep(retryDelay);
       }
     }
+
+    // Capture visual snapshot at moment of click failure
+    await captureForensicSnapshot(
+      'CLICK_FAILED',
+      document.querySelector('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, div.AD') || document.body,
+      `${actionName} failed after ${maxRetries} attempts. ${lastError ? lastError.message : 'Target state not reached.'}`
+    );
 
     throw new Error(`${actionName} failed after ${maxRetries} attempts. ${lastError ? lastError.message : 'Target state not reached.'}`);
   }
@@ -761,6 +877,9 @@
         'div[role="dialog"][aria-label*="New Message" i]',
         'div[role="dialog"] div[aria-label="Message Body"]',
         'div[gh="cm"]',
+        'div[role="button"][gh="cm"]',
+        'button[aria-label="Compose"]',
+        '.T-I-KE',
         'div.AD' // Common Gmail compose wrapper
       ];
 
@@ -1144,6 +1263,7 @@
     static async _runSingleExecution(draftId, campaign) {
       const campaignId = campaign?.id;
       const subject = campaign?.subject;
+      currentActiveCampaign = campaign;
       let currentStep = 'NAVIGATE';
 
       // Launch floating Execution HUD in Gmail
@@ -1364,9 +1484,11 @@
         await reportProgress('CLICK_CONTINUE', 'Clicking Continue...', 60);
         const modal = await robustClick(
           () => {
-            const buttons = composeDialog.querySelectorAll('button, div[role="button"]');
+            const buttons = composeDialog.querySelectorAll('button, div[role="button"], [role="button"].continue, button.continue, .T-I-KE');
             for (const btn of buttons) {
-              if (/^Continue$/i.test((btn.textContent || '').trim())) {
+              const txt = (btn.textContent || '').trim();
+              const aria = btn.getAttribute('aria-label') || '';
+              if (/^Continue$/i.test(txt) || /^Continue$/i.test(aria)) {
                 return btn;
               }
             }
@@ -1375,21 +1497,35 @@
           async () => {
             // If Google intercepted with the spam/junk disclaimer modal, auto-accept and dismiss it
             const intercepted = await dismissGoogleSpamDisclaimerIfNeeded(document);
-            if (intercepted && campaignId && root.IDBStore) {
-              await root.IDBStore.addLog(campaignId, 'INFO', 'Google bulk email policy disclaimer automatically accepted with "Don\'t show again".').catch(() => {});
+            if (intercepted) {
+              if (campaignId && root.IDBStore) {
+                await root.IDBStore.addLog(campaignId, 'INFO', 'Google bulk email policy disclaimer automatically accepted with "Don\'t show again". Re-triggering "Continue" click...').catch(() => {});
+              }
+              // Google's policy modal consumed the previous click! Immediately re-click "Continue"
+              await sleep(400);
+              const continueBtn = composeDialog.querySelector('button, div[role="button"], [role="button"].continue, button.continue, .T-I-KE');
+              if (continueBtn && isElementVisible(continueBtn)) {
+                console.log('[GmailAutomator] 🔄 Re-clicking "Continue" after dismissing Google policy modal...');
+                await humanClick(continueBtn);
+              }
             }
 
-            const dialogs = document.querySelectorAll('div[role="dialog"]');
+            const dialogs = document.querySelectorAll('div[role="dialog"], div[role="alertdialog"], div.Kj-JD');
             for (const d of dialogs) {
               const txt = (d.textContent || '').trim();
 
               // Check for Google Sheet error popup ("Can't open the sheet")
               if (txt.includes("Can't open the sheet") || txt.includes("cannot open the sheet") || txt.includes("try another sheet")) {
                 console.warn('[GmailAutomator] ❌ Detected Google "Can\'t open the sheet" error dialog.');
-                const backBtn = Array.from(d.querySelectorAll('button, div[role="button"]'))
-                  .find((b) => /back to draft|close|cancel/i.test((b.textContent || '').trim()));
+                await captureForensicSnapshot('SHEET_ACCESS_DELAY', d, 'Google reported Can\'t open the sheet', campaign);
+                const backBtns = Array.from(d.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="close" i], [aria-label*="cancel" i]'));
+                let backBtn = backBtns.find((b) => /back to draft|close|cancel|ok/i.test((b.textContent || '').trim()));
+                if (!backBtn) {
+                  backBtn = Array.from(d.querySelectorAll('*')).find((el) => isElementVisible(el) && /back to draft|close|cancel|ok/i.test((el.textContent || '').trim()));
+                }
                 if (backBtn) {
                   await humanClick(backBtn);
+                  try { if (typeof backBtn.click === 'function') backBtn.click(); } catch (_) {}
                   await sleep(400);
                 }
 
@@ -1434,7 +1570,7 @@
             }
             return null;
           },
-          { maxRetries: 3, actionName: 'Click "Continue"', retryDelay: 1500, timeoutPerAttempt: 4000 }
+          { maxRetries: 4, actionName: 'Click "Continue"', retryDelay: 2500, timeoutPerAttempt: 7000 }
         );
 
         // 4. Verify "Ready to send" modal and extract live audience count
@@ -1478,15 +1614,23 @@
 
         // 5. Click "Send all" with state verification and up to 3 retries
         await reportProgress('SEND_ALL', 'Clicking Send all...', 95);
+        await captureForensicSnapshot(
+          'READY_TO_SEND',
+          modal,
+          `Ready to send modal confirmed with ${liveRecipientCount} recipients.`,
+          campaign
+        );
         await robustClick(
           () => {
-            const buttons = modal.querySelectorAll('button, div[role="button"]');
+            const buttons = modal.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], [data-tooltip*="Send all" i], [aria-label*="Send all" i], .T-I');
             for (const btn of buttons) {
-              if (/send all/i.test((btn.textContent || '').trim())) {
+              const txt = (btn.textContent || '').trim();
+              const tooltip = btn.getAttribute('data-tooltip') || btn.getAttribute('aria-label') || '';
+              if (/send all/i.test(txt) || /send all/i.test(tooltip)) {
                 return btn;
               }
             }
-            return null;
+            return Array.from(modal.querySelectorAll('*')).find((el) => isElementVisible(el) && /^send all$/i.test((el.textContent || '').trim())) || null;
           },
           () => {
             // Target state: Modal closed or Gmail confirmation alert
@@ -1556,6 +1700,14 @@
         try {
           ExecutionHUD.error(error.message, currentStep);
         } catch (_) {}
+
+        // Capture visual snapshot of the screen at the moment of failure
+        await captureForensicSnapshot(
+          'EXECUTION_FAILED',
+          document.querySelector('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, div.AD') || document.body,
+          error.message,
+          campaign
+        );
 
         const isDraftNotFound = (error && (error.category === 'DRAFT_NOT_FOUND' || (error.message && error.message.includes('[DRAFT_NOT_FOUND]'))));
         const errorCategory = error?.category || (isDraftNotFound ? 'DRAFT_NOT_FOUND' : 'EXECUTION_ERROR');

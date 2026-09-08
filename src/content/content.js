@@ -53,30 +53,32 @@
   });
   composeObserver.observe(document.body, { childList: true, subtree: true });
 
-  root.__GMAIL_MAIL_MERGE_CLEANUP__ = () => {
-    try { modalObserver.disconnect(); } catch (_) {}
-    try { composeObserver.disconnect(); } catch (_) {}
-  };
+  if (typeof root.__GMAIL_MAIL_MERGE_CLEANUP__ === 'function') {
+    try { root.__GMAIL_MAIL_MERGE_CLEANUP__(); } catch (_) {}
+  }
 
   // Track active user typing in compose windows to detect when a draft is actively being edited by human
   let lastUserTypingTime = 0;
   let lastActiveDraftId = null;
 
-  document.addEventListener('input', (e) => {
+  const onUserTypingInput = (e) => {
     const compose = e.target?.closest?.('div[role="dialog"], div.M9, div.AD');
     if (compose) {
       lastUserTypingTime = Date.now();
       lastActiveDraftId = getDraftId(compose);
     }
-  }, true);
+  };
 
-  document.addEventListener('keydown', (e) => {
+  const onUserTypingKeydown = (e) => {
     const compose = e.target?.closest?.('div[role="dialog"], div.M9, div.AD');
     if (compose) {
       lastUserTypingTime = Date.now();
       lastActiveDraftId = getDraftId(compose);
     }
-  }, true);
+  };
+
+  document.addEventListener('input', onUserTypingInput, true);
+  document.addEventListener('keydown', onUserTypingKeydown, true);
 
   // Initial immediate checks
   checkAndInjectModal();
@@ -85,12 +87,54 @@
   checkAndShowMissedOfflineBanners();
 
   // Periodic safety scan (ensures dynamic single-page Gmail view changes never miss buttons or warnings)
-  setInterval(() => {
+  const periodicSafetyInterval = setInterval(() => {
     checkAndInjectModal();
     checkAndInjectContinue();
     checkAndDismissSpamDisclaimer();
     checkAndShowMissedOfflineBanners();
-  }, 2000);
+  }, 3500);
+
+  /**
+   * Automated gentle in-tab session ping every 15 minutes
+   * Fetches lightweight atom feed to keep cookies active and verify session health
+   */
+  async function pingGmailSessionInternal() {
+    try {
+      const userMatch = /\/u\/(\d+)/.exec(window.location.pathname);
+      const userIndex = userMatch ? userMatch[1] : '0';
+      const feedUrl = `/mail/u/${userIndex}/feed/atom`;
+      const res = await fetch(feedUrl, { credentials: 'include', cache: 'no-store' });
+      const text = await res.text().catch(() => '');
+      const hasAuthPrompt = !!document.querySelector('form[action*="signin"], input[type="password"], #identifierId');
+      const isLoggedOut = res.status === 401 || res.status === 403 || text.includes('ServiceLogin');
+      return {
+        alive: res.ok && !isLoggedOut && !hasAuthPrompt,
+        needsAuth: hasAuthPrompt || isLoggedOut,
+        status: res.status
+      };
+    } catch (err) {
+      return { alive: false, error: err.message };
+    }
+  }
+
+  const sessionPingInterval = setInterval(() => {
+    pingGmailSessionInternal().catch(() => {});
+  }, 15 * 60 * 1000);
+
+  root.__GMAIL_MAIL_MERGE_CLEANUP__ = () => {
+    try { modalObserver.disconnect(); } catch (_) {}
+    try { composeObserver.disconnect(); } catch (_) {}
+    try { document.removeEventListener('input', onUserTypingInput, true); } catch (_) {}
+    try { document.removeEventListener('keydown', onUserTypingKeydown, true); } catch (_) {}
+    try { clearInterval(periodicSafetyInterval); } catch (_) {}
+    try { clearInterval(sessionPingInterval); } catch (_) {}
+  };
+
+  window.addEventListener('beforeunload', () => {
+    if (typeof root.__GMAIL_MAIL_MERGE_CLEANUP__ === 'function') {
+      root.__GMAIL_MAIL_MERGE_CLEANUP__();
+    }
+  });
 
   /**
    * Auto-detects and dismisses Google's bulk sender / spam policy warning dialog,
@@ -102,7 +146,18 @@
         root.GmailAutomator.dismissGoogleInterferingModalsIfNeeded(document).catch(() => {});
         return;
       }
-      const dialogs = document.querySelectorAll('div[role="dialog"]');
+      const dialogs = Array.from(document.querySelectorAll('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, [aria-modal="true"], dialog, div[class*="modal"]'));
+
+      // Fallback search if not captured by standard dialog selectors
+      if (!dialogs.some((d) => (d.textContent || '').toLowerCase().includes('fight junk'))) {
+        const candidates = Array.from(document.querySelectorAll('div, section, article')).filter((el) => {
+          const t = (el.textContent || '').toLowerCase();
+          return t.includes('help fight junk') || (t.includes('marked as spam') && t.includes('got it'));
+        });
+        candidates.sort((a, b) => (a.textContent || '').length - (b.textContent || '').length);
+        if (candidates.length > 0 && candidates[0]) dialogs.push(candidates[0]);
+      }
+
       for (const dialog of dialogs) {
         const text = (dialog.textContent || '').toLowerCase();
         const isSpamNotice = (
@@ -110,33 +165,51 @@
           text.includes('junk') || 
           text.includes('bulk email') || 
           text.includes('bulk sender') || 
-          text.includes('best practices')
+          text.includes('best practices') ||
+          text.includes('fight junk')
         ) && (
           text.includes("don't show") || 
           text.includes("dont show") || 
-          text.includes("do not show") ||
-          text.includes("got it") ||
+          text.includes("do not show") || 
+          text.includes("got it") || 
           text.includes("learn more")
         );
 
         if (isSpamNotice) {
-          console.log('[MailMerge ContentScript] 🛡️ Auto-handling Google bulk sender / spam disclaimer...');
-          const checkbox = dialog.querySelector('input[type="checkbox"], div[role="checkbox"]');
+          console.log('[MailMerge ContentScript] 🛡️ Auto-handling Google bulk sender / spam disclaimer ("Help fight junk emails")...');
+          const checkbox = dialog.querySelector('input[type="checkbox"], [role="checkbox"], div[role="checkbox"], span[role="checkbox"]')
+            || Array.from(dialog.querySelectorAll('label, div, span')).find((el) => /don't show|dont show/i.test(el.textContent || ''))?.querySelector('input, [role="checkbox"]');
           if (checkbox) {
             const isChecked = checkbox.checked || checkbox.getAttribute('aria-checked') === 'true';
             if (!isChecked) {
-              checkbox.click();
+              try { checkbox.click(); } catch (_) {}
             }
           }
-          const buttons = Array.from(dialog.querySelectorAll('button, div[role="button"]'));
-          const confirmBtn = buttons.find((b) => {
+          const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="Got it" i]'));
+          let confirmBtn = buttons.find((b) => {
             const btnText = (b.textContent || '').trim().toLowerCase();
             return /^(got it|continue|ok|i understand|proceed|acknowledge|agree)$/i.test(btnText);
           }) || buttons.find((b) => /got it|continue|ok/i.test((b.textContent || '').trim()));
 
+          if (!confirmBtn) {
+            confirmBtn = Array.from(dialog.querySelectorAll('*')).find((el) => {
+              const txt = (el.textContent || '').trim().toLowerCase();
+              return (txt === 'got it' || txt === 'ok');
+            });
+          }
+
           if (confirmBtn) {
-            confirmBtn.click();
-            console.log('[MailMerge ContentScript] ✅ Google spam disclaimer auto-dismissed with "Don\'t show again".');
+            try {
+              confirmBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+              confirmBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+              confirmBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
+              confirmBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+              confirmBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+              if (typeof confirmBtn.click === 'function') confirmBtn.click();
+              confirmBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              confirmBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+            } catch (_) {}
+            console.log('[MailMerge ContentScript] ✅ Google spam disclaimer ("Help fight junk emails") auto-dismissed with "Don\'t show again".');
           }
         }
       }
@@ -1354,6 +1427,44 @@
         }
         sendResponse({ isEditing: isEditingTarget });
         return true;
+      }
+
+      if (message.action === 'PING_GMAIL_SESSION') {
+        pingGmailSessionInternal()
+          .then((res) => {
+            sendResponse({
+              success: res.alive,
+              alive: res.alive,
+              needsAuth: !!res.needsAuth,
+              status: res.status,
+              feedPinged: true,
+              url: window.location.href,
+              timestamp: new Date().toISOString()
+            });
+          })
+          .catch((err) => {
+            sendResponse({
+              success: false,
+              alive: false,
+              error: err.message,
+              url: window.location.href,
+              timestamp: new Date().toISOString()
+            });
+          });
+        return true;
+      }
+
+      if (message.action === 'CHECK_SESSION_HEALTH') {
+        const hasAuthPrompt = !!document.querySelector('form[action*="signin"], input[type="password"], #identifierId');
+        const isUrlAuth = window.location.href.includes('accounts.google.com');
+        sendResponse({
+          success: true,
+          alive: !hasAuthPrompt && !isUrlAuth,
+          needsAuth: hasAuthPrompt || isUrlAuth,
+          url: window.location.href,
+          timestamp: new Date().toISOString()
+        });
+        return false;
       }
     });
   }

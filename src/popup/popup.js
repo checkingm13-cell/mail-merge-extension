@@ -211,8 +211,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             showToast(resp?.count ? `Refreshed ${resp.count} Gmail tab(s)` : 'Gmail tabs refreshed');
             setTimeout(() => {
               btnRefreshTabs.disabled = false;
-              btnRefreshTabs.textContent = '🔄 Refresh Tabs';
+              btnRefreshTabs.textContent = '🔄 Tabs';
             }, 2000);
+          };
+        }
+
+        const btnRemoveAllFailed = document.getElementById('btnPopupRemoveAllFailed');
+        if (btnRemoveAllFailed && !btnRemoveAllFailed.dataset.bound) {
+          btnRemoveAllFailed.dataset.bound = 'true';
+          btnRemoveAllFailed.onclick = async () => {
+            if (!confirm(`Delete all ${counts.FAILED} failed campaign(s) from database?\n\nThis will clear unique ID conflicts.`)) return;
+            btnRemoveAllFailed.disabled = true;
+            btnRemoveAllFailed.textContent = 'Removing...';
+            const resp = await chrome.runtime.sendMessage({ action: 'DELETE_ALL_FAILED' }).catch(() => null);
+            showToast(resp?.count ? `🗑️ Removed ${resp.count} failed campaign(s)!` : 'Failed campaigns removed');
+            btnRemoveAllFailed.disabled = false;
+            btnRemoveAllFailed.textContent = '🗑️ Remove All';
+            await loadCampaigns();
           };
         }
       } else {
@@ -503,7 +518,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (btnRun) {
         btnRun.addEventListener('click', (e) => {
           e.stopPropagation();
-          triggerRunNow(camp.id);
+          triggerRunNow(camp.id, btnRun);
         });
       }
       if (btnCancel) {
@@ -526,7 +541,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   /**
    * Triggers a campaign immediately
    */
-  async function triggerRunNow(campaignId) {
+  async function triggerRunNow(campaignId, btnElement) {
+    if (btnElement) {
+      if (btnElement.disabled) return;
+      btnElement.disabled = true;
+      btnElement._origHtml = btnElement.innerHTML;
+      btnElement.innerHTML = '⏳ Dispatched...';
+    }
     try {
       showToast('Executing campaign...');
       const response = await chrome.runtime.sendMessage({
@@ -545,6 +566,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (err) {
       console.error('[Popup] Run Now error:', err);
       showToast('Error: ' + err.message);
+    } finally {
+      if (btnElement) {
+        setTimeout(() => {
+          btnElement.disabled = false;
+          if (btnElement._origHtml) btnElement.innerHTML = btnElement._origHtml;
+        }, 2000);
+      }
     }
   }
 

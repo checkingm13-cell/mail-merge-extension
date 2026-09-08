@@ -10,7 +10,8 @@
     "tabs",
     "scripting",
     "unlimitedStorage",
-    "notifications"
+    "notifications",
+    "power"
   ],
   "host_permissions": [
     "https://mail.google.com/*",
