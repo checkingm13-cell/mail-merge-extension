@@ -239,19 +239,28 @@
   }
 
   /**
-   * Automatically detects and dismisses Google's bulk sender / spam policy warning modal.
-   * Auto-checks "Don't show again" and clicks "Got it" or "Continue".
+   * Automatically detects and dismisses interfering Google dialogs:
+   * 1. Bulk sender / spam policy warning ("Help fight junk mail") -> checks "Don't show again" + "Got it"
+   * 2. "Missing merge tags" dialog -> clicks "Send anyway" so 24/7 campaigns never stall
+   * 3. "Which column has recipient email addresses?" -> auto-selects recipient email column + clicks "Done"
+   * 4. Generic promotional / onboarding popups ("Got it", "Dismiss", "Not now", "Done")
    * @param {Document|Element} root
-   * @returns {Promise<boolean>} True if disclaimer was found and dismissed
+   * @param {Object} [campaign]
+   * @returns {Promise<boolean>} True if an interfering dialog was found and dismissed
    */
-  async function dismissGoogleSpamDisclaimerIfNeeded(root = document) {
+  async function dismissGoogleInterferingModalsIfNeeded(root = document, campaign = null) {
     try {
       const dialogs = root.querySelectorAll('div[role="dialog"]');
       for (const dialog of dialogs) {
         if (!isElementVisible(dialog)) continue;
         const text = (dialog.textContent || '').toLowerCase();
 
-        // Check for spam / junk / bulk email disclaimer patterns
+        // Guard: Do NOT touch compose dialogs or the native "Ready to send" modal!
+        const isCompose = dialog.querySelector('input[name="subjectbox"]') || dialog.querySelector('[aria-label="Message Body"]');
+        if (isCompose) continue;
+        if (text.includes('ready to send') || text.includes('separate emails') || text.includes('send all')) continue;
+
+        // 1. Check for spam / junk / bulk email disclaimer patterns
         const isSpamNotice = (
           text.includes('spam') ||
           text.includes('junk') ||
@@ -268,8 +277,6 @@
 
         if (isSpamNotice) {
           console.log('[GmailAutomator] 🛡️ Detected Google spam/junk policy disclaimer. Auto-handling...');
-
-          // 1. Locate and check the "Don't show this again" checkbox
           const checkbox = dialog.querySelector('input[type="checkbox"], div[role="checkbox"]');
           if (checkbox) {
             const isChecked = checkbox.checked || checkbox.getAttribute('aria-checked') === 'true';
@@ -278,8 +285,6 @@
               await sleep(150);
             }
           }
-
-          // 2. Locate and click the confirmation button ("Got it", "Continue", "OK", "Acknowledge")
           const buttons = Array.from(dialog.querySelectorAll('button, div[role="button"]'));
           const confirmBtn = buttons.find((b) => {
             const btnText = (b.textContent || '').trim().toLowerCase();
@@ -289,16 +294,102 @@
           if (confirmBtn) {
             await humanClick(confirmBtn);
             await sleep(500);
-            console.log('[GmailAutomator] ✅ Google spam/junk disclaimer automatically dismissed with "Don\'t show again".');
+            console.log('[GmailAutomator] ✅ Google spam/junk disclaimer automatically dismissed.');
+            return true;
+          }
+        }
+
+        // 2. Check for "Missing merge tags" dialog ("Some merge tags couldn't be found in your sheet... Send anyway or edit draft?")
+        const isMissingTagsDialog = (
+          text.includes('merge tags') ||
+          text.includes('merge tag') ||
+          text.includes("couldn't be found in your sheet") ||
+          text.includes("cannot be found in your sheet")
+        ) && (
+          text.includes('send anyway') ||
+          text.includes('edit draft')
+        );
+
+        if (isMissingTagsDialog) {
+          console.warn('[GmailAutomator] ⚠️ Detected Google "Missing merge tags" modal. Auto-clicking "Send anyway" per unattended policy...');
+          const buttons = Array.from(dialog.querySelectorAll('button, div[role="button"]'));
+          const sendAnywayBtn = buttons.find((b) => /send anyway/i.test((b.textContent || '').trim()));
+          if (sendAnywayBtn) {
+            await humanClick(sendAnywayBtn);
+            await sleep(500);
+            if (campaign?.id && root.IDBStore) {
+              await root.IDBStore.addLog(campaign.id, 'WARN', 'Google warned of missing merge tags in draft body. Auto-clicked "Send anyway" per unattended 24/7 policy.').catch(() => {});
+            }
+            console.log('[GmailAutomator] ✅ "Send anyway" clicked on missing merge tags dialog.');
+            return true;
+          }
+        }
+
+        // 3. Check for "Which column has your recipients' email addresses?" dialog
+        const isColumnSelectDialog = (
+          text.includes('which column') ||
+          text.includes("recipients' email") ||
+          text.includes("recipient email")
+        ) && (
+          text.includes('done') ||
+          text.includes('select') ||
+          text.includes('insert')
+        );
+
+        if (isColumnSelectDialog) {
+          console.log('[GmailAutomator] 🔍 Detected Google column selection prompt. Auto-selecting email column...');
+          const selectEl = dialog.querySelector('select');
+          if (selectEl) {
+            const targetCol = (campaign?.recipientColumn || 'email').toLowerCase().trim();
+            const option = Array.from(selectEl.options).find((o) => (o.text || '').toLowerCase().includes(targetCol))
+              || Array.from(selectEl.options).find((o) => /email|mail|address|contact/i.test(o.text || ''));
+            if (option) {
+              selectEl.value = option.value;
+              selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          }
+          const doneBtn = Array.from(dialog.querySelectorAll('button, div[role="button"]'))
+            .find((b) => /^(done|insert|select|ok)$/i.test((b.textContent || '').trim()));
+          if (doneBtn) {
+            await humanClick(doneBtn);
+            await sleep(500);
+            console.log('[GmailAutomator] ✅ Recipient column auto-confirmed.');
+            return true;
+          }
+        }
+
+        // 4. Check for generic Google promotional / onboarding / feature modals ("What's new in Gmail", "Smart Compose tips", "Turn on notifications")
+        const isPromoModal = (
+          text.includes("what's new") ||
+          text.includes("meet the new") ||
+          text.includes("turn on notifications") ||
+          text.includes("smart compose") ||
+          text.includes("gemini in gmail") ||
+          text.includes("try the new") ||
+          text.includes("workspace tip")
+        ) && !text.includes("can't open the sheet");
+
+        if (isPromoModal) {
+          console.log('[GmailAutomator] 🛡️ Dismissing promotional / onboarding popup...');
+          const buttons = Array.from(dialog.querySelectorAll('button, div[role="button"]'));
+          const dismissBtn = buttons.find((b) => /^(got it|not now|dismiss|done|close|no thanks)$/i.test((b.textContent || '').trim()))
+            || dialog.querySelector('[aria-label="Close" i], [aria-label="Dismiss" i]');
+          if (dismissBtn) {
+            await humanClick(dismissBtn);
+            await sleep(400);
+            console.log('[GmailAutomator] ✅ Promotional modal dismissed.');
             return true;
           }
         }
       }
     } catch (err) {
-      console.warn('[GmailAutomator] Error handling spam disclaimer note:', err);
+      console.warn('[GmailAutomator] Error handling interfering modals note:', err);
     }
     return false;
   }
+
+  // Backward compatibility alias
+  const dismissGoogleSpamDisclaimerIfNeeded = dismissGoogleInterferingModalsIfNeeded;
 
   /**
    * Executes a robust click with element readiness check, visual pulse, and state verification with retries
@@ -625,6 +716,13 @@
      */
     static isComposeOpen() {
       return !!this.getComposeDialog();
+    }
+
+    /**
+     * Dismisses interfering Google modals (spam notices, missing tags, column selectors, promos)
+     */
+    static async dismissGoogleInterferingModalsIfNeeded(root = document, campaign = null) {
+      return await dismissGoogleInterferingModalsIfNeeded(root, campaign);
     }
 
     /**

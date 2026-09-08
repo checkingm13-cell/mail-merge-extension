@@ -517,7 +517,101 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  function categorizeCampaignError(errorMessage) {
+    if (!errorMessage) return { category: 'UNKNOWN', badge: '⚠️ Execution Error', color: '#f87171', remedy: 'Check details modal or execution logs.' };
+    const msg = String(errorMessage).toLowerCase();
+
+    if (msg.includes("can't open the sheet") || msg.includes("cannot open the sheet") || msg.includes("sheet access error")) {
+      return {
+        category: 'SHEET_PERMISSION',
+        badge: '📄 Sheet Permission Denied',
+        color: '#f87171',
+        remedy: 'Open Google Drive and grant Viewer access on this Google Sheet to the sender account.'
+      };
+    }
+    if (msg.includes("sending limit") || msg.includes("reached a limit") || msg.includes("quota")) {
+      return {
+        category: 'DAILY_QUOTA',
+        badge: '⏳ Google Daily Quota Reached',
+        color: '#fbbf24',
+        remedy: 'Google 24-hour sending limit reached. Quota resets automatically in 12-24h.'
+      };
+    }
+    if (msg.includes("verify it's you") || msg.includes("login required") || msg.includes("auth required") || msg.includes("accounts.google.com")) {
+      return {
+        category: 'AUTH_EXPIRED',
+        badge: '🔑 Google Login / Auth Required',
+        color: '#c084fc',
+        remedy: 'Google session expired. Open the Gmail tab and complete the "Verify it\'s you" sign-in.'
+      };
+    }
+    if (msg.includes("network offline") || msg.includes("internet offline") || msg.includes("disconnected") || msg.includes("net::err")) {
+      return {
+        category: 'NETWORK_OFFLINE',
+        badge: '🌐 Network Connection Dropped',
+        color: '#38bdf8',
+        remedy: 'Wi-Fi or ISP connection dropped during dispatch. Verify PC internet connection.'
+      };
+    }
+    if (msg.includes("draft not found") || msg.includes("subject mismatch") || msg.includes("mail merge inactive")) {
+      return {
+        category: 'DRAFT_NOT_FOUND',
+        badge: '🗂️ Draft Missing / Inactive',
+        color: '#fb923c',
+        remedy: 'Draft missing or no Mail Merge sheet linked. Verify draft is saved in Gmail Drafts with "Continue" button.'
+      };
+    }
+    return {
+      category: 'EXECUTION_ERROR',
+      badge: '⚠️ Automation Error',
+      color: '#f87171',
+      remedy: errorMessage
+    };
+  }
+
   function renderCampaignsTable() {
+    // 1. Overnight / Night Run Summary Banner
+    const failedCampaigns = allCampaigns.filter((c) => c.status === 'FAILED');
+    const summaryBanner = document.getElementById('overnightSummaryBanner');
+    const summaryTitle = document.getElementById('summaryBannerTitle');
+    const summaryDesc = document.getElementById('summaryBannerDesc');
+    const btnRetryAllFailed = document.getElementById('btnRetryAllFailed');
+    const btnDismissSummary = document.getElementById('btnDismissSummary');
+
+    if (summaryBanner) {
+      if (failedCampaigns.length > 0) {
+        const uniqueAccounts = [...new Set(failedCampaigns.map((c) => c.accountEmail || c.senderEmail || 'Primary Account'))];
+        summaryTitle.textContent = `${failedCampaigns.length} Campaign(s) Require Attention`;
+        summaryDesc.innerHTML = `
+          <span>Affected Account(s): <strong>${uniqueAccounts.map(escapeHtml).join(', ')}</strong></span> &bull;
+          <span>Click <strong>"↻ Retry All Failed"</strong> to re-run after resolving access or permissions.</span>
+        `;
+        summaryBanner.style.display = 'block';
+
+        if (btnRetryAllFailed) {
+          btnRetryAllFailed.onclick = async () => {
+            btnRetryAllFailed.disabled = true;
+            btnRetryAllFailed.textContent = 'Retrying...';
+            showToast(`Retrying ${failedCampaigns.length} failed campaigns...`);
+            for (const camp of failedCampaigns) {
+              await triggerCampaign(camp.id);
+              await new Promise((r) => setTimeout(r, 1000));
+            }
+            btnRetryAllFailed.disabled = false;
+            btnRetryAllFailed.textContent = '↻ Retry All Failed';
+            await loadCampaigns();
+          };
+        }
+        if (btnDismissSummary) {
+          btnDismissSummary.onclick = () => {
+            summaryBanner.style.display = 'none';
+          };
+        }
+      } else {
+        summaryBanner.style.display = 'none';
+      }
+    }
+
     let filtered = allCampaigns;
     if (currentCampaignFilter !== 'ALL') {
       if (currentCampaignFilter === 'QUEUED') {
@@ -569,11 +663,33 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Short ID
       const shortId = camp.id ? camp.id.substring(0, 10) : 'camp';
 
+      // Inline Error Callout if FAILED
+      let inlineErrorHtml = '';
+      if (camp.status === 'FAILED') {
+        const cat = categorizeCampaignError(camp.errorMessage);
+        inlineErrorHtml = `
+          <div style="margin-top: 6px; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 6px; padding: 7px 10px; font-size: 11px;">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 3px;">
+              <span style="font-weight: 700; color: ${cat.color}; display: flex; align-items: center; gap: 4px;">
+                ${cat.badge}
+              </span>
+              <span style="font-size: 10px; color: var(--text-muted);">${formatTimeShort(camp.failedAt || camp.updatedAt)}</span>
+            </div>
+            <div style="color: #fca5a5; font-family: var(--font-mono); font-size: 10px; word-break: break-all; margin-bottom: 4px;">
+              ${escapeHtml(camp.errorMessage || 'Execution halted.')}
+            </div>
+            <div style="color: #93c5fd; font-size: 10px;">
+              💡 <strong>Action:</strong> ${escapeHtml(cat.remedy)}
+            </div>
+          </div>
+        `;
+      }
+
       tr.innerHTML = `
         <td style="font-family: var(--font-mono); color: var(--text-muted); font-size: 11px;" title="${escapeHtml(camp.id)}">
           ${escapeHtml(shortId)}
         </td>
-        <td style="font-weight: 600; color: var(--text-white); max-width: 260px;">
+        <td style="font-weight: 600; color: var(--text-white); max-width: 280px;">
           <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(camp.subject || '')}">
             ${escapeHtml(camp.subject || 'Untitled Subject')}
           </div>
@@ -581,6 +697,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             <span>Sender: ${escapeHtml(camp.accountEmail || camp.senderEmail || ('Gmail ' + (camp.userIndex && camp.userIndex !== '0' ? 'Account #' + camp.userIndex : 'Primary')))}</span>
             ${(camp.sentCount || camp.recipientCount) ? `<span style="background: rgba(56, 189, 248, 0.15); color: var(--sky); border: 1px solid rgba(56, 189, 248, 0.3); padding: 0 5px; border-radius: 10px; font-weight: 500; font-size: 9px;">👥 ${camp.sentCount || camp.recipientCount} ${camp.status === 'COMPLETED' ? 'sent' : 'recipients'}</span>` : ''}
           </div>
+          ${inlineErrorHtml}
         </td>
         <td style="max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
           ${sheetLinkHtml}
@@ -600,9 +717,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         </td>
         <td style="text-align: right; white-space: nowrap;">
           <div style="display: inline-flex; gap: 6px; justify-content: flex-end;">
-            <button class="btn btn-secondary btn-sm btn-table-run" data-id="${camp.id}" title="Run immediately">
-              ▶ Run Now
-            </button>
+            ${camp.status === 'FAILED'
+              ? `<button class="btn btn-primary btn-sm btn-table-run" style="background: #ef4444; border-color: #dc2626;" data-id="${camp.id}" title="Retry immediately">
+                  ↻ Retry Now
+                </button>`
+              : `<button class="btn btn-secondary btn-sm btn-table-run" data-id="${camp.id}" title="Run immediately">
+                  ▶ Run Now
+                </button>`}
             <button class="btn btn-secondary btn-sm btn-table-reschedule" data-id="${camp.id}" title="Reschedule">
               ⏰ Reschedule
             </button>

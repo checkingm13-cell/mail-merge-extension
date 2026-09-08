@@ -75,11 +75,15 @@
   }, 2000);
 
   /**
-   * Auto-detects and dismisses Google's bulk sender / spam policy warning dialog if it appears.
-   * Checks "Don't show this again" and clicks "Got it" or "Continue".
+   * Auto-detects and dismisses Google's bulk sender / spam policy warning dialog,
+   * missing merge tags, column selection prompts, and promotional popups.
    */
   function checkAndDismissSpamDisclaimer() {
     try {
+      if (root.GmailAutomator && typeof root.GmailAutomator.dismissGoogleInterferingModalsIfNeeded === 'function') {
+        root.GmailAutomator.dismissGoogleInterferingModalsIfNeeded(document).catch(() => {});
+        return;
+      }
       const dialogs = document.querySelectorAll('div[role="dialog"]');
       for (const dialog of dialogs) {
         const text = (dialog.textContent || '').toLowerCase();

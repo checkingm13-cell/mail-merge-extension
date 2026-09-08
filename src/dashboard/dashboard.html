@@ -109,6 +109,29 @@
             </div>
           </div>
 
+          <!-- Night Run Summary Banner (Dynamic) -->
+          <div id="overnightSummaryBanner" style="display: none; background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 8px; padding: 14px 18px; margin-bottom: 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap;">
+              <div>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 16px;">⚠️</span>
+                  <strong style="color: #fca5a5; font-size: 14px;" id="summaryBannerTitle">Overnight Campaign Issues Detected</strong>
+                </div>
+                <div style="color: var(--text-secondary); font-size: 12px; margin-top: 4px;" id="summaryBannerDesc">
+                  <!-- details inserted dynamically -->
+                </div>
+              </div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <button id="btnRetryAllFailed" class="btn btn-primary btn-sm" style="background: #ef4444; border-color: #dc2626;">
+                  <span>↻ Retry All Failed</span>
+                </button>
+                <button id="btnDismissSummary" class="btn btn-secondary btn-sm">
+                  <span>Dismiss</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- Campaigns Table -->
           <div class="table-responsive">
             <table class="data-table">
