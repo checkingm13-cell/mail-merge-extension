@@ -727,6 +727,98 @@
     }
 
     /**
+     * Finds matching compose dialog. If it is minimized in the dock, automatically restores/expands it.
+     * @param {string} draftId
+     * @param {Object} campaign
+     * @param {Element|Document} [doc]
+     * @returns {Promise<Element|null>}
+     */
+    static async findAndExpandMatchingComposeDialog(draftId, campaign, doc = document) {
+      let dialog = GmailAutomator.findStrictMatchingComposeDialog(draftId, campaign, doc);
+      if (!dialog) {
+        // Check for minimized compose window by subject in titlebar
+        dialog = GmailAutomator.findMinimizedMatchingComposeDialog(draftId, campaign, doc);
+      }
+      if (dialog) {
+        await GmailAutomator.ensureComposeExpanded(dialog);
+      }
+      return dialog;
+    }
+
+    /**
+     * Locates a compose dialog that is currently minimized in the bottom dock
+     * @param {string} draftId
+     * @param {Object} campaign
+     * @param {Element|Document} [doc]
+     * @returns {Element|null}
+     */
+    static findMinimizedMatchingComposeDialog(draftId, campaign, doc = document) {
+      const dialogs = doc.querySelectorAll('div[role="dialog"], div.M9, div.AD');
+      const expectedSubject = (campaign?.subject || '').trim().toLowerCase();
+
+      for (const d of dialogs) {
+        if (!d || !d.isConnected) continue;
+        const rect = d.getBoundingClientRect();
+        if (rect.width === 0) continue;
+
+        const headerTitle = (d.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp, span')?.textContent || '').trim().toLowerCase();
+        const subjectInput = (d.querySelector('input[name="subjectbox"], input[aria-label="Subject"]')?.value || '').trim().toLowerCase();
+        const actualDraftId = d.querySelector('input[name="draft"]')?.value || d.getAttribute('data-compose-id');
+
+        const actualSubject = subjectInput || headerTitle;
+        if (expectedSubject && actualSubject) {
+          if (actualSubject === expectedSubject ||
+              (actualSubject.length > 3 && expectedSubject.includes(actualSubject)) ||
+              (expectedSubject.length > 3 && actualSubject.includes(expectedSubject))) {
+            return d;
+          }
+        }
+
+        if (draftId && draftId !== 'unknown' && actualDraftId === draftId) {
+          return d;
+        }
+      }
+      return null;
+    }
+
+    /**
+     * Expands a compose window if it is minimized (collapsed to ~35-45px height)
+     * @param {Element} dialog
+     * @returns {Promise<boolean>} True if it was minimized and expanded
+     */
+    static async ensureComposeExpanded(dialog) {
+      if (!dialog || !dialog.isConnected) return false;
+
+      const rect = dialog.getBoundingClientRect();
+      const bodyEl = dialog.querySelector('[aria-label="Message Body"]');
+      const isBodyHidden = !bodyEl || !isElementVisible(bodyEl);
+      const isHeightCollapsed = rect.height > 0 && rect.height < 120;
+
+      if (isHeightCollapsed || isBodyHidden) {
+        console.log('[GmailAutomator] 🔍 Compose window is MINIMIZED (height: ' + Math.round(rect.height) + 'px). Expanding...');
+
+        // In Gmail, clicking the titlebar or the expand/maximize button restores the window
+        const expandBtn = dialog.querySelector(
+          '[aria-label*="Maximize" i], [aria-label*="Full screen" i], [aria-label*="expand" i], img[alt*="Maximize" i]'
+        );
+        const titleBar = dialog.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp') || dialog.firstElementChild || dialog;
+
+        if (expandBtn && isElementVisible(expandBtn)) {
+          await humanClick(expandBtn);
+        } else if (titleBar) {
+          await humanClick(titleBar);
+        } else {
+          await humanClick(dialog);
+        }
+
+        await sleep(800);
+        console.log('[GmailAutomator] 📏 Compose window restored. New height: ' + Math.round(dialog.getBoundingClientRect().height) + 'px');
+        return true;
+      }
+      return false;
+    }
+
+    /**
      * Opens a new Compose window if none is currently active
      * @returns {Promise<Element>}
      */
@@ -874,8 +966,8 @@
 
         await reportProgress('NAVIGATE', 'Locating and verifying targeted draft...', 10);
 
-        // 1. First check if matching compose dialog is ALREADY open in this tab
-        let composeDialog = GmailAutomator.findStrictMatchingComposeDialog(draftId, campaign);
+        // 1. First check if matching compose dialog is ALREADY open or minimized in this tab
+        let composeDialog = await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
 
         if (!composeDialog) {
           await dismissGoogleSpamDisclaimerIfNeeded(document);
@@ -900,7 +992,7 @@
             composeDialog = await waitFor(
               async () => {
                 await dismissGoogleSpamDisclaimerIfNeeded(document);
-                return GmailAutomator.findStrictMatchingComposeDialog(draftId, campaign);
+                return await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
               },
               { timeout: 15000, errorMsg: 'Target mail merge draft not loaded via URL' }
             );
@@ -921,11 +1013,16 @@
             composeDialog = await waitFor(
               async () => {
                 await dismissGoogleSpamDisclaimerIfNeeded(document);
-                return GmailAutomator.findStrictMatchingComposeDialog(draftId, campaign);
+                return await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
               },
               { timeout: 15000, errorMsg: 'Target draft not found or did not match mail merge verification' }
             );
           }
+        }
+
+        // Ensure compose window is completely expanded and restored
+        if (composeDialog) {
+          await GmailAutomator.ensureComposeExpanded(composeDialog);
         }
 
         // HARD SAFETY ENFORCEMENT: Never send an unverified draft!
