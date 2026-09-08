@@ -60,8 +60,8 @@ async function injectIntoExistingGmailTabs() {
         await chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
 
         if (tab.discarded) {
-          console.log(`[ServiceWorker] Pinned Gmail tab ${tab.id} was discarded. Auto-reloading to restore...`);
-          await chrome.tabs.reload(tab.id).catch(() => {});
+          console.log(`[ServiceWorker] Pinned Gmail tab ${tab.id} was discarded. Hard reloading to restore...`);
+          await chrome.tabs.reload(tab.id, { bypassCache: true }).catch(() => {});
           continue;
         }
 
@@ -505,8 +505,8 @@ async function findGmailTab(campaign) {
 
   // Check if tab was discarded by Chrome Memory Saver
   if (matchedTab && matchedTab.discarded) {
-    console.log(`[ServiceWorker] 💤 Gmail tab ${matchedTab.id} was discarded by Chrome. Reloading...`);
-    await chrome.tabs.reload(matchedTab.id);
+    console.log(`[ServiceWorker] 💤 Gmail tab ${matchedTab.id} was discarded by Chrome. Hard reloading (bypassCache)...`);
+    await chrome.tabs.reload(matchedTab.id, { bypassCache: true });
     await waitForTabComplete(matchedTab.id, 25000);
     await delay(2500);
     try {
@@ -603,8 +603,8 @@ async function sendMessageWithRetry(tabId, message, maxRetries = 4) {
         // Recovery 2: Auto-reload the tab if context was invalidated by extension reload
         if (attempt >= 2) {
           try {
-            console.log(`[ServiceWorker] Auto-reloading pinned Gmail tab ${tabId} to restore fresh extension context...`);
-            await chrome.tabs.reload(tabId);
+            console.log(`[ServiceWorker] Auto-reloading (hard reload, bypassCache) pinned Gmail tab ${tabId} to restore fresh extension context...`);
+            await chrome.tabs.reload(tabId, { bypassCache: true });
             await waitForTabComplete(tabId, 25000);
             await delay(4000); // 4s buffer for Gmail client hydration
             continue;
@@ -841,7 +841,7 @@ async function handleRuntimeMessage(message, sender) {
       console.log(`[ServiceWorker] 🔄 Manual refresh requested for ${tabs.length} Gmail tab(s)...`);
       for (const t of tabs) {
         await chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
-        await chrome.tabs.reload(t.id).catch(() => {});
+        await chrome.tabs.reload(t.id, { bypassCache: true }).catch(() => {});
       }
       return { success: true, count: tabs.length };
     }
