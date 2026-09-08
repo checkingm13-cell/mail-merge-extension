@@ -527,9 +527,13 @@
     if (existing) existing.remove();
 
     // Scoped strictly to the specific compose window where schedule was clicked
-    const composeDialog = anchorElement?.closest('div[role="dialog"]') || getComposeDialog();
+    let composeDialog = anchorElement?.closest('div[role="dialog"]');
+    if (!composeDialog || (!composeDialog.querySelector('input[name="subjectbox"]') && !composeDialog.querySelector('[aria-label="Message Body"]'))) {
+      composeDialog = getComposeDialog() || composeDialog;
+    }
     const subject = getSubject(composeDialog);
     let meta = extractDraftMetadata(composeDialog);
+    let selectedTemplate = null;
 
     // If scheduled directly from the "Ready to send" modal, merge metadata from underlying compose dialog
     if (!meta.sheetTitle || !meta.sheetUrl) {
@@ -714,11 +718,15 @@
 
       templateSelect.addEventListener('change', async () => {
         const tplId = templateSelect.value;
-        if (!tplId) return;
+        if (!tplId) {
+          selectedTemplate = null;
+          return;
+        }
         try {
           const tpls = await root.IDBStore.getTemplates();
           const chosen = tpls.find((t) => t.id === tplId);
           if (chosen) {
+            selectedTemplate = chosen;
             // Apply subject to compose dialog
             if (chosen.subject !== undefined && composeDialog) {
               const subInput = composeDialog.querySelector('input[name="subjectbox"], input[name="subject"]');
@@ -854,7 +862,8 @@
       }
 
       // Safety Guard 1: Enforce Non-Empty Subject
-      const currentSubject = (getSubject(composeDialog) || subject || '').trim();
+      const rawSubject = (getSubject(composeDialog) || '').trim();
+      const currentSubject = ((rawSubject && !rawSubject.startsWith('Mail Merge (')) ? rawSubject : (selectedTemplate?.subject || rawSubject || subject || '')).trim();
       if (!currentSubject || currentSubject === '(No Subject)' || currentSubject.startsWith('Mail Merge (')) {
         alertBox.textContent = '⚠️ Please enter a clear email subject in your draft before scheduling.';
         alertBox.style.display = 'block';
@@ -921,18 +930,20 @@
           status: 'QUEUED',
           isNative: true,
           createdAt: new Date().toISOString(),
+          templateId: selectedTemplate?.id || null,
+          templateName: selectedTemplate?.name || null,
           // Complete Draft & Sheet Metadata:
-          sheetId: meta.sheetId,
-          sheetUrl: meta.sheetUrl,
-          sheetTitle: meta.sheetTitle,
-          recipientCount: meta.recipientCount,
-          recipientsSummary: meta.recipientsSummary,
-          mergeTags: meta.mergeTags,
-          bodySnippet: meta.bodySnippet,
-          bodyHtml: meta.bodyHtml,
-          bodyText: meta.bodyText,
-          attachmentCount: meta.attachmentCount,
-          metadata: meta
+          sheetId: currentMeta.sheetId || meta.sheetId || null,
+          sheetUrl: currentMeta.sheetUrl || meta.sheetUrl || null,
+          sheetTitle: currentMeta.sheetTitle || meta.sheetTitle || null,
+          recipientCount: currentMeta.recipientCount || meta.recipientCount || 0,
+          recipientsSummary: currentMeta.recipientsSummary || meta.recipientsSummary || null,
+          mergeTags: (currentMeta.mergeTags && currentMeta.mergeTags.length > 0) ? currentMeta.mergeTags : (selectedTemplate?.mergeTags || meta.mergeTags || []),
+          bodySnippet: currentMeta.bodySnippet || selectedTemplate?.body || meta.bodySnippet || '',
+          bodyHtml: currentMeta.bodyHtml || selectedTemplate?.bodyHtml || meta.bodyHtml || '',
+          bodyText: currentMeta.bodyText || selectedTemplate?.body || meta.bodyText || '',
+          attachmentCount: currentMeta.attachmentCount || meta.attachmentCount || 0,
+          metadata: { ...meta, ...currentMeta }
         };
 
         await root.IDBStore.saveCampaign(campaign);
@@ -1170,8 +1181,7 @@
         composeDialog.querySelector('button[aria-label*="Save & close" i]') ||
         composeDialog.querySelector('img[aria-label*="Close" i]') ||
         composeDialog.querySelector('img[aria-label*="Save & close" i]') ||
-        composeDialog.querySelector('img.Ha') ||
-        composeDialog.querySelector('button[aria-label*="Discard" i]');
+        composeDialog.querySelector('img.Ha');
       if (closeBtn) {
         closeBtn.click();
       }

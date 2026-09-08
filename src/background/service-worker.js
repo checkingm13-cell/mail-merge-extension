@@ -855,6 +855,8 @@ async function handleRuntimeMessage(message, sender) {
           recipientCount: message.recipientCount !== undefined ? message.recipientCount : undefined,
           failedCount: message.failedCount !== undefined ? message.failedCount : undefined,
           errorMessage: message.status === 'FAILED' ? (message.logMessage || message.error) : undefined,
+          errorCategory: message.errorCategory || undefined,
+          canAutoRetry: message.canAutoRetry !== undefined ? message.canAutoRetry : undefined,
           completedAt: (message.status === 'COMPLETED' || message.status === 'COMPLETED (DRY RUN)') ? new Date().toISOString() : undefined
         });
         if (message.logMessage) {

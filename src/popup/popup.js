@@ -174,26 +174,37 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (retryBanner && retryText) {
       if (counts.FAILED > 0) {
-        retryText.textContent = `${counts.FAILED} Failed Campaign(s)`;
-        retryBanner.style.display = 'flex';
-        if (btnRetryAll && !btnRetryAll.dataset.bound) {
-          btnRetryAll.dataset.bound = 'true';
-          btnRetryAll.onclick = async () => {
-            btnRetryAll.disabled = true;
-            btnRetryAll.textContent = 'Retrying...';
-            const failedList = allCampaigns.filter((c) => c.status === 'FAILED');
-            for (const camp of failedList) {
-              await chrome.runtime.sendMessage({
-                action: 'TRIGGER_CAMPAIGN_NOW',
-                campaignId: camp.id
-              }).catch(() => {});
-              await new Promise((r) => setTimeout(r, 600));
-            }
-            btnRetryAll.disabled = false;
-            btnRetryAll.textContent = '↻ Retry All';
-            await loadCampaigns();
-          };
+        const retryableFailed = allCampaigns.filter(
+          (c) => c.status === 'FAILED' && c.canAutoRetry !== false && c.errorCategory !== 'DRAFT_NOT_FOUND' && !(c.errorMessage && c.errorMessage.includes('[DRAFT_NOT_FOUND]'))
+        );
+        const missingDraftCount = counts.FAILED - retryableFailed.length;
+
+        if (retryableFailed.length > 0) {
+          retryText.textContent = `${retryableFailed.length} Retryable Failed Campaign(s)` + (missingDraftCount > 0 ? ` (${missingDraftCount} missing draft)` : '');
+          if (btnRetryAll) {
+            btnRetryAll.style.display = 'inline-flex';
+            btnRetryAll.onclick = async () => {
+              btnRetryAll.disabled = true;
+              btnRetryAll.textContent = 'Retrying...';
+              for (const camp of retryableFailed) {
+                await chrome.runtime.sendMessage({
+                  action: 'TRIGGER_CAMPAIGN_NOW',
+                  campaignId: camp.id
+                }).catch(() => {});
+                await new Promise((r) => setTimeout(r, 600));
+              }
+              btnRetryAll.disabled = false;
+              btnRetryAll.textContent = '↻ Retry All';
+              await loadCampaigns();
+            };
+          }
+        } else {
+          retryText.textContent = `${counts.FAILED} Failed (Draft Missing - Re-schedule Needed)`;
+          if (btnRetryAll) {
+            btnRetryAll.style.display = 'none';
+          }
         }
+        retryBanner.style.display = 'flex';
 
         const btnRefreshTabs = document.getElementById('btnRefreshTabs');
         if (btnRefreshTabs && !btnRefreshTabs.dataset.bound) {
@@ -325,10 +336,17 @@ document.addEventListener('DOMContentLoaded', async () => {
           </button>
         `;
       } else if (camp.status === 'FAILED') {
+        const isMissingDraft = camp.errorCategory === 'DRAFT_NOT_FOUND' || camp.canAutoRetry === false || (camp.errorMessage && camp.errorMessage.includes('[DRAFT_NOT_FOUND]'));
         actionsHtml = `
-          <button class="btn-action btn-run" data-action="run" data-id="${camp.id}" title="Retry execution now">
-            ↻ Retry Now
-          </button>
+          ${isMissingDraft ? `
+            <span style="font-size: 11px; color: var(--rose); font-weight: 500; display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; background: rgba(244, 63, 94, 0.1); border-radius: 4px;" title="Target draft missing in Gmail. Cannot retry without re-scheduling.">
+              ⚠️ Draft Missing (Re-schedule)
+            </span>
+          ` : `
+            <button class="btn-action btn-run" data-action="run" data-id="${camp.id}" title="Retry execution now">
+              ↻ Retry Now
+            </button>
+          `}
           <button class="btn-action btn-delete" data-action="delete" data-id="${camp.id}" title="Remove from list">
             🗑 Delete
           </button>

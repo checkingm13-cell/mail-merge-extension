@@ -553,12 +553,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         remedy: 'Wi-Fi or ISP connection dropped during dispatch. Verify PC internet connection.'
       };
     }
-    if (msg.includes("draft not found") || msg.includes("subject mismatch") || msg.includes("mail merge inactive")) {
+    if (msg.includes("draft_not_found") || msg.includes("draft not found") || msg.includes("missing draft") || msg.includes("subject mismatch") || msg.includes("mail merge inactive")) {
       return {
         category: 'DRAFT_NOT_FOUND',
-        badge: '🗂️ Draft Missing / Inactive',
+        badge: '🗂️ Draft Missing in Gmail',
         color: '#fb923c',
-        remedy: 'Draft missing or no Mail Merge sheet linked. Verify draft is saved in Gmail Drafts with "Continue" button.'
+        remedy: 'Draft was deleted, discarded, or already sent. Re-schedule needed from a template or create a new draft.'
       };
     }
     return {
@@ -572,6 +572,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   function renderCampaignsTable() {
     // 1. Overnight / Night Run Summary Banner
     const failedCampaigns = allCampaigns.filter((c) => c.status === 'FAILED');
+    const retryableFailed = failedCampaigns.filter((c) => c.canAutoRetry !== false && c.errorCategory !== 'DRAFT_NOT_FOUND' && !(c.errorMessage && c.errorMessage.includes('[DRAFT_NOT_FOUND]')));
     const summaryBanner = document.getElementById('overnightSummaryBanner');
     const summaryTitle = document.getElementById('summaryBannerTitle');
     const summaryDesc = document.getElementById('summaryBannerDesc');
@@ -581,26 +582,33 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (summaryBanner) {
       if (failedCampaigns.length > 0) {
         const uniqueAccounts = [...new Set(failedCampaigns.map((c) => c.accountEmail || c.senderEmail || 'Primary Account'))];
+        const missingDraftsCount = failedCampaigns.length - retryableFailed.length;
         summaryTitle.textContent = `${failedCampaigns.length} Campaign(s) Require Attention`;
         summaryDesc.innerHTML = `
           <span>Affected Account(s): <strong>${uniqueAccounts.map(escapeHtml).join(', ')}</strong></span> &bull;
-          <span>Click <strong>"↻ Retry All Failed"</strong> to re-run after resolving access or permissions.</span>
+          <span>${retryableFailed.length > 0 ? `Click <strong>"↻ Retry All Failed"</strong> to re-run ${retryableFailed.length} retryable campaign(s).` : '⚠️ All failed campaigns have missing drafts and require re-scheduling.'}</span>
+          ${missingDraftsCount > 0 ? `<br/><span style="color: #fb923c; font-size: 11px;">⚠️ ${missingDraftsCount} campaign(s) have deleted/missing drafts and cannot be auto-retried.</span>` : ''}
         `;
         summaryBanner.style.display = 'block';
 
         if (btnRetryAllFailed) {
-          btnRetryAllFailed.onclick = async () => {
-            btnRetryAllFailed.disabled = true;
-            btnRetryAllFailed.textContent = 'Retrying...';
-            showToast(`Retrying ${failedCampaigns.length} failed campaigns...`);
-            for (const camp of failedCampaigns) {
-              await triggerCampaign(camp.id);
-              await new Promise((r) => setTimeout(r, 1000));
-            }
-            btnRetryAllFailed.disabled = false;
-            btnRetryAllFailed.textContent = '↻ Retry All Failed';
-            await loadCampaigns();
-          };
+          if (retryableFailed.length > 0) {
+            btnRetryAllFailed.style.display = 'inline-flex';
+            btnRetryAllFailed.onclick = async () => {
+              btnRetryAllFailed.disabled = true;
+              btnRetryAllFailed.textContent = 'Retrying...';
+              showToast(`Retrying ${retryableFailed.length} retryable campaigns...`);
+              for (const camp of retryableFailed) {
+                await triggerCampaign(camp.id);
+                await new Promise((r) => setTimeout(r, 1000));
+              }
+              btnRetryAllFailed.disabled = false;
+              btnRetryAllFailed.textContent = '↻ Retry All Failed';
+              await loadCampaigns();
+            };
+          } else {
+            btnRetryAllFailed.style.display = 'none';
+          }
         }
         if (btnDismissSummary) {
           btnDismissSummary.onclick = () => {
@@ -718,9 +726,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         <td style="text-align: right; white-space: nowrap;">
           <div style="display: inline-flex; gap: 6px; justify-content: flex-end;">
             ${camp.status === 'FAILED'
-              ? `<button class="btn btn-primary btn-sm btn-table-run" style="background: #ef4444; border-color: #dc2626;" data-id="${camp.id}" title="Retry immediately">
-                  ↻ Retry Now
-                </button>`
+              ? (camp.errorCategory === 'DRAFT_NOT_FOUND' || camp.canAutoRetry === false || (camp.errorMessage && camp.errorMessage.includes('[DRAFT_NOT_FOUND]'))
+                  ? `<span class="badge" style="background: rgba(251, 146, 60, 0.15); color: #fb923c; border: 1px solid rgba(251, 146, 60, 0.4); font-size: 11px; padding: 4px 8px; display: inline-flex; align-items: center;" title="Target draft missing in Gmail. Cannot retry without re-scheduling.">⚠️ Missing Draft</span>`
+                  : `<button class="btn btn-primary btn-sm btn-table-run" style="background: #ef4444; border-color: #dc2626;" data-id="${camp.id}" title="Retry immediately">
+                      ↻ Retry Now
+                    </button>`)
               : `<button class="btn btn-secondary btn-sm btn-table-run" data-id="${camp.id}" title="Run immediately">
                   ▶ Run Now
                 </button>`}

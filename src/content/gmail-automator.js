@@ -1225,7 +1225,7 @@
           await dismissGoogleSpamDisclaimerIfNeeded(document);
         }
 
-        // 2. Wait for compose window to load with verification
+        // 2. Locate and verify draft across multiple forensic passes
         await reportProgress('LOAD_DRAFT', 'Verifying draft & Mail Merge session...', 30);
         if (!composeDialog) {
           try {
@@ -1234,11 +1234,12 @@
                 await dismissGoogleSpamDisclaimerIfNeeded(document);
                 return await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
               },
-              { timeout: 15000, errorMsg: 'Target mail merge draft not loaded via URL' }
+              { timeout: 10000, errorMsg: 'Target mail merge draft not loaded via URL' }
             );
           } catch (_) {
             await dismissGoogleSpamDisclaimerIfNeeded(document);
-            // Tier 2 Fallback A: search draft rows in drafts list by expected subject
+
+            // Pass 4: Search draft rows in Drafts folder list by expected subject
             if (subject) {
               const cleanSub = normalizeText(subject);
               const isGeneric = !cleanSub || cleanSub.startsWith('mail merge (');
@@ -1258,7 +1259,7 @@
               }
             }
 
-            // Tier 2 Fallback B: search draft rows in drafts list by Google Sheet title
+            // Pass 5: Search draft rows in Drafts folder list by Google Sheet title
             if (!composeDialog && campaign?.sheetTitle) {
               const cleanSheet = normalizeText(campaign.sheetTitle);
               if (cleanSheet) {
@@ -1277,42 +1278,52 @@
               }
             }
 
-            // Tier 3 Autonomous Draft Builder: Recreate lost draft if template & sheet exist
+            // Quick final check if compose dialog opened during clicks
             if (!composeDialog) {
-              const canRecreate = (campaign?.sheetId || campaign?.sheetTitle || campaign?.sheetUrl) &&
-                                  (campaign?.bodyHtml || campaign?.bodyText || campaign?.bodySnippet);
-              if (canRecreate) {
-                console.log('[GmailAutomator] 🏗️ Draft missing from folder. Launching Tier 3 Autonomous Draft Builder...');
-                await reportProgress('RECREATE_DRAFT', 'Autonomously building draft from saved template & sheet...', 35);
-                try {
-                  composeDialog = await GmailAutomator.recreateMailMergeDraft(campaign);
-                } catch (recreateErr) {
-                  console.warn('[GmailAutomator] Autonomous draft builder note:', recreateErr.message);
-                }
-              }
-            }
-
-            if (!composeDialog) {
-              composeDialog = await waitFor(
-                async () => {
-                  await dismissGoogleSpamDisclaimerIfNeeded(document);
-                  return await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
-                },
-                { timeout: 8000, errorMsg: 'Target draft not found or did not match mail merge verification' }
-              );
+              try {
+                composeDialog = await waitFor(
+                  async () => {
+                    await dismissGoogleSpamDisclaimerIfNeeded(document);
+                    return await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
+                  },
+                  { timeout: 3000, errorMsg: 'Not found' }
+                );
+              } catch (_) {}
             }
           }
         }
 
-        // Ensure compose window is completely expanded and restored
-        if (composeDialog) {
-          await GmailAutomator.ensureComposeExpanded(composeDialog);
+        // 100% FORENSIC DIAGNOSIS: If draft is confirmed missing after all passes, diagnose & flag non-retryable
+        if (!composeDialog) {
+          const userMatch = /\/u\/(\d+)/.exec(window.location.pathname);
+          const currentAccountIndex = userMatch ? userMatch[1] : (campaign?.userIndex || '0');
+
+          const openDialogs = Array.from(document.querySelectorAll('div[role="dialog"], div.M9, div.AD'));
+          const openTitles = openDialogs.map((d) => {
+            const sub = d.querySelector('input[name="subjectbox"], input[aria-label="Subject"]')?.value ||
+                        d.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp, span.aYF')?.textContent || '';
+            const dId = d.querySelector('input[name="draft"]')?.value || d.getAttribute('data-compose-id') || '';
+            return sub.trim() ? `"${sub.trim()}"${dId ? ` (id: ${dId})` : ''}` : '(empty dialog/modal)';
+          }).filter(Boolean);
+
+          const visibleRows = Array.from(document.querySelectorAll('tr[role="row"], div[role="row"]'))
+            .slice(0, 6)
+            .map((r) => (r.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 70))
+            .filter(Boolean);
+
+          const notFoundErr = new Error(
+            `[DRAFT_NOT_FOUND] Missing Draft: Could not locate draft "${subject || 'Campaign'}" (Draft ID: ${draftId || 'none'}) in Gmail account #${currentAccountIndex} (${campaign?.accountEmail || 'active account'}).\n` +
+            `Diagnosis: Verified 5 search passes across active compose windows, minimized dock, URL hash (#drafts?compose=${draftId}), and Drafts folder list rows. Draft was not found; it was likely deleted, discarded, or already sent in Gmail.\n` +
+            `Forensic Details: URL: ${window.location.href} | Open Dialogs on Screen (${openTitles.length}): [${openTitles.join(', ') || 'none'}] | Visible Draft Rows (${visibleRows.length}): [${visibleRows.join('; ') || 'none'}].\n` +
+            `Action: CANNOT AUTO-RETRY. The underlying draft does not exist in Gmail. Please create a new draft or schedule fresh from a template.`
+          );
+          notFoundErr.category = 'DRAFT_NOT_FOUND';
+          notFoundErr.canAutoRetry = false;
+          throw notFoundErr;
         }
 
-        // HARD SAFETY ENFORCEMENT: Never send an unverified draft!
-        if (!composeDialog) {
-          throw new Error(`Draft Not Found: Could not locate draft "${subject || 'Campaign'}" in your Gmail Drafts folder. It may have been sent or deleted.`);
-        }
+        // Ensure compose window is completely expanded and restored
+        await GmailAutomator.ensureComposeExpanded(composeDialog);
 
         // Verify Subject with Unicode normalization and generic fallback support
         const verifySubject = (composeDialog.querySelector('input[name="subjectbox"]')?.value ||
@@ -1546,10 +1557,16 @@
           ExecutionHUD.error(error.message, currentStep);
         } catch (_) {}
 
+        const isDraftNotFound = (error && (error.category === 'DRAFT_NOT_FOUND' || (error.message && error.message.includes('[DRAFT_NOT_FOUND]'))));
+        const errorCategory = error?.category || (isDraftNotFound ? 'DRAFT_NOT_FOUND' : 'EXECUTION_ERROR');
+        const canAutoRetry = error?.canAutoRetry !== undefined ? error.canAutoRetry : !isDraftNotFound;
+
         if (campaignId && root.IDBStore) {
           await root.IDBStore.updateCampaign(campaignId, {
             status: 'FAILED',
             errorMessage: error.message,
+            errorCategory: errorCategory,
+            canAutoRetry: canAutoRetry,
             failedAt: new Date().toISOString()
           }).catch(() => {});
           await root.IDBStore.addLog(campaignId, 'ERROR', 'Scheduled dispatch failed: ' + error.message).catch(() => {});
@@ -1561,6 +1578,8 @@
             campaignId,
             status: 'FAILED',
             logMessage: error.message,
+            errorCategory: errorCategory,
+            canAutoRetry: canAutoRetry,
             isQuotaLimit: !!error.isQuotaLimit,
             accountEmail: campaign?.accountEmail
           }).catch(() => {});
