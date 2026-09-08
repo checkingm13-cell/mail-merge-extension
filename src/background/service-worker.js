@@ -372,6 +372,20 @@ async function findGmailTab(campaign) {
     return null;
   }
 
+  const targetEmail = (campaign?.accountEmail || '').toLowerCase().trim();
+
+  // 1. Highest Priority: Match by actual logged-in email in pinned tabs!
+  if (targetEmail) {
+    for (const t of tabs) {
+      try {
+        const info = await chrome.tabs.sendMessage(t.id, { action: 'GET_TAB_ACCOUNT_INFO' }).catch(() => null);
+        if (info && info.email && info.email.toLowerCase() === targetEmail) {
+          return t;
+        }
+      } catch (_) {}
+    }
+  }
+
   // Determine target account path (/mail/u/0/, /mail/u/1/, etc.) if known
   let targetPath = null;
   if (campaign) {
@@ -384,7 +398,7 @@ async function findGmailTab(campaign) {
     }
   }
 
-  // 1. If active tab matches target account (or no specific account required), use active tab immediately!
+  // 2. If active tab matches target account (or no specific account required), use active tab immediately!
   const activeTab = tabs.find((t) => t.active);
   if (activeTab) {
     if (!targetPath || (activeTab.url && activeTab.url.includes(targetPath))) {
@@ -392,13 +406,13 @@ async function findGmailTab(campaign) {
     }
   }
 
-  // 2. Otherwise find any open tab for the target account
+  // 3. Otherwise find any open tab for the target account
   if (targetPath) {
     const accountTab = tabs.find((t) => t.url && t.url.includes(targetPath));
     if (accountTab) return accountTab;
   }
 
-  // 3. Fallback to active tab or first available tab
+  // 4. Fallback to active tab or first available tab
   return activeTab || tabs[0];
 }
 
@@ -442,7 +456,8 @@ function waitForTabComplete(tabId, timeoutMs = 20000) {
 }
 
 /**
- * Dispatches a message to a tab with retry logic in case the content script is still mounting.
+ * Dispatches a message to a tab with retry logic and automatic context recovery.
+ * If the extension was reloaded, auto-injects scripts and reloads the pinned tab if needed.
  * @param {number} tabId
  * @param {Object} message
  * @param {number} maxRetries
@@ -455,21 +470,43 @@ async function sendMessageWithRetry(tabId, message, maxRetries = 3) {
     } catch (err) {
       console.warn(`[ServiceWorker] Message dispatch attempt ${attempt} to tab ${tabId} failed:`, err.message);
 
-      // If receiving end does not exist (tab not refreshed), dynamically inject content scripts
-      if (err.message && err.message.includes('Receiving end does not exist') && chrome.scripting) {
-        try {
-          console.log(`[ServiceWorker] Dynamically injecting content scripts into tab ${tabId}...`);
-          await chrome.scripting.executeScript({
-            target: { tabId },
-            files: [
-              'src/db/idb-store.js',
-              'src/content/gmail-automator.js',
-              'src/content/content.js'
-            ]
-          });
-          await delay(1000);
-        } catch (injectErr) {
-          console.warn('[ServiceWorker] Dynamic script injection failed:', injectErr.message);
+      const isContextDead = err.message && (
+        err.message.includes('Receiving end does not exist') ||
+        err.message.includes('Extension context invalidated') ||
+        err.message.includes('Could not establish connection')
+      );
+
+      if (isContextDead) {
+        // Recovery 1: Dynamically re-inject content scripts into the tab
+        if (attempt === 1 && chrome.scripting) {
+          try {
+            console.log(`[ServiceWorker] Dynamically injecting content scripts into tab ${tabId}...`);
+            await chrome.scripting.executeScript({
+              target: { tabId },
+              files: [
+                'src/db/idb-store.js',
+                'src/content/gmail-automator.js',
+                'src/content/content.js'
+              ]
+            });
+            await delay(1000);
+            continue;
+          } catch (injectErr) {
+            console.warn('[ServiceWorker] Dynamic script injection failed:', injectErr.message);
+          }
+        }
+
+        // Recovery 2: Auto-reload the tab if context was invalidated by extension reload
+        if (attempt >= 2) {
+          try {
+            console.log(`[ServiceWorker] Auto-reloading pinned Gmail tab ${tabId} to restore fresh extension context...`);
+            await chrome.tabs.reload(tabId);
+            await waitForTabComplete(tabId, 25000);
+            await delay(2500);
+            continue;
+          } catch (reloadErr) {
+            console.warn('[ServiceWorker] Tab reload recovery failed:', reloadErr.message);
+          }
         }
       }
 

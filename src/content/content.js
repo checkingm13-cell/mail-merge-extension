@@ -1194,6 +1194,25 @@
         return true;
       }
 
+      if (message.action === 'GET_TAB_ACCOUNT_INFO') {
+        let email = '';
+        try {
+          const accountEl = document.querySelector('header a[aria-label*="@"], div[aria-label*="@"], a[aria-label*="Google Account"]');
+          if (accountEl) {
+            const emailMatch = /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/.exec(accountEl.getAttribute('aria-label') || '');
+            if (emailMatch) email = emailMatch[0];
+          }
+        } catch (_) {}
+        const userMatch = /\/u\/(\d+)/.exec(window.location.pathname);
+        sendResponse({
+          success: true,
+          email: email.toLowerCase().trim(),
+          userIndex: userMatch ? userMatch[1] : '0',
+          url: window.location.href
+        });
+        return false;
+      }
+
       if (message.action === 'REQUEST_CAMPAIGN_SYNC') {
         syncCampaignsToBackground().then(() => sendResponse({ success: true }));
         return true;

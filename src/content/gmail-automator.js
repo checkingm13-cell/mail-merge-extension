@@ -923,13 +923,13 @@
 
         // HARD SAFETY ENFORCEMENT: Never send an unverified draft!
         if (!composeDialog) {
-          throw new Error(`SAFETY ABORT: Cannot verify scheduled draft for "${subject || 'Campaign'}". Automation cancelled to prevent sending unintended drafts.`);
+          throw new Error(`Draft Not Found: Could not locate draft "${subject || 'Campaign'}" in your Gmail Drafts folder. It may have been sent or deleted.`);
         }
 
         // Verify Subject
         const verifySubject = (composeDialog.querySelector('input[name="subjectbox"]')?.value || '').trim();
         if (subject && verifySubject && !verifySubject.toLowerCase().includes(subject.toLowerCase())) {
-          throw new Error(`SAFETY ABORT: Compose window subject "${verifySubject}" does not match expected campaign subject "${subject}". Execution stopped.`);
+          throw new Error(`Subject Mismatch: Compose window subject "${verifySubject}" does not match campaign subject "${subject}".`);
         }
 
         // Verify Mail Merge session
@@ -939,7 +939,7 @@
           .some((d) => (d.textContent || '').includes('Ready to send'));
 
         if (!continueBtnCheck && !readyModalCheck) {
-          throw new Error(`SAFETY ABORT: Target draft "${verifySubject || subject}" is a standard email, not an active Mail Merge draft (no "Continue" button). Execution cancelled to protect regular drafts.`);
+          throw new Error(`Mail Merge Inactive: Draft "${verifySubject || subject}" is a standard draft without an active Mail Merge sheet attached (no "Continue" button).`);
         }
 
         await sleep(2000);
@@ -1028,6 +1028,15 @@
         );
 
         await sleep(1500);
+
+        // Check for Google daily sending limit alert
+        const alertEl = document.querySelector('.vh, [role="alert"], div[aria-live="assertive"]');
+        if (alertEl) {
+          const alertText = (alertEl.textContent || '').toLowerCase();
+          if (alertText.includes('reached a limit') || alertText.includes('sending limit')) {
+            throw new Error('Google Daily Sending Limit Reached: Gmail has blocked sending for this account due to 24-hour quota limits.');
+          }
+        }
 
         await reportProgress('COMPLETED', 'Sent successfully!', 100);
         try {
