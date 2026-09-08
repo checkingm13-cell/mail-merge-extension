@@ -359,12 +359,19 @@
               console.log(`[GmailAutomator] ✅ ${actionName}: Target state verified on attempt ${attempt}.`);
               return stateResult;
             }
-          } catch (_) {}
+          } catch (stateErr) {
+            if (stateErr && stateErr.isFatal) {
+              throw stateErr;
+            }
+          }
           await sleep(250);
         }
 
         console.warn(`[GmailAutomator] ⚠️ ${actionName}: Target state not confirmed within ${timeoutPerAttempt}ms on attempt ${attempt}.`);
       } catch (err) {
+        if (err && err.isFatal) {
+          throw err;
+        }
         lastError = err;
         console.warn(`[GmailAutomator] ⚠️ ${actionName}: Attempt ${attempt} failed: ${err.message}`);
       }
@@ -971,7 +978,22 @@
 
             const dialogs = document.querySelectorAll('div[role="dialog"]');
             for (const d of dialogs) {
-              const txt = d.textContent || '';
+              const txt = (d.textContent || '').trim();
+
+              // Check for Google Sheet error popup ("Can't open the sheet")
+              if (txt.includes("Can't open the sheet") || txt.includes("cannot open the sheet") || txt.includes("try another sheet")) {
+                console.warn('[GmailAutomator] ❌ Detected Google "Can\'t open the sheet" error dialog.');
+                const backBtn = Array.from(d.querySelectorAll('button, div[role="button"]'))
+                  .find((b) => /back to draft|close|cancel/i.test((b.textContent || '').trim()));
+                if (backBtn) {
+                  await humanClick(backBtn);
+                  await sleep(400);
+                }
+                const fatalErr = new Error('Google Sheet Access Error: Gmail reported "Can\'t open the sheet". Please verify Google Sheet permissions for this account, ensure the sheet was not moved or deleted from Google Drive, and complete any "Verify it\'s you" security prompts in Chrome.');
+                fatalErr.isFatal = true;
+                throw fatalErr;
+              }
+
               if (txt.includes('Ready to send') || /send all/i.test(txt)) {
                 return d;
               }
