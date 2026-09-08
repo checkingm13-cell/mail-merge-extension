@@ -826,30 +826,30 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function removeAllFailedCampaigns() {
     const failedList = allCampaigns.filter((c) => c.status === 'FAILED');
     if (failedList.length === 0) {
-      showToast('No failed campaigns to remove');
+      showToast('No failed campaigns to delete');
       return;
     }
 
-    const confirmMsg = `Are you sure you want to remove all ${failedList.length} failed campaign(s)?\n\nThey will be safely preserved in "📦 Archived Campaigns" where you can 1-click clone or retrieve them anytime. This resolves Unique ID conflicts and clears the active table.`;
+    const confirmMsg = `Are you sure you want to permanently delete all ${failedList.length} failed campaign(s)?\n\nThis will PERMANENTLY ERASE them, their forensic screenshots, and logs from the IndexedDB database. Zero data will remain.`;
     if (!confirm(confirmMsg)) {
       return;
     }
 
     try {
-      showToast(`Archiving & removing ${failedList.length} failed campaign(s)...`);
+      showToast(`Permanently deleting ${failedList.length} failed campaign(s)...`);
       const resp = await chrome.runtime.sendMessage({ action: 'DELETE_ALL_FAILED' }).catch(() => null);
       if (resp && resp.success) {
-        showToast(`📦 Safely archived and removed ${resp.count} failed campaign(s)!`);
-      } else if (window.IDBStore && typeof window.IDBStore.archiveFailedCampaigns === 'function') {
-        const count = await window.IDBStore.archiveFailedCampaigns();
-        showToast(`📦 Safely archived and removed ${count} failed campaign(s)!`);
+        showToast(`💥 Permanently deleted ${resp.count} failed campaign(s) and forensics from database!`);
+      } else if (window.IDBStore && typeof window.IDBStore.deleteFailedCampaigns === 'function') {
+        const count = await window.IDBStore.deleteFailedCampaigns();
+        showToast(`💥 Permanently deleted ${count} failed campaign(s) and forensics from database!`);
       } else {
-        showToast('Failed to remove: ' + (resp?.error || 'Unknown error'));
+        showToast('Failed to delete: ' + (resp?.error || 'Unknown error'));
       }
       await loadCampaigns();
       await loadLogs();
     } catch (err) {
-      console.error('[Dashboard] Error removing failed campaigns:', err);
+      console.error('[Dashboard] Error deleting failed campaigns:', err);
       showToast('Error: ' + err.message);
     }
   }

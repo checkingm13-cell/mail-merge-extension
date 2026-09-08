@@ -1531,13 +1531,15 @@ async function handleRuntimeMessage(message, sender) {
         return { success: false, error: 'Database not ready' };
       }
       let removedCount = 0;
-      if (typeof self.IDBStore.archiveFailedCampaigns === 'function') {
-        removedCount = await self.IDBStore.archiveFailedCampaigns();
+      if (typeof self.IDBStore.deleteFailedCampaigns === 'function') {
+        removedCount = await self.IDBStore.deleteFailedCampaigns();
       } else {
         const campaigns = await self.IDBStore.getCampaigns();
         const failed = campaigns.filter((c) => c.status === 'FAILED');
         for (const camp of failed) {
           try {
+            await self.IDBStore.deleteForensicsByCampaign(camp.id).catch(() => {});
+            await self.IDBStore.deleteLogsByCampaign(camp.id).catch(() => {});
             await self.IDBStore.deleteCampaign(camp.id);
             await chrome.alarms.clear(`CAMPAIGN_${camp.id}`).catch(() => {});
             removedCount++;
@@ -1547,7 +1549,7 @@ async function handleRuntimeMessage(message, sender) {
         }
       }
 
-      await self.IDBStore.addLog(null, 'INFO', `Safely archived and removed ${removedCount} failed campaign(s) from active database.`);
+      await self.IDBStore.addLog(null, 'INFO', `Permanently purged ${removedCount} failed campaign(s), screenshots, and logs from database.`);
       await refreshBadge();
       await syncSystemWakeLock();
       return { success: true, count: removedCount };

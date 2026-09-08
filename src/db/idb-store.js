@@ -297,15 +297,21 @@
     },
 
     /**
-     * Deletes a campaign by ID.
+     * Deletes a campaign by ID, including its forensics, logs, and any archive records.
      * @param {string} id
      * @returns {Promise<boolean>}
      */
     async deleteCampaign(id) {
       await this.deleteForensicsByCampaign(id).catch(() => {});
+      await this.deleteLogsByCampaign(id).catch(() => {});
       await this._transaction('campaigns', 'readwrite', (store) => {
         store.delete(id);
       });
+      try {
+        await this._transaction('archived_campaigns', 'readwrite', (store) => {
+          store.delete(id);
+        });
+      } catch (_) {}
       return true;
     },
 
@@ -329,6 +335,7 @@
             const campId = cursor.value?.id || cursor.primaryKey;
             if (campId) {
               this.deleteForensicsByCampaign(campId).catch(() => {});
+              this.deleteLogsByCampaign(campId).catch(() => {});
             }
             cursor.delete();
             count++;
@@ -343,11 +350,32 @@
     },
 
     /**
-     * Removes all failed campaigns from IndexedDB.
-     * @returns {Promise<number>}
+     * Permanently wipes all failed campaigns, their forensic screenshots, and their logs from IndexedDB.
+     * Hard database purge with ZERO archival.
+     * @returns {Promise<number>} Number of deleted campaigns
      */
     async deleteFailedCampaigns() {
-      return this.archiveFailedCampaigns();
+      const all = await this.getCampaigns();
+      const failedList = all.filter((c) => c.status === 'FAILED');
+      let count = 0;
+      for (const camp of failedList) {
+        try {
+          await this.deleteForensicsByCampaign(camp.id).catch(() => {});
+          await this.deleteLogsByCampaign(camp.id).catch(() => {});
+          await this._transaction('campaigns', 'readwrite', (store) => {
+            store.delete(camp.id);
+          });
+          try {
+            await this._transaction('archived_campaigns', 'readwrite', (store) => {
+              store.delete(camp.id);
+            });
+          } catch (_) {}
+          count++;
+        } catch (err) {
+          console.warn('[IDBStore] Error permanently deleting failed campaign:', camp.id, err);
+        }
+      }
+      return count;
     },
 
     /**
@@ -580,6 +608,32 @@
     async clearLogs() {
       await this._transaction('logs', 'readwrite', (store) => {
         store.clear();
+      });
+      return true;
+    },
+
+    /**
+     * Deletes all log entries associated with a specific campaign ID.
+     * @param {string} campaignId
+     * @returns {Promise<boolean>}
+     */
+    async deleteLogsByCampaign(campaignId) {
+      if (!campaignId) return false;
+      await this._transaction('logs', 'readwrite', (store) => {
+        return new Promise((resolve, reject) => {
+          const idx = store.index('campaignId');
+          const req = idx.openKeyCursor(IDBKeyRange.only(campaignId));
+          req.onsuccess = (e) => {
+            const cursor = e.target.result;
+            if (cursor) {
+              store.delete(cursor.primaryKey);
+              cursor.continue();
+            } else {
+              resolve(true);
+            }
+          };
+          req.onerror = () => reject(req.error);
+        });
       });
       return true;
     },

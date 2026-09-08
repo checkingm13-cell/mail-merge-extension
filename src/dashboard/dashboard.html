@@ -105,13 +105,13 @@
               <button class="filter-pill" data-status="COMPLETED">Completed (<span id="countFilterCompleted">0</span>)</button>
               <button class="filter-pill" data-status="FAILED">Failed (<span id="countFilterFailed">0</span>)</button>
               <button class="filter-pill" data-status="CANCELLED">Cancelled (<span id="countFilterCancelled">0</span>)</button>
-              <button id="btnRemoveAllFailedFilter" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4); margin-left: 6px;" title="Delete all failed campaigns from database (solves Unique ID conflicts)">
-                <span>🗑️ Remove All Failed</span>
+              <button id="btnRemoveAllFailedFilter" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4); margin-left: 6px;" title="Permanently delete all failed campaigns from IndexedDB database">
+                <span>🗑️ Delete All Failed</span>
               </button>
             </div>
             <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-              <button id="btnTopRemoveAllFailed" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4);" title="Archive and remove all failed campaigns from active queue (solves Unique ID conflicts)">
-                <span>🗑️ Remove All Failed (<span id="countTopFailed">0</span>)</span>
+              <button id="btnTopRemoveAllFailed" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4);" title="Permanently delete all failed campaigns from IndexedDB database">
+                <span>🗑️ Delete All Failed (<span id="countTopFailed">0</span>)</span>
               </button>
               <button id="btnTopViewArchived" class="btn btn-secondary btn-sm" style="color: #93c5fd; border-color: rgba(59, 130, 246, 0.4);" title="View archived campaigns and 1-click clone/restore">
                 <span>📦 Archived (<span id="countTopArchived">0</span>)</span>
