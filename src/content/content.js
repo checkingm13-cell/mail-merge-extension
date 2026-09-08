@@ -929,6 +929,8 @@
           recipientsSummary: meta.recipientsSummary,
           mergeTags: meta.mergeTags,
           bodySnippet: meta.bodySnippet,
+          bodyHtml: meta.bodyHtml,
+          bodyText: meta.bodyText,
           attachmentCount: meta.attachmentCount,
           metadata: meta
         };
@@ -1104,9 +1106,10 @@
     }
     const recipientsSummary = emails.slice(0, 3).join(', ') + (emails.length > 3 ? ` +${emails.length - 3} more` : (emails.length > 0 ? '' : (recipientCount ? `${recipientCount} recipients` : '')));
 
-    // 3. Body Snippet & Merge Tags
+    // 3. Body Snippet, Full HTML & Merge Tags
     const bodyEl = composeDialog.querySelector('div[aria-label="Message Body"], div[role="textbox"], div.Am');
     const bodyText = (bodyEl ? (bodyEl.innerText || bodyEl.textContent || '') : '').trim();
+    const bodyHtml = bodyEl ? bodyEl.innerHTML : '';
     const bodySnippet = bodyText.slice(0, 180);
 
     const fullText = (getSubject(composeDialog) + ' ' + bodyText);
@@ -1124,6 +1127,8 @@
       recipientsSummary,
       mergeTags,
       bodySnippet,
+      bodyText,
+      bodyHtml,
       attachmentCount: attachmentChips.length
     };
   }

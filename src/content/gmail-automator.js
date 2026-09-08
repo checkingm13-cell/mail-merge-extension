@@ -985,6 +985,114 @@
     }
 
     /**
+     * Tier 3 Autonomous Draft Builder:
+     * When a scheduled draft is lost or deleted, autonomously constructs a fresh draft,
+     * populates subject & full bodyHtml/text, links the Google Sheet via Drive Picker,
+     * and initializes the Mail Merge session.
+     *
+     * @param {Object} campaign
+     * @returns {Promise<Element>} composeDialog
+     */
+    static async recreateMailMergeDraft(campaign) {
+      console.log('[GmailAutomator] 🏗️ Recreating missing draft from IndexedDB template & Google Sheet metadata...');
+
+      // 1. Open new compose dialog
+      const composeDialog = await GmailAutomator.openCompose();
+      if (!composeDialog) {
+        throw new Error('Autonomous Draft Builder: Failed to open fresh Compose dialog.');
+      }
+      await sleep(1000);
+
+      // 2. Populate Subject
+      if (campaign?.subject) {
+        const subjectBox = composeDialog.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
+        if (subjectBox) {
+          subjectBox.focus();
+          subjectBox.value = campaign.subject;
+          subjectBox.dispatchEvent(new Event('input', { bubbles: true }));
+          subjectBox.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }
+
+      // 3. Populate Body HTML / Text
+      const bodyBox = composeDialog.querySelector('div[aria-label="Message Body"], div[role="textbox"], div.Am');
+      if (bodyBox) {
+        bodyBox.focus();
+        if (campaign.bodyHtml) {
+          bodyBox.innerHTML = campaign.bodyHtml;
+        } else if (campaign.bodyText || campaign.bodySnippet) {
+          bodyBox.innerText = campaign.bodyText || campaign.bodySnippet;
+        }
+        bodyBox.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      await sleep(1000);
+
+      // 4. Toggle Mail Merge in Compose
+      const mailMergeBtn = composeDialog.querySelector(
+        'span.Sz.brj, [aria-label*="mail merge" i], [data-tooltip*="mail merge" i], div[role="button"][data-tooltip*="mail merge" i]'
+      );
+      if (mailMergeBtn) {
+        await humanClick(mailMergeBtn);
+        await sleep(1200);
+
+        // Check if menu opened
+        let menu = document.querySelector('div[role="menu"]:has([role="checkbox"]), div[role="menu"]');
+        if (!menu || !isElementVisible(menu)) {
+          await humanClick(mailMergeBtn);
+          await sleep(1000);
+          menu = document.querySelector('div[role="menu"]');
+        }
+
+        if (menu) {
+          // Enable "Mail merge" checkbox if not checked
+          const checkbox = menu.querySelector('[role="checkbox"]');
+          if (checkbox && checkbox.getAttribute('aria-checked') !== 'true') {
+            await humanClick(checkbox);
+            await sleep(1000);
+          }
+
+          // Click "Add from a spreadsheet"
+          const addFromSheetOption = Array.from(menu.querySelectorAll('[role="menuitem"], div[role="button"], div'))
+            .find((el) => /add from a spreadsheet/i.test(el.textContent || ''));
+          if (addFromSheetOption) {
+            await humanClick(addFromSheetOption);
+            await sleep(2500);
+
+            // 5. Automate Google Drive Picker via background script
+            const sheetQuery = campaign.sheetId || campaign.sheetTitle || extractGoogleSheetId(campaign.sheetUrl);
+            if (sheetQuery && chrome.runtime && chrome.runtime.sendMessage) {
+              console.log(`[GmailAutomator] 🔍 Invoking Drive Picker automation for query "${sheetQuery}"...`);
+              const pickerResp = await chrome.runtime.sendMessage({
+                action: 'AUTOMATE_DRIVE_PICKER',
+                query: sheetQuery,
+                fallbackTitle: campaign.sheetTitle || ''
+              }).catch(() => null);
+
+              if (pickerResp && pickerResp.success) {
+                console.log('[GmailAutomator] ✅ Google Sheet successfully selected and inserted from Drive Picker.');
+              }
+            }
+          }
+        }
+      }
+
+      // 6. Wait for Mail Merge session to become active
+      await sleep(3000);
+      await dismissGoogleSpamDisclaimerIfNeeded(document);
+
+      // 7. Add Audit Log to IDB
+      if (campaign?.id && root.IDBStore) {
+        await root.IDBStore.addLog(
+          campaign.id,
+          'INFO',
+          `[AUTO_RECREATED] Target draft was missing. Autonomously reconstructed compose draft with sheet "${campaign.sheetTitle || campaign.sheetId}" and verified Mail Merge session.`
+        ).catch(() => {});
+      }
+
+      return composeDialog;
+    }
+
+    /**
      * Executes the end-to-end Gmail Native Mail Merge flow inside the active tab.
      * Ports the automation logic from gmailMailMergeWorker.js
      *
@@ -1130,7 +1238,7 @@
             );
           } catch (_) {
             await dismissGoogleSpamDisclaimerIfNeeded(document);
-            // Fallback: search draft rows in drafts list by expected subject
+            // Tier 2 Fallback A: search draft rows in drafts list by expected subject
             if (subject) {
               const cleanSub = normalizeText(subject);
               const isGeneric = !cleanSub || cleanSub.startsWith('mail merge (');
@@ -1150,13 +1258,49 @@
               }
             }
 
-            composeDialog = await waitFor(
-              async () => {
-                await dismissGoogleSpamDisclaimerIfNeeded(document);
-                return await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
-              },
-              { timeout: 15000, errorMsg: 'Target draft not found or did not match mail merge verification' }
-            );
+            // Tier 2 Fallback B: search draft rows in drafts list by Google Sheet title
+            if (!composeDialog && campaign?.sheetTitle) {
+              const cleanSheet = normalizeText(campaign.sheetTitle);
+              if (cleanSheet) {
+                const sheetRows = Array.from(document.querySelectorAll('tr[role="row"], div[role="row"]'))
+                  .filter((r) => normalizeText(r.textContent || '').includes(cleanSheet));
+
+                for (const row of sheetRows) {
+                  await humanClick(row);
+                  await sleep(1500);
+                  const dialog = await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
+                  if (dialog) {
+                    composeDialog = dialog;
+                    break;
+                  }
+                }
+              }
+            }
+
+            // Tier 3 Autonomous Draft Builder: Recreate lost draft if template & sheet exist
+            if (!composeDialog) {
+              const canRecreate = (campaign?.sheetId || campaign?.sheetTitle || campaign?.sheetUrl) &&
+                                  (campaign?.bodyHtml || campaign?.bodyText || campaign?.bodySnippet);
+              if (canRecreate) {
+                console.log('[GmailAutomator] 🏗️ Draft missing from folder. Launching Tier 3 Autonomous Draft Builder...');
+                await reportProgress('RECREATE_DRAFT', 'Autonomously building draft from saved template & sheet...', 35);
+                try {
+                  composeDialog = await GmailAutomator.recreateMailMergeDraft(campaign);
+                } catch (recreateErr) {
+                  console.warn('[GmailAutomator] Autonomous draft builder note:', recreateErr.message);
+                }
+              }
+            }
+
+            if (!composeDialog) {
+              composeDialog = await waitFor(
+                async () => {
+                  await dismissGoogleSpamDisclaimerIfNeeded(document);
+                  return await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
+                },
+                { timeout: 8000, errorMsg: 'Target draft not found or did not match mail merge verification' }
+              );
+            }
           }
         }
 
