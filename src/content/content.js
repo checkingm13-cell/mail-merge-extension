@@ -1329,53 +1329,6 @@
         return false;
       }
 
-      if (message.action === 'SCAN_COMPOSE_WINDOWS') {
-        let email = '';
-        try {
-          const accountEl = document.querySelector('header a[aria-label*="@"], div[aria-label*="@"], a[aria-label*="Google Account"]');
-          if (accountEl) {
-            const emailMatch = /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/.exec(accountEl.getAttribute('aria-label') || '');
-            if (emailMatch) email = emailMatch[0];
-          }
-        } catch (_) {}
-        const userMatch = /\/u\/(\d+)/.exec(window.location.pathname);
-        const userIndex = userMatch ? userMatch[1] : '0';
-
-        const dialogs = document.querySelectorAll('div[role="dialog"], div.M9, div.AD');
-        const drafts = [];
-        for (const d of dialogs) {
-          if (!d.querySelector('input[name="subjectbox"]') && !d.querySelector('[aria-label="Message Body"]') && !d.querySelector('input[name="draft"]')) {
-            continue;
-          }
-          let dId = getDraftId(d);
-          const sub = getSubject(d);
-          const meta = extractDraftMetadata(d);
-
-          if (!dId || dId === 'unknown') {
-            const subjectInput = d.querySelector('input[name="subjectbox"]');
-            if (subjectInput) subjectInput.dispatchEvent(new Event('blur', { bubbles: true }));
-            dId = getDraftId(d);
-          }
-
-          if (sub || (dId && dId !== 'unknown') || meta?.sheetTitle) {
-            drafts.push({
-              draftId: (dId && dId !== 'unknown') ? dId : null,
-              subject: sub || '(Untitled Draft)',
-              sheetTitle: meta?.sheetTitle || null,
-              sheetUrl: meta?.sheetUrl || null,
-              sheetId: meta?.sheetId || null,
-              recipientCount: meta?.recipientCount || 0,
-              recipientsSummary: meta?.recipientsSummary || '',
-              bodySnippet: meta?.bodySnippet || '',
-              accountEmail: email.toLowerCase().trim(),
-              userIndex: userIndex,
-              url: window.location.href
-            });
-          }
-        }
-        sendResponse({ success: true, drafts, accountEmail: email.toLowerCase().trim(), userIndex });
-        return false;
-      }
 
       if (message.action === 'DELETE_LOCAL_CAMPAIGN') {
         if (root.IDBStore && message.campaignId) {
