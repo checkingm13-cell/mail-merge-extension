@@ -549,7 +549,89 @@
    * @param {Object} [campaign]
    * @returns {Promise<boolean>} True if an interfering dialog was found and dismissed
    */
+  /**
+   * Observes and classifies a dialog element before any action is taken.
+   * Returns: 'USER_SCHEDULE_POPOVER' | 'COMPOSE_DIALOG' | 'READY_TO_SEND_MODAL' |
+   *          'SPAM_DISCLAIMER' | 'MISSING_MERGE_TAGS' | 'COLUMN_SELECTION' |
+   *          'PROMO_POPUP' | 'GENERIC_ALERTDIALOG' | 'UNKNOWN'
+   */
+  function classifyDialog(dialog) {
+    if (!dialog || !isElementVisible(dialog)) return 'NONE';
+
+    // 1. User Campaign Scheduling Popover -> STRICTLY IGNORE (User UI!)
+    if (
+      dialog.id === 'mmPopoverOverlay' ||
+      dialog.id === 'mmPopover' ||
+      dialog.id === 'mm-schedule-popover-card' ||
+      dialog.getAttribute('data-mm-schedule-popover') === 'true' ||
+      dialog.querySelector('#mmDateTimeInput, #mmPopoverConfirm, [data-mm-schedule-popover]') ||
+      (dialog.className && typeof dialog.className === 'string' && dialog.className.includes('mm-schedule'))
+    ) {
+      return 'USER_SCHEDULE_POPOVER';
+    }
+
+    // 2. Compose Dialogs -> STRICTLY IGNORE
+    const isCompose = dialog.querySelector('input[name="subjectbox"]') || dialog.querySelector('[aria-label="Message Body"]');
+    if (isCompose) return 'COMPOSE_DIALOG';
+
+    const text = (dialog.textContent || '').toLowerCase();
+
+    // 3. Target "Ready to send" modal -> NEVER DISMISS
+    if (text.includes('ready to send') || text.includes('separate emails') || text.includes('send all')) {
+      return 'READY_TO_SEND_MODAL';
+    }
+
+    // 4. Google Spam Disclaimer ("Help fight junk emails")
+    if (
+      (text.includes('spam') || text.includes('junk') || text.includes('bulk email') || text.includes('bulk sender') || text.includes('best practices') || text.includes('fight junk')) &&
+      (text.includes("don't show") || text.includes("dont show") || text.includes("do not show") || text.includes("got it") || text.includes("learn more"))
+    ) {
+      return 'SPAM_DISCLAIMER';
+    }
+
+    // 5. Missing merge tags dialog
+    if (
+      (text.includes('merge tags') || text.includes('merge tag') || text.includes("couldn't be found in your sheet") || text.includes("cannot be found in your sheet")) &&
+      (text.includes('send anyway') || text.includes('edit draft'))
+    ) {
+      return 'MISSING_MERGE_TAGS';
+    }
+
+    // 6. Recipient column selection dialog
+    if (
+      (text.includes('which column') || text.includes("recipients' email") || text.includes("recipient email")) &&
+      (text.includes('done') || text.includes('select') || text.includes('insert'))
+    ) {
+      return 'COLUMN_SELECTION';
+    }
+
+    // 7. Google Promotional / Onboarding popups
+    if (
+      (text.includes("what's new") || text.includes("meet the new") || text.includes("turn on notifications") || text.includes("smart compose") || text.includes("gemini in gmail") || text.includes("try the new") || text.includes("workspace tip")) &&
+      !text.includes("can't open the sheet")
+    ) {
+      return 'PROMO_POPUP';
+    }
+
+    // 8. Google Alertdialog (role="alertdialog" or .Kj-JD)
+    const isAlert = dialog.getAttribute('role') === 'alertdialog' || dialog.classList.contains('Kj-JD');
+    if (isAlert) {
+      return 'GENERIC_ALERTDIALOG';
+    }
+
+    return 'UNKNOWN';
+  }
+
+  /**
+   * Observe-First modal handler: observes dialog type, then dispatches through switch.
+   * Only executes automated dismissals if an automated campaign is actively executing.
+   * @param {Element|Document} root
+   * @param {Object|null} campaign
+   * @returns {Promise<boolean>} True if an interfering dialog was found and dismissed
+   */
   async function dismissGoogleInterferingModalsIfNeeded(root = document, campaign = null) {
+    const isAutomatedRun = !!(campaign || currentActiveCampaign);
+
     try {
       const dialogs = Array.from(root.querySelectorAll('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, [aria-modal="true"], dialog, div[class*="modal"]'));
 
@@ -569,203 +651,159 @@
       let anyDismissed = false;
       for (const dialog of dialogs) {
         if (!isElementVisible(dialog)) continue;
-        const text = (dialog.textContent || '').toLowerCase();
+        const type = classifyDialog(dialog);
 
-        // Guard: Do NOT touch compose dialogs or the native "Ready to send" modal!
-        const isCompose = dialog.querySelector('input[name="subjectbox"]') || dialog.querySelector('[aria-label="Message Body"]');
-        if (isCompose) continue;
-        if (text.includes('ready to send') || text.includes('separate emails') || text.includes('send all')) continue;
+        switch (type) {
+          case 'USER_SCHEDULE_POPOVER':
+          case 'COMPOSE_DIALOG':
+          case 'READY_TO_SEND_MODAL':
+          case 'UNKNOWN':
+          case 'NONE':
+            // Strictly ignore
+            break;
 
-        // 1. Check for spam / junk / bulk email disclaimer patterns ("Help fight junk emails")
-        const isSpamNotice = (
-          text.includes('spam') ||
-          text.includes('junk') ||
-          text.includes('bulk email') ||
-          text.includes('bulk sender') ||
-          text.includes('best practices') ||
-          text.includes('fight junk')
-        ) && (
-          text.includes("don't show") ||
-          text.includes("dont show") ||
-          text.includes("do not show") ||
-          text.includes("got it") ||
-          text.includes("learn more")
-        );
-
-        if (isSpamNotice) {
-          console.log('[GmailAutomator] 🛡️ Detected Google spam/junk policy disclaimer ("Help fight junk emails"). Auto-handling...');
-          await captureForensicSnapshot('POPUP_INTERCEPTED', dialog, 'Detected Google spam policy disclaimer ("Help fight junk emails")', campaign);
-          const checkbox = dialog.querySelector('input[type="checkbox"], [role="checkbox"], div[role="checkbox"], span[role="checkbox"]')
-            || Array.from(dialog.querySelectorAll('label, div, span')).find((el) => /don't show|dont show/i.test(el.textContent || ''))?.querySelector('input, [role="checkbox"]');
-          if (checkbox) {
-            const isChecked = checkbox.checked || checkbox.getAttribute('aria-checked') === 'true';
-            if (!isChecked) {
-              await humanClick(checkbox);
-              await sleep(150);
+          case 'SPAM_DISCLAIMER': {
+            console.log('[GmailAutomator] 🛡️ Handling Google spam/junk policy disclaimer ("Help fight junk emails")...');
+            await captureForensicSnapshot('POPUP_INTERCEPTED', dialog, 'Detected Google spam policy disclaimer ("Help fight junk emails")', campaign);
+            const checkbox = dialog.querySelector('input[type="checkbox"], [role="checkbox"], div[role="checkbox"], span[role="checkbox"]')
+              || Array.from(dialog.querySelectorAll('label, div, span')).find((el) => /don't show|dont show/i.test(el.textContent || ''))?.querySelector('input, [role="checkbox"]');
+            if (checkbox) {
+              const isChecked = checkbox.checked || checkbox.getAttribute('aria-checked') === 'true';
+              if (!isChecked) {
+                await humanClick(checkbox);
+                await sleep(150);
+              }
             }
-          }
-          const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="Got it" i]'));
-          let confirmBtn = buttons.find((b) => {
-            const btnText = (b.textContent || '').trim().toLowerCase();
-            return /^(got it|continue|ok|i understand|proceed|acknowledge|agree)$/i.test(btnText);
-          }) || buttons.find((b) => /got it|continue|ok/i.test((b.textContent || '').trim()));
-
-          if (!confirmBtn) {
-            confirmBtn = Array.from(dialog.querySelectorAll('*')).find((el) => {
-              const txt = (el.textContent || '').trim().toLowerCase();
-              return (txt === 'got it' || txt === 'ok') && isElementVisible(el);
-            });
-          }
-
-          if (confirmBtn) {
-            await humanClick(confirmBtn);
-            // Native fallback & keyboard trigger for Google Closure / Material buttons
-            try {
-              if (typeof confirmBtn.click === 'function') confirmBtn.click();
-              confirmBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-              confirmBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-            } catch (_) {}
-            await sleep(500);
-            console.log('[GmailAutomator] ✅ Google spam/junk disclaimer ("Help fight junk emails") automatically dismissed.');
-            return true;
-          }
-        }
-
-        // 2. Check for "Missing merge tags" dialog ("Some merge tags couldn't be found in your sheet... Send anyway or edit draft?")
-        const isMissingTagsDialog = (
-          text.includes('merge tags') ||
-          text.includes('merge tag') ||
-          text.includes("couldn't be found in your sheet") ||
-          text.includes("cannot be found in your sheet")
-        ) && (
-          text.includes('send anyway') ||
-          text.includes('edit draft')
-        );
-
-        if (isMissingTagsDialog) {
-          console.warn('[GmailAutomator] ⚠️ Detected Google "Missing merge tags" modal. Auto-clicking "Send anyway" per unattended policy...');
-          await captureForensicSnapshot('MISSING_MERGE_TAGS', dialog, 'Google warned of missing merge tags in draft body', campaign);
-          const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="Send anyway" i]'));
-          let sendAnywayBtn = buttons.find((b) => /send anyway/i.test((b.textContent || '').trim()));
-          if (!sendAnywayBtn) {
-            sendAnywayBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /send anyway/i.test((el.textContent || '').trim()));
-          }
-          if (sendAnywayBtn) {
-            await humanClick(sendAnywayBtn);
-            try {
-              if (typeof sendAnywayBtn.click === 'function') sendAnywayBtn.click();
-              sendAnywayBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-              sendAnywayBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-            } catch (_) {}
-            await sleep(500);
-            if (campaign?.id && root.IDBStore) {
-              await root.IDBStore.addLog(campaign.id, 'WARN', 'Google warned of missing merge tags in draft body. Auto-clicked "Send anyway" per unattended 24/7 policy.').catch(() => {});
+            const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="Got it" i]'));
+            let confirmBtn = buttons.find((b) => /^(got it|continue|ok|i understand|proceed|acknowledge|agree)$/i.test((b.textContent || '').trim()))
+              || buttons.find((b) => /got it|continue|ok/i.test((b.textContent || '').trim()));
+            if (!confirmBtn) {
+              confirmBtn = Array.from(dialog.querySelectorAll('*')).find((el) => {
+                const txt = (el.textContent || '').trim().toLowerCase();
+                return (txt === 'got it' || txt === 'ok') && isElementVisible(el);
+              });
             }
-            console.log('[GmailAutomator] ✅ "Send anyway" clicked on missing merge tags dialog.');
-            return true;
-          }
-        }
-
-        // 3. Check for "Which column has your recipients' email addresses?" dialog
-        const isColumnSelectDialog = (
-          text.includes('which column') ||
-          text.includes("recipients' email") ||
-          text.includes("recipient email")
-        ) && (
-          text.includes('done') ||
-          text.includes('select') ||
-          text.includes('insert')
-        );
-
-        if (isColumnSelectDialog) {
-          console.log('[GmailAutomator] 🔍 Detected Google column selection prompt. Auto-selecting email column...');
-          await captureForensicSnapshot('COLUMN_SELECTION_PROMPT', dialog, 'Google prompted for recipient email column selection', campaign);
-          const selectEl = dialog.querySelector('select');
-          if (selectEl) {
-            const targetCol = (campaign?.recipientColumn || 'email').toLowerCase().trim();
-            const option = Array.from(selectEl.options).find((o) => (o.text || '').toLowerCase().includes(targetCol))
-              || Array.from(selectEl.options).find((o) => /email|mail|address|contact/i.test(o.text || ''));
-            if (option) {
-              selectEl.value = option.value;
-              selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+            if (confirmBtn) {
+              await humanClick(confirmBtn);
+              try {
+                if (typeof confirmBtn.click === 'function') confirmBtn.click();
+                confirmBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                confirmBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              } catch (_) {}
+              await sleep(400);
+              console.log('[GmailAutomator] ✅ Google spam/junk disclaimer ("Help fight junk emails") automatically dismissed.');
+              return true;
             }
-          }
-          const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button'));
-          let doneBtn = buttons.find((b) => /^(done|insert|select|ok)$/i.test((b.textContent || '').trim()));
-          if (!doneBtn) {
-            doneBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(done|insert|select|ok)$/i.test((el.textContent || '').trim()));
-          }
-          if (doneBtn) {
-            await humanClick(doneBtn);
-            try {
-              if (typeof doneBtn.click === 'function') doneBtn.click();
-              doneBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-              doneBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-            } catch (_) {}
-            await sleep(500);
-            console.log('[GmailAutomator] ✅ Recipient column auto-confirmed.');
-            return true;
-          }
-        }
-
-        // 4. Check for generic Google promotional / onboarding / feature modals ("What's new in Gmail", "Smart Compose tips", "Turn on notifications")
-        const isPromoModal = (
-          text.includes("what's new") ||
-          text.includes("meet the new") ||
-          text.includes("turn on notifications") ||
-          text.includes("smart compose") ||
-          text.includes("gemini in gmail") ||
-          text.includes("try the new") ||
-          text.includes("workspace tip")
-        ) && !text.includes("can't open the sheet");
-
-        if (isPromoModal) {
-          console.log('[GmailAutomator] 🛡️ Dismissing promotional / onboarding popup...');
-          await captureForensicSnapshot('PROMOTIONAL_POPUP', dialog, 'Google promotional modal detected', campaign);
-          const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="close" i], [aria-label*="dismiss" i]'));
-          let dismissBtn = buttons.find((b) => /^(got it|not now|dismiss|done|close|no thanks)$/i.test((b.textContent || '').trim()))
-            || dialog.querySelector('[aria-label="Close" i], [aria-label="Dismiss" i]');
-          if (!dismissBtn) {
-            dismissBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(got it|not now|dismiss|done|close|no thanks)$/i.test((el.textContent || '').trim()));
-          }
-          if (dismissBtn) {
-            await humanClick(dismissBtn);
-            try {
-              if (typeof dismissBtn.click === 'function') dismissBtn.click();
-              dismissBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-              dismissBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-            } catch (_) {}
-            await sleep(400);
-            console.log('[GmailAutomator] ✅ Promotional modal dismissed.');
-            return true;
-          }
-        }
-
-        // 5. Check for unexpected Google alertdialogs / warning popups (role="alertdialog" or .Kj-JD with OK/Dismiss)
-        const isAlertDialog = dialog.getAttribute('role') === 'alertdialog' || dialog.classList.contains('Kj-JD');
-        if (isAlertDialog) {
-          const alertButtons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button'));
-          let okBtn = alertButtons.find((b) => /^(ok|dismiss|got it|close|acknowledge|i understand)$/i.test((b.textContent || '').trim()))
-            || dialog.querySelector('[aria-label="OK" i], [aria-label="Dismiss" i], [aria-label="Close" i]');
-          if (!okBtn) {
-            okBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(ok|dismiss|got it|close)$/i.test((el.textContent || '').trim()));
+            break;
           }
 
-          if (okBtn) {
-            const alertText = (dialog.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 150);
-            console.warn(`[GmailAutomator] 🛡️ Auto-dismissing unexpected Google alertdialog: "${alertText}"`);
-            await captureForensicSnapshot('ALERTDIALOG_DISMISSED', dialog, `Dismissed alertdialog: ${alertText}`, campaign);
-            if (campaign?.id && root.IDBStore) {
-              await root.IDBStore.addLog(campaign.id, 'WARN', `Auto-dismissed Google alertdialog: "${alertText}"`).catch(() => {});
+          case 'MISSING_MERGE_TAGS': {
+            if (!isAutomatedRun) break;
+            console.warn('[GmailAutomator] ⚠️ Detected Google "Missing merge tags" modal. Auto-clicking "Send anyway"...');
+            await captureForensicSnapshot('MISSING_MERGE_TAGS', dialog, 'Google warned of missing merge tags in draft body', campaign);
+            const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="Send anyway" i]'));
+            let sendAnywayBtn = buttons.find((b) => /send anyway/i.test((b.textContent || '').trim()));
+            if (!sendAnywayBtn) {
+              sendAnywayBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /send anyway/i.test((el.textContent || '').trim()));
             }
-            await humanClick(okBtn);
-            try {
-              if (typeof okBtn.click === 'function') okBtn.click();
-              okBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-              okBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-            } catch (_) {}
-            await sleep(300);
-            anyDismissed = true;
+            if (sendAnywayBtn) {
+              await humanClick(sendAnywayBtn);
+              try {
+                if (typeof sendAnywayBtn.click === 'function') sendAnywayBtn.click();
+                sendAnywayBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                sendAnywayBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              } catch (_) {}
+              await sleep(400);
+              if (campaign?.id && root.IDBStore) {
+                await root.IDBStore.addLog(campaign.id, 'WARN', 'Google warned of missing merge tags in draft body. Auto-clicked "Send anyway" per unattended 24/7 policy.').catch(() => {});
+              }
+              return true;
+            }
+            break;
+          }
+
+          case 'COLUMN_SELECTION': {
+            if (!isAutomatedRun) break;
+            console.log('[GmailAutomator] 🔍 Detected Google column selection prompt. Auto-selecting email column...');
+            await captureForensicSnapshot('COLUMN_SELECTION_PROMPT', dialog, 'Google prompted for recipient email column selection', campaign);
+            const selectEl = dialog.querySelector('select');
+            if (selectEl) {
+              const targetCol = (campaign?.recipientColumn || 'email').toLowerCase().trim();
+              const option = Array.from(selectEl.options).find((o) => (o.text || '').toLowerCase().includes(targetCol))
+                || Array.from(selectEl.options).find((o) => /email|mail|address|contact/i.test(o.text || ''));
+              if (option) {
+                selectEl.value = option.value;
+                selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            }
+            const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button'));
+            let doneBtn = buttons.find((b) => /^(done|insert|select|ok)$/i.test((b.textContent || '').trim()));
+            if (!doneBtn) {
+              doneBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(done|insert|select|ok)$/i.test((el.textContent || '').trim()));
+            }
+            if (doneBtn) {
+              await humanClick(doneBtn);
+              try {
+                if (typeof doneBtn.click === 'function') doneBtn.click();
+                doneBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                doneBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              } catch (_) {}
+              await sleep(400);
+              return true;
+            }
+            break;
+          }
+
+          case 'PROMO_POPUP': {
+            console.log('[GmailAutomator] 🛡️ Dismissing promotional / onboarding popup...');
+            await captureForensicSnapshot('PROMOTIONAL_POPUP', dialog, 'Google promotional modal detected', campaign);
+            const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="close" i], [aria-label*="dismiss" i]'));
+            let dismissBtn = buttons.find((b) => /^(got it|not now|dismiss|done|close|no thanks)$/i.test((b.textContent || '').trim()))
+              || dialog.querySelector('[aria-label="Close" i], [aria-label="Dismiss" i]');
+            if (!dismissBtn) {
+              dismissBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(got it|not now|dismiss|done|close|no thanks)$/i.test((el.textContent || '').trim()));
+            }
+            if (dismissBtn) {
+              await humanClick(dismissBtn);
+              try {
+                if (typeof dismissBtn.click === 'function') dismissBtn.click();
+                dismissBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                dismissBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              } catch (_) {}
+              await sleep(400);
+              return true;
+            }
+            break;
+          }
+
+          case 'GENERIC_ALERTDIALOG': {
+            // ONLY auto-dismiss if an automated campaign is actively running!
+            // Never dismiss when a human user is manually interacting with Gmail!
+            if (!isAutomatedRun) break;
+            const alertButtons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button'));
+            let okBtn = alertButtons.find((b) => /^(ok|dismiss|got it|close|acknowledge|i understand)$/i.test((b.textContent || '').trim()))
+              || dialog.querySelector('[aria-label="OK" i], [aria-label="Dismiss" i], [aria-label="Close" i]');
+            if (!okBtn) {
+              okBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(ok|dismiss|got it|close)$/i.test((el.textContent || '').trim()));
+            }
+
+            if (okBtn) {
+              const alertText = (dialog.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 150);
+              console.warn(`[GmailAutomator] 🛡️ Auto-dismissing blocking alertdialog during automated run: "${alertText}"`);
+              await captureForensicSnapshot('ALERTDIALOG_DISMISSED', dialog, `Dismissed alertdialog: ${alertText}`, campaign);
+              if (campaign?.id && root.IDBStore) {
+                await root.IDBStore.addLog(campaign.id, 'WARN', `Auto-dismissed Google alertdialog: "${alertText}"`).catch(() => {});
+              }
+              await humanClick(okBtn);
+              try {
+                if (typeof okBtn.click === 'function') okBtn.click();
+                okBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                okBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              } catch (_) {}
+              await sleep(300);
+              anyDismissed = true;
+            }
+            break;
           }
         }
       }
@@ -2014,9 +2052,8 @@
                 try { okBtn.click(); } catch (_) {}
               }
             }
-            const targetCompose = composeDialog || document.querySelector('div[role="dialog"]');
-            if (targetCompose && targetCompose.isConnected) {
-              const closeBtn = targetCompose.querySelector('img[aria-label*="Save & close" i], div[aria-label*="Save & close" i], button[aria-label*="Close" i], [aria-label*="Close" i], img.Ha, div.Ha');
+            if (composeDialog && composeDialog.isConnected) {
+              const closeBtn = composeDialog.querySelector('img[aria-label*="Save & close" i], div[aria-label*="Save & close" i], button[aria-label*="Close" i], [aria-label*="Close" i], img.Ha, div.Ha');
               if (closeBtn) {
                 try { closeBtn.click(); } catch (_) {}
                 console.log('[GmailAutomator] 🚪 Closed stuck compose dialog to ensure clean slate for retry.');
@@ -2060,6 +2097,8 @@
         }
 
         throw error;
+      } finally {
+        currentActiveCampaign = null;
       }
     }
   }

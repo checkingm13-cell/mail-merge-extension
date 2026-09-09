@@ -50,6 +50,9 @@ exec "$CHROME_BIN" \
     --no-sandbox \
     --disable-dev-shm-usage \
     --disable-gpu \
+    --disable-background-timer-throttling \
+    --disable-backgrounding-occluded-windows \
+    --disable-renderer-backgrounding \
     --window-size=1440,900 \
     --start-maximized \
     --user-data-dir="$PROFILE_DIR" \

@@ -93,6 +93,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   await syncSystemWakeLock();
   await injectIntoExistingGmailTabs();
   await runHealthCheck();
+  await recoverOrphanedCampaigns();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -102,9 +103,40 @@ chrome.runtime.onStartup.addListener(async () => {
   await syncSystemWakeLock();
   await injectIntoExistingGmailTabs();
   await runHealthCheck();
+  await recoverOrphanedCampaigns();
   // Check campaigns immediately on browser wakeup / startup
   await checkAndExecuteDueCampaigns();
 });
+
+/**
+ * Self-healing Crash Recovery: Re-queues any campaigns stuck in PROCESSING
+ * if Chrome was terminated, killed by PM2, or restarted mid-flight.
+ */
+async function recoverOrphanedCampaigns() {
+  try {
+    if (!self.IDBStore) return;
+    const all = await self.IDBStore.getCampaigns();
+    const orphaned = all.filter((c) => c.status === 'PROCESSING');
+    if (orphaned.length === 0) return;
+
+    console.warn(`[ServiceWorker] 🛡️ In-Flight Self-Healing: Found ${orphaned.length} orphaned PROCESSING campaign(s). Recovering...`);
+    for (const camp of orphaned) {
+      await self.IDBStore.updateCampaign(camp.id, {
+        status: 'QUEUED',
+        progressStep: 'RECOVERED_AFTER_RESTART',
+        progressMessage: 'Recovered after process/browser restart. Re-queued for automatic execution.'
+      });
+      await self.IDBStore.addLog(
+        camp.id,
+        'WARN',
+        'Process restart detected while campaign was mid-flight. Automatically recovered to QUEUED state with zero duplicate sends.'
+      );
+    }
+    await refreshBadge();
+  } catch (err) {
+    console.warn('[ServiceWorker] Orphan recovery warning:', err.message);
+  }
+}
 
 /**
  * Injects content scripts into all already-open Gmail tabs so the user does
@@ -187,6 +219,7 @@ async function setupAllAlarms() {
 setupAllAlarms().catch(() => {});
 refreshBadge().catch(() => {});
 injectIntoExistingGmailTabs().catch(() => {});
+recoverOrphanedCampaigns().catch(() => {});
 
 // Alarm Listener
 chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -220,7 +253,22 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         await setupAllAlarms();
       }
 
-      // 3. Refresh Badge to prove SW is alive
+      // 3. Self-healing check: Auto-recover any campaign stuck in PROCESSING for > 15 minutes
+      if (self.IDBStore) {
+        const all = await self.IDBStore.getCampaigns();
+        const stuck = all.filter((c) => c.status === 'PROCESSING' && c.startedAt && (now - new Date(c.startedAt).getTime() > 15 * 60 * 1000));
+        for (const camp of stuck) {
+          console.warn(`[Heartbeat] 🚨 Campaign ${camp.id} stuck in PROCESSING for > 15m. Recovering to QUEUED.`);
+          await self.IDBStore.updateCampaign(camp.id, {
+            status: 'QUEUED',
+            progressStep: 'HEARTBEAT_AUTO_RECOVERED',
+            progressMessage: 'Automatically recovered from stalled execution by Background Heartbeat.'
+          });
+          await self.IDBStore.addLog(camp.id, 'WARN', 'Campaign stalled in PROCESSING for > 15 minutes. Automatically recovered to QUEUED.');
+        }
+      }
+
+      // 4. Refresh Badge to prove SW is alive
       await refreshBadge();
       console.log('[Heartbeat] 💓 Internal heartbeat OK. System healthy. Active locks: ' + accountLocks.size);
     } catch (err) {
@@ -698,9 +746,7 @@ async function executeCampaign(campaign) {
     console.error(`[ServiceWorker] Failed to execute campaign ${campaign.id}:`, err);
 
     if (createdBackgroundTabId) {
-      setTimeout(() => {
-        chrome.tabs.remove(createdBackgroundTabId).catch(() => {});
-      }, 2000);
+      console.warn(`[ServiceWorker] Kept failed tab ${createdBackgroundTabId} open for user inspection.`);
     }
 
     const isQuota = err.message && err.message.includes('Daily Sending Limit');
@@ -891,9 +937,22 @@ async function findGmailTab(campaign) {
   }
 
   const targetEmail = (campaign?.accountEmail || '').toLowerCase().trim();
+  const targetUserIndex = String(campaign?.userIndex !== undefined ? campaign.userIndex : '0');
   let matchedTab = null;
 
-  // 1. Build and update the Account Tab Registry dynamically
+  // 1. Fast path: Check previously registered sender tab in accountTabRegistry
+  if (targetEmail && accountTabRegistry.has(targetEmail)) {
+    const regTabId = accountTabRegistry.get(targetEmail);
+    const existing = tabs.find((t) => t.id === regTabId);
+    if (existing) matchedTab = existing;
+  }
+  if (!matchedTab && accountTabRegistry.has(targetUserIndex)) {
+    const regTabId = accountTabRegistry.get(targetUserIndex);
+    const existing = tabs.find((t) => t.id === regTabId);
+    if (existing) matchedTab = existing;
+  }
+
+  // 2. Build and update the Account Tab Registry dynamically from live tabs
   for (const t of tabs) {
     try {
       await chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
@@ -902,14 +961,14 @@ async function findGmailTab(campaign) {
         const cleanEmail = info.email.toLowerCase().trim();
         accountTabRegistry.set(cleanEmail, t.id);
 
-        if (targetEmail && cleanEmail === targetEmail) {
+        if (!matchedTab && targetEmail && cleanEmail === targetEmail) {
           matchedTab = t;
         }
       }
     } catch (_) {}
   }
 
-  // 2. If no exact email match, match by target userIndex URL
+  // 3. If no exact email match, match by target userIndex URL
   if (!matchedTab && campaign) {
     let targetPath = null;
     if (campaign.accountUrl) {
@@ -920,7 +979,13 @@ async function findGmailTab(campaign) {
     }
 
     if (targetPath) {
-      matchedTab = tabs.find((t) => t.url && t.url.includes(targetPath));
+      matchedTab = tabs.find((t) => {
+        if (!t.url) return false;
+        if (t.url.includes(targetPath)) return true;
+        // Account 0 fallback: standard /mail/ URL without /u/
+        if ((targetPath === '/mail/u/0/' || targetUserIndex === '0') && !t.url.includes('/mail/u/')) return true;
+        return false;
+      });
     }
   }
 
@@ -1179,6 +1244,12 @@ async function handleRuntimeMessage(message, sender) {
     }
 
     case 'REGISTER_SCHEDULED_ALARM': {
+      if (sender?.tab?.id && message.campaign) {
+        const email = (message.campaign.accountEmail || '').toLowerCase().trim();
+        if (email) accountTabRegistry.set(email, sender.tab.id);
+        const acctKey = email || String(message.campaign.userIndex !== undefined ? message.campaign.userIndex : '0');
+        accountTabRegistry.set(acctKey, sender.tab.id);
+      }
       if (message.campaign && self.IDBStore) {
         try {
           await self.IDBStore.saveCampaign(message.campaign);
@@ -1435,13 +1506,17 @@ async function handleRuntimeMessage(message, sender) {
         }
         await refreshBadge();
 
-        // Clean Auto-Close: close the dedicated execution tab on completion or failure
+        // Clean Auto-Close: close dedicated execution tab on completion; preserve on failure for debugging
         const activeTabInfo = ACTIVE_CAMPAIGN_TABS.get(message.campaignId);
-        if (activeTabInfo && (message.status === 'COMPLETED' || message.status === 'COMPLETED (DRY RUN)' || message.status === 'FAILED')) {
+        if (activeTabInfo) {
           if (activeTabInfo.timeoutId) clearTimeout(activeTabInfo.timeoutId);
-          setTimeout(() => {
-            chrome.tabs.remove(activeTabInfo.tabId).catch(() => {});
-          }, 3000);
+          if (message.status === 'COMPLETED' || message.status === 'COMPLETED (DRY RUN)') {
+            setTimeout(() => {
+              chrome.tabs.remove(activeTabInfo.tabId).catch(() => {});
+            }, 3000);
+          } else {
+            console.warn(`[ServiceWorker] Preserved failed tab ${activeTabInfo.tabId} for user inspection.`);
+          }
           ACTIVE_CAMPAIGN_TABS.delete(message.campaignId);
         }
 

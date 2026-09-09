@@ -142,10 +142,8 @@
    */
   function checkAndDismissSpamDisclaimer() {
     try {
-      if (root.GmailAutomator && typeof root.GmailAutomator.dismissGoogleInterferingModalsIfNeeded === 'function') {
-        root.GmailAutomator.dismissGoogleInterferingModalsIfNeeded(document).catch(() => {});
-        return;
-      }
+      // ONLY check for Google spam policy disclaimer ("Help fight junk emails").
+      // NEVER trigger full automator modal sweeps from general DOM mutation observers!
       const dialogs = Array.from(document.querySelectorAll('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, [aria-modal="true"], dialog, div[class*="modal"]'));
 
       // Fallback search if not captured by standard dialog selectors
@@ -736,6 +734,8 @@
         '</div>' +
       '</div>';
 
+    overlay.id = 'mmPopoverOverlay';
+    overlay.setAttribute('data-mm-schedule-popover', 'true');
     overlay.setAttribute('role', 'dialog');
     overlay.setAttribute('aria-modal', 'true');
     overlay.setAttribute('aria-label', 'Schedule Mail Merge');

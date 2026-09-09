@@ -77,6 +77,123 @@ function queryCDP(endpoint) {
 }
 
 /**
+ * Evaluates a JavaScript expression inside a Chrome target using WebSocket CDP
+ */
+function evaluateInTarget(wsUrl, expression) {
+  return new Promise((resolve) => {
+    if (typeof globalThis.WebSocket !== 'function') {
+      return resolve({ ok: false, error: 'WebSocket not supported in this Node runtime' });
+    }
+    let ws;
+    try {
+      ws = new globalThis.WebSocket(wsUrl);
+    } catch (err) {
+      return resolve({ ok: false, error: err.message });
+    }
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch (_) {}
+      resolve({ ok: false, error: 'CDP evaluate timeout (4s)' });
+    }, 4000);
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        id: Math.floor(Math.random() * 100000),
+        method: 'Runtime.evaluate',
+        params: { expression, awaitPromise: true, returnByValue: true }
+      }));
+    };
+    ws.onmessage = (evt) => {
+      clearTimeout(timer);
+      try {
+        const res = JSON.parse(evt.data);
+        try { ws.close(); } catch (_) {}
+        if (res.result && res.result.result) {
+          resolve({ ok: true, value: res.result.result.value });
+        } else {
+          resolve({ ok: false, error: res.error || 'Evaluation failed' });
+        }
+      } catch (e) {
+        resolve({ ok: false, error: e.message });
+      }
+    };
+    ws.onerror = (err) => {
+      clearTimeout(timer);
+      resolve({ ok: false, error: err?.message || 'CDP WebSocket error' });
+    };
+  });
+}
+
+/**
+ * Finds the extension service worker or an open Gmail tab target
+ */
+async function getExtensionTarget() {
+  const tabsRes = await queryCDP('/json');
+  if (!tabsRes.ok || !Array.isArray(tabsRes.data)) return null;
+
+  let target = tabsRes.data.find((t) => 
+    t.webSocketDebuggerUrl && 
+    (t.url.includes('chrome-extension://') || t.type === 'service_worker' || t.type === 'background_page')
+  );
+  if (!target) {
+    target = tabsRes.data.find((t) => t.webSocketDebuggerUrl && t.url.includes('mail.google.com'));
+  }
+  return target;
+}
+
+/**
+ * Sends remote push notifications to Telegram or Discord if configured
+ */
+async function sendWebhookAlert(title, message, isUrgent = false) {
+  const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
+  const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+  const discordWebhookUrl = process.env.DISCORD_WEBHOOK_URL;
+
+  const emoji = isUrgent ? '🚨' : '📢';
+  const fullText = `${emoji} *${title}*\n${message}\n_Host: ${os.hostname()} (${new Date().toLocaleTimeString()})_`;
+
+  if (telegramBotToken && telegramChatId && typeof fetch === 'function') {
+    try {
+      await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: telegramChatId, text: fullText, parse_mode: 'Markdown' })
+      });
+    } catch (e) {
+      console.warn('[Alert] Telegram send error:', e.message);
+    }
+  }
+
+  if (discordWebhookUrl && typeof fetch === 'function') {
+    try {
+      await fetch(discordWebhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: `${emoji} **${title}**\n${message}` })
+      });
+    } catch (e) {
+      console.warn('[Alert] Discord send error:', e.message);
+    }
+  }
+}
+
+/**
+ * Parses JSON body from incoming HTTP request
+ */
+function readJsonBody(req) {
+  return new Promise((resolve) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(body || '{}'));
+      } catch (_) {
+        resolve({});
+      }
+    });
+  });
+}
+
+/**
  * HTTP Server Instance
  */
 const server = http.createServer(async (req, res) => {
@@ -139,6 +256,94 @@ const server = http.createServer(async (req, res) => {
     const cdpTabs = await queryCDP('/json');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(cdpTabs, null, 2));
+    return;
+  }
+
+  if (pathname === '/api/session-health') {
+    const cdpTabs = await queryCDP('/json');
+    if (!cdpTabs.ok || !Array.isArray(cdpTabs.data)) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ alive: false, error: 'CDP unreachable' }));
+      return;
+    }
+    const hasAuthRedirect = cdpTabs.data.some((t) => t.url && t.url.includes('accounts.google.com'));
+    const hasGmailTab = cdpTabs.data.some((t) => t.url && t.url.includes('mail.google.com'));
+
+    if (hasAuthRedirect) {
+      await sendWebhookAlert('Gmail Authentication Required', 'Google 2FA session expired. Please connect via VNC (:5900) to re-authenticate.', true);
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      alive: hasGmailTab && !hasAuthRedirect,
+      needsAuth: hasAuthRedirect,
+      gmailTabOpen: hasGmailTab,
+      timestamp: new Date().toISOString()
+    }));
+    return;
+  }
+
+  if (pathname === '/api/campaigns' && req.method === 'GET') {
+    const target = await getExtensionTarget();
+    if (!target) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([]));
+      return;
+    }
+    const evalRes = await evaluateInTarget(target.webSocketDebuggerUrl, `(async () => {
+      if (typeof self !== 'undefined' && self.IDBStore) {
+        return await self.IDBStore.getCampaigns();
+      }
+      return [];
+    })()`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(evalRes.ok ? evalRes.value : []));
+    return;
+  }
+
+  if (pathname === '/api/logs' && req.method === 'GET') {
+    const target = await getExtensionTarget();
+    if (!target) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([]));
+      return;
+    }
+    const evalRes = await evaluateInTarget(target.webSocketDebuggerUrl, `(async () => {
+      if (typeof self !== 'undefined' && self.IDBStore) {
+        return await self.IDBStore.getLogs(null, 100);
+      }
+      return [];
+    })()`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(evalRes.ok ? evalRes.value : []));
+    return;
+  }
+
+  if (pathname === '/api/trigger' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    const campaignId = body.campaignId;
+    const target = await getExtensionTarget();
+    if (!target) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Extension target unavailable' }));
+      return;
+    }
+    const evalRes = await evaluateInTarget(target.webSocketDebuggerUrl, `(async () => {
+      if (typeof chrome !== 'undefined' && chrome.runtime) {
+        return await chrome.runtime.sendMessage({ action: 'TRIGGER_DUE_CAMPAIGNS_NOW', campaignId: '${campaignId || ''}' });
+      }
+      return { success: false, error: 'chrome.runtime not accessible' };
+    })()`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(evalRes));
+    return;
+  }
+
+  if (pathname === '/api/notify' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    await sendWebhookAlert(body.title || 'Test Alert', body.message || 'Notification from Mail Merge VPS', !!body.isUrgent);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, message: 'Notification dispatched' }));
     return;
   }
 

@@ -1,5 +1,5 @@
 ================================================================================
-FILE: cloud\ecosystem.config.js
+FILE: cloud\\ecosystem.config.js
 ================================================================================
 
 module.exports = {
@@ -8,8 +8,9 @@ module.exports = {
       name: 'mail-merge-cloud-runner',
       script: './cloud/start-cloud-chrome.sh',
       interpreter: 'bash',
-      max_memory_restart: '1500M',
+      max_memory_restart: '1800M',
       restart_delay: 5000,
+      exp_backoff_restart_delay: 100,
       autorestart: true,
       env: {
         NODE_ENV: 'production',
@@ -32,7 +33,7 @@ module.exports = {
 
 
 ================================================================================
-FILE: cloud\server.js
+FILE: cloud\\server.js
 ================================================================================
 
 /**
@@ -114,6 +115,123 @@ function queryCDP(endpoint) {
 }
 
 /**
+ * Evaluates a JavaScript expression inside a Chrome target using WebSocket CDP
+ */
+function evaluateInTarget(wsUrl, expression) {
+  return new Promise((resolve) => {
+    if (typeof globalThis.WebSocket !== 'function') {
+      return resolve({ ok: false, error: 'WebSocket not supported in this Node runtime' });
+    }
+    let ws;
+    try {
+      ws = new globalThis.WebSocket(wsUrl);
+    } catch (err) {
+      return resolve({ ok: false, error: err.message });
+    }
+    const timer = setTimeout(() => {
+      try { ws.close(); } catch (_) {}
+      resolve({ ok: false, error: 'CDP evaluate timeout (4s)' });
+    }, 4000);
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        id: Math.floor(Math.random() * 100000),
+        method: 'Runtime.evaluate',
+        params: { expression, awaitPromise: true, returnByValue: true }
+      }));
+    };
+    ws.onmessage = (evt) => {
+      clearTimeout(timer);
+      try {
+        const res = JSON.parse(evt.data);
+        try { ws.close(); } catch (_) {}
+        if (res.result && res.result.result) {
+          resolve({ ok: true, value: res.result.result.value });
+        } else {
+          resolve({ ok: false, error: res.error || 'Evaluation failed' });
+        }
+      } catch (e) {
+        resolve({ ok: false, error: e.message });
+      }
+    };
+    ws.onerror = (err) => {
+      clearTimeout(timer);
+      resolve({ ok: false, error: err?.message || 'CDP WebSocket error' });
+    };
+  });
+}
+
+/**
+ * Finds the extension service worker or an open Gmail tab target
+ */
+async function getExtensionTarget() {
+  const tabsRes = await queryCDP('/json');
+  if (!tabsRes.ok || !Array.isArray(tabsRes.data)) return null;
+
+  let target = tabsRes.data.find((t) => 
+    t.webSocketDebuggerUrl && 
+    (t.url.includes('chrome-extension://') || t.type === 'service_worker' || t.type === 'background_page')
+  );
+  if (!target) {
+    target = tabsRes.data.find((t) => t.webSocketDebuggerUrl && t.url.includes('mail.google.com'));
+  }
+  return target;
+}
+
+/**
+ * Sends remote push notifications to Telegram or Discord if configured
+ */
+async function sendWebhookAlert(title, message, isUrgent = false) {
+  const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN;
+  const telegramChatId = process.env.TELEGRAM_CHAT_ID;
+  const discordWebhookUrl = process.env.DISCORD_WEBHOOK_URL;
+
+  const emoji = isUrgent ? '🚨' : '📢';
+  const fullText = `${emoji} *${title}*\n${message}\n_Host: ${os.hostname()} (${new Date().toLocaleTimeString()})_`;
+
+  if (telegramBotToken && telegramChatId && typeof fetch === 'function') {
+    try {
+      await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: telegramChatId, text: fullText, parse_mode: 'Markdown' })
+      });
+    } catch (e) {
+      console.warn('[Alert] Telegram send error:', e.message);
+    }
+  }
+
+  if (discordWebhookUrl && typeof fetch === 'function') {
+    try {
+      await fetch(discordWebhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: `${emoji} **${title}**\n${message}` })
+      });
+    } catch (e) {
+      console.warn('[Alert] Discord send error:', e.message);
+    }
+  }
+}
+
+/**
+ * Parses JSON body from incoming HTTP request
+ */
+function readJsonBody(req) {
+  return new Promise((resolve) => {
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(body || '{}'));
+      } catch (_) {
+        resolve({});
+      }
+    });
+  });
+}
+
+/**
  * HTTP Server Instance
  */
 const server = http.createServer(async (req, res) => {
@@ -176,6 +294,94 @@ const server = http.createServer(async (req, res) => {
     const cdpTabs = await queryCDP('/json');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(cdpTabs, null, 2));
+    return;
+  }
+
+  if (pathname === '/api/session-health') {
+    const cdpTabs = await queryCDP('/json');
+    if (!cdpTabs.ok || !Array.isArray(cdpTabs.data)) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ alive: false, error: 'CDP unreachable' }));
+      return;
+    }
+    const hasAuthRedirect = cdpTabs.data.some((t) => t.url && t.url.includes('accounts.google.com'));
+    const hasGmailTab = cdpTabs.data.some((t) => t.url && t.url.includes('mail.google.com'));
+
+    if (hasAuthRedirect) {
+      await sendWebhookAlert('Gmail Authentication Required', 'Google 2FA session expired. Please connect via VNC (:5900) to re-authenticate.', true);
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      alive: hasGmailTab && !hasAuthRedirect,
+      needsAuth: hasAuthRedirect,
+      gmailTabOpen: hasGmailTab,
+      timestamp: new Date().toISOString()
+    }));
+    return;
+  }
+
+  if (pathname === '/api/campaigns' && req.method === 'GET') {
+    const target = await getExtensionTarget();
+    if (!target) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([]));
+      return;
+    }
+    const evalRes = await evaluateInTarget(target.webSocketDebuggerUrl, `(async () => {
+      if (typeof self !== 'undefined' && self.IDBStore) {
+        return await self.IDBStore.getCampaigns();
+      }
+      return [];
+    })()`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(evalRes.ok ? evalRes.value : []));
+    return;
+  }
+
+  if (pathname === '/api/logs' && req.method === 'GET') {
+    const target = await getExtensionTarget();
+    if (!target) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([]));
+      return;
+    }
+    const evalRes = await evaluateInTarget(target.webSocketDebuggerUrl, `(async () => {
+      if (typeof self !== 'undefined' && self.IDBStore) {
+        return await self.IDBStore.getLogs(null, 100);
+      }
+      return [];
+    })()`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(evalRes.ok ? evalRes.value : []));
+    return;
+  }
+
+  if (pathname === '/api/trigger' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    const campaignId = body.campaignId;
+    const target = await getExtensionTarget();
+    if (!target) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Extension target unavailable' }));
+      return;
+    }
+    const evalRes = await evaluateInTarget(target.webSocketDebuggerUrl, `(async () => {
+      if (typeof chrome !== 'undefined' && chrome.runtime) {
+        return await chrome.runtime.sendMessage({ action: 'TRIGGER_DUE_CAMPAIGNS_NOW', campaignId: '${campaignId || ''}' });
+      }
+      return { success: false, error: 'chrome.runtime not accessible' };
+    })()`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(evalRes));
+    return;
+  }
+
+  if (pathname === '/api/notify' && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    await sendWebhookAlert(body.title || 'Test Alert', body.message || 'Notification from Mail Merge VPS', !!body.isUrgent);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, message: 'Notification dispatched' }));
     return;
   }
 
@@ -244,6 +450,251 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`   Static Root   : ${ROOT_DIR}`);
   console.log('========================================================');
 });
+
+
+================================================================================
+FILE: cloud\\setup-cloud-chrome.sh
+================================================================================
+
+#!/usr/bin/env bash
+# cloud/setup-cloud-chrome.sh
+# Turnkey setup for 24/7 Chrome Extension Runner on Oracle Cloud Ubuntu VPS
+set -euo pipefail
+
+echo "========================================================"
+echo "🚀 Setting up 24/7 Cloud Chrome Extension Runner"
+echo "========================================================"
+
+# 1. Update and install base dependencies
+sudo apt-get update -y
+sudo apt-get install -y --no-install-recommends \
+    wget \
+    curl \
+    git \
+    xvfb \
+    x11vnc \
+    ca-certificates \
+    fonts-liberation \
+    fonts-noto-color-emoji \
+    libasound2 \
+    libgbm1 \
+    libnss3
+
+# 2. Install official Google Chrome Stable (or Chromium for ARM64)
+ARCH="$(uname -m)"
+echo "Detected architecture: $ARCH"
+
+if ! command -v google-chrome >/dev/null 2>&1 && ! command -v chromium-browser >/dev/null 2>&1; then
+    if [ "$ARCH" = "x86_64" ]; then
+        echo "⬇️ Downloading and installing Google Chrome Stable (AMD64)..."
+        wget -q -O /tmp/google-chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+        sudo dpkg -i /tmp/google-chrome.deb || sudo apt-get install -fy
+        rm -f /tmp/google-chrome.deb
+    else
+        echo "📦 Installing Chromium for ARM64 (Ampere A1)..."
+        sudo apt-get install -y chromium-browser
+    fi
+else
+    echo "✔ Chrome/Chromium is already installed."
+fi
+
+# 3. Install Node.js LTS and PM2 if not present
+if ! command -v node >/dev/null 2>&1; then
+    echo "📦 Installing Node.js LTS..."
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+fi
+
+if ! command -v pm2 >/dev/null 2>&1; then
+    echo "📦 Installing PM2 globally..."
+    sudo npm install -g pm2
+fi
+
+# 4. Make cloud scripts executable
+chmod +x "$(dirname "$0")/start-cloud-chrome.sh" || true
+
+echo "========================================================"
+echo "✅ Oracle Cloud VPS Setup Complete!"
+echo "Next step: Run './cloud/start-cloud-chrome.sh' or 'pm2 start cloud/ecosystem.config.js'"
+echo "========================================================"
+
+
+================================================================================
+FILE: cloud\\start-cloud-chrome.sh
+================================================================================
+
+#!/usr/bin/env bash
+# cloud/start-cloud-chrome.sh
+# Starts Xvfb virtual display, x11vnc server, and Google Chrome with Mail Merge extension loaded.
+set -euo pipefail
+
+DISPLAY_NUM=":99"
+export DISPLAY="$DISPLAY_NUM"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXT_DIR="$(dirname "$SCRIPT_DIR")"
+PROFILE_DIR="${HOME}/chrome-cloud-profile"
+
+mkdir -p "$PROFILE_DIR"
+
+echo "========================================================"
+echo "🌐 Launching 24/7 Cloud Chrome Mail Merge Runner"
+echo "   Display       : $DISPLAY_NUM"
+echo "   Extension Dir : $EXT_DIR"
+echo "   Profile Dir   : $PROFILE_DIR"
+echo "========================================================"
+
+# 1. Start Xvfb if not already running on :99
+if ! pgrep -f "Xvfb $DISPLAY_NUM" >/dev/null 2>&1; then
+    echo "🖥️ Starting Xvfb on display $DISPLAY_NUM..."
+    Xvfb "$DISPLAY_NUM" -screen 0 1440x900x24 -ac +extension GLX +render -noreset &
+    sleep 2
+else
+    echo "✔ Xvfb is already running on $DISPLAY_NUM."
+fi
+
+# 2. Start x11vnc if not already running
+if ! pgrep -f "x11vnc.*$DISPLAY_NUM" >/dev/null 2>&1; then
+    echo "📺 Starting x11vnc server on port 5900 (Access via Tailscale VNC)..."
+    x11vnc -display "$DISPLAY_NUM" -forever -shared -rfbport 5900 -nopw -bg -o /tmp/x11vnc.log
+else
+    echo "✔ x11vnc is already running on port 5900."
+fi
+
+# 3. Determine Chrome binary
+CHROME_BIN="google-chrome"
+if ! command -v "$CHROME_BIN" >/dev/null 2>&1; then
+    CHROME_BIN="chromium-browser"
+    if ! command -v "$CHROME_BIN" >/dev/null 2>&1; then
+        CHROME_BIN="chromium"
+    fi
+fi
+
+echo "🚀 Launching Chrome ($CHROME_BIN) with Mail Merge Extension..."
+exec "$CHROME_BIN" \
+    --no-sandbox \
+    --disable-dev-shm-usage \
+    --disable-gpu \
+    --disable-background-timer-throttling \
+    --disable-backgrounding-occluded-windows \
+    --disable-renderer-backgrounding \
+    --window-size=1440,900 \
+    --start-maximized \
+    --user-data-dir="$PROFILE_DIR" \
+    --load-extension="$EXT_DIR" \
+    --disable-features=Translate \
+    --remote-debugging-port=9222 \
+    --no-first-run \
+    --no-default-browser-check \
+    "https://mail.google.com/"
+
+
+================================================================================
+FILE: cloud\\ORACLE_CLOUD_DEPLOY_GUIDE.md
+================================================================================
+
+# 🚀 Turnkey Guide: 24/7 Live Mail Merge on Oracle Cloud VPS
+
+This guide shows you how to deploy the **Gmail Native Mail Merge Extension** to run **live 24/7** on your Oracle Cloud VPS (`mail-merge-vps`) so campaigns execute on schedule even when your personal computer is turned off.
+
+---
+
+## Prerequisites
+* **Oracle Cloud VPS Instance**: `mail-merge-vps` (Ubuntu 22.04 LTS).
+* **Tailscale**: Already configured on your Windows PC (`100.64.103.62`) and VPS (`100.96.100.52`).
+* **VNC Viewer** (Optional for 1-time login): RealVNC Viewer, TigerVNC, or TightVNC on Windows.
+
+---
+
+## Step 1: Start Your VPS & Connect via SSH
+
+1. In the Oracle Cloud Console, make sure your instance `mail-merge-vps` is in the **RUNNING** state.
+2. Open PowerShell or Terminal on this Windows PC and connect via Tailscale SSH:
+   ```bash
+   ssh ubuntu@100.96.100.52
+   ```
+
+---
+
+## Step 2: Clone Extension & Run Automated Setup
+
+Run the following commands on your VPS:
+
+```bash
+# 1. Clone repository
+cd ~
+git clone https://github.com/checkingm13-cell/mail-merge-extension.git
+
+# 2. Run automated setup (installs Chrome, Xvfb, x11vnc, PM2)
+cd ~/mail-merge-extension
+chmod +x cloud/setup-cloud-chrome.sh cloud/start-cloud-chrome.sh
+./cloud/setup-cloud-chrome.sh
+```
+
+---
+
+## Step 3: Launch 24/7 Runner with PM2
+
+Start the cloud runner under PM2 process manager:
+
+```bash
+cd ~/mail-merge-extension
+pm2 start cloud/ecosystem.config.js
+pm2 save
+pm2 startup
+```
+
+PM2 will keep Google Chrome and your extension running 24 hours a day, 7 days a week, and auto-restart if the VPS ever reboots.
+
+---
+
+## Step 4: Perform 1-Time Google Login via VNC
+
+Because this runs real Google Chrome with your extension loaded:
+
+1. Open your VNC Viewer on your Windows PC.
+2. Connect to:
+   ```text
+   100.96.100.52:5900
+   ```
+   *(No password required because it is secured inside your private Tailscale network).*
+3. You will see Chrome open to **`https://mail.google.com/`** on the virtual display.
+4. Log into your Gmail account(s) and complete your Google 2FA prompt on your phone.
+5. Once logged into Gmail, **you are completely done!**
+
+---
+
+## Step 5: Open the 24/7 Web Dashboard in Your Windows Browser
+
+You don't even need VNC to manage campaigns! Simply open your favorite browser on your Windows PC and navigate to:
+
+👉 **`http://100.96.100.52:3000`**
+
+### What you can do from the Web Dashboard:
+* **Queue New Campaigns in 5 Seconds**: Select a saved template from the **"⚡ 1-Click Saved Template"** dropdown, paste your Google Sheet URL, and click **🚀 Queue Campaign**.
+* **Monitor Live Status**: View system memory, Chrome status, and active campaigns in real time.
+* **Inspect Logs**: Real-time audit logs of scheduler triggers and dispatches.
+
+---
+
+## Step 6: Verify 24/7 Operation
+
+1. Queue a campaign via the Web Dashboard at `http://100.96.100.52:3000` (or schedule a draft directly in Gmail).
+2. **Turn off or put your Windows computer to sleep.**
+3. At the scheduled minute, the Oracle Cloud VPS executes the campaign automatically.
+4. When you check your phone or Gmail later, all personalized emails will be in your **Sent** folder!
+
+---
+
+## Helpful Commands on VPS
+
+| Action | Command |
+|---|---|
+| **Check Runner Status** | `pm2 status` |
+| **View Live Logs** | `pm2 logs mail-merge-cloud-runner` |
+| **Restart Runner** | `pm2 restart mail-merge-cloud-runner` |
+| **Stop Runner** | `pm2 stop mail-merge-cloud-runner` |
+| **Update Extension** | `cd ~/mail-merge-extension && git pull && pm2 restart mail-merge-cloud-runner` |
 
 
 ================================================================================
@@ -581,7 +1032,78 @@ console.log('✅ Generated 16x16, 48x48, and 128x128 PNG icons successfully.');
 
 
 ================================================================================
-FILE: src\background\service-worker.js
+FILE: manifest.json
+================================================================================
+
+{
+  "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0aTa+CHQe1at3JauHCbjL/7k6KDLwNUaAUYI1/WzE3XhrDR5fZsrTciRIV5IEpUF9A1acD6Oz15dOjw6FHjT5AxeW6lBMK14c+kfcb+l4rS1mOfaUNf0txWbzDGRXA3yh7eOhekbeXY5WEhEg9nWl2UcIRmlMV7HxxBWYZrfmAIIFML54ahvz0iFwVzdoxufj5EIYHkfto6TJtirfzn6DTvrNtLEgOhbUl+SspKr6oFOWsFiiSJUVI8QjiwtHYbfS2gHKJtcDq9YhP8S1jHhdHvw/P3EAzMINiLVQFc8t9IUNo+obIwe0EPUd53sOAgfQ3vEbAG5p9hCLVZNP/5UXQIDAQAB",
+  "name": "Gmail Native Mail Merge & Scheduler",
+  "version": "1.0.0",
+  "description": "Automate and schedule Gmail native Mail Merge campaigns with local database storage.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting",
+    "unlimitedStorage",
+    "notifications",
+    "power"
+  ],
+  "host_permissions": [
+    "https://mail.google.com/*",
+    "https://docs.google.com/*"
+  ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "options_ui": {
+    "page": "src/dashboard/dashboard.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://mail.google.com/*"
+      ],
+      "js": [
+        "src/db/idb-store.js",
+        "src/content/gmail-automator.js",
+        "src/content/content.js"
+      ],
+      "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/dashboard/dashboard.html",
+        "src/dashboard/*",
+        "icons/*"
+      ],
+      "matches": [
+        "https://mail.google.com/*"
+      ]
+    }
+  ]
+}
+
+
+================================================================================
+FILE: src\\background\\service-worker.js
 ================================================================================
 
 /**
@@ -679,6 +1201,7 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   await syncSystemWakeLock();
   await injectIntoExistingGmailTabs();
   await runHealthCheck();
+  await recoverOrphanedCampaigns();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -688,9 +1211,40 @@ chrome.runtime.onStartup.addListener(async () => {
   await syncSystemWakeLock();
   await injectIntoExistingGmailTabs();
   await runHealthCheck();
+  await recoverOrphanedCampaigns();
   // Check campaigns immediately on browser wakeup / startup
   await checkAndExecuteDueCampaigns();
 });
+
+/**
+ * Self-healing Crash Recovery: Re-queues any campaigns stuck in PROCESSING
+ * if Chrome was terminated, killed by PM2, or restarted mid-flight.
+ */
+async function recoverOrphanedCampaigns() {
+  try {
+    if (!self.IDBStore) return;
+    const all = await self.IDBStore.getCampaigns();
+    const orphaned = all.filter((c) => c.status === 'PROCESSING');
+    if (orphaned.length === 0) return;
+
+    console.warn(`[ServiceWorker] 🛡️ In-Flight Self-Healing: Found ${orphaned.length} orphaned PROCESSING campaign(s). Recovering...`);
+    for (const camp of orphaned) {
+      await self.IDBStore.updateCampaign(camp.id, {
+        status: 'QUEUED',
+        progressStep: 'RECOVERED_AFTER_RESTART',
+        progressMessage: 'Recovered after process/browser restart. Re-queued for automatic execution.'
+      });
+      await self.IDBStore.addLog(
+        camp.id,
+        'WARN',
+        'Process restart detected while campaign was mid-flight. Automatically recovered to QUEUED state with zero duplicate sends.'
+      );
+    }
+    await refreshBadge();
+  } catch (err) {
+    console.warn('[ServiceWorker] Orphan recovery warning:', err.message);
+  }
+}
 
 /**
  * Injects content scripts into all already-open Gmail tabs so the user does
@@ -773,6 +1327,7 @@ async function setupAllAlarms() {
 setupAllAlarms().catch(() => {});
 refreshBadge().catch(() => {});
 injectIntoExistingGmailTabs().catch(() => {});
+recoverOrphanedCampaigns().catch(() => {});
 
 // Alarm Listener
 chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -806,7 +1361,22 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         await setupAllAlarms();
       }
 
-      // 3. Refresh Badge to prove SW is alive
+      // 3. Self-healing check: Auto-recover any campaign stuck in PROCESSING for > 15 minutes
+      if (self.IDBStore) {
+        const all = await self.IDBStore.getCampaigns();
+        const stuck = all.filter((c) => c.status === 'PROCESSING' && c.startedAt && (now - new Date(c.startedAt).getTime() > 15 * 60 * 1000));
+        for (const camp of stuck) {
+          console.warn(`[Heartbeat] 🚨 Campaign ${camp.id} stuck in PROCESSING for > 15m. Recovering to QUEUED.`);
+          await self.IDBStore.updateCampaign(camp.id, {
+            status: 'QUEUED',
+            progressStep: 'HEARTBEAT_AUTO_RECOVERED',
+            progressMessage: 'Automatically recovered from stalled execution by Background Heartbeat.'
+          });
+          await self.IDBStore.addLog(camp.id, 'WARN', 'Campaign stalled in PROCESSING for > 15 minutes. Automatically recovered to QUEUED.');
+        }
+      }
+
+      // 4. Refresh Badge to prove SW is alive
       await refreshBadge();
       console.log('[Heartbeat] 💓 Internal heartbeat OK. System healthy. Active locks: ' + accountLocks.size);
     } catch (err) {
@@ -1284,9 +1854,7 @@ async function executeCampaign(campaign) {
     console.error(`[ServiceWorker] Failed to execute campaign ${campaign.id}:`, err);
 
     if (createdBackgroundTabId) {
-      setTimeout(() => {
-        chrome.tabs.remove(createdBackgroundTabId).catch(() => {});
-      }, 2000);
+      console.warn(`[ServiceWorker] Kept failed tab ${createdBackgroundTabId} open for user inspection.`);
     }
 
     const isQuota = err.message && err.message.includes('Daily Sending Limit');
@@ -1411,21 +1979,36 @@ async function pauseAccountCampaignsForQuota(accountEmail) {
         const cEmail = (c.accountEmail || '').toLowerCase().trim();
         if (!targetEmail || cEmail === targetEmail) {
           await self.IDBStore.updateCampaign(c.id, {
-            scheduledAt: twelveHoursLater
+            scheduledAt: twelveHoursLater,
+            isQuotaPaused: true,
+            quotaPausedUntil: twelveHoursLater
           });
           await self.IDBStore.addLog(
             c.id,
             'WARN',
-            `Campaign postponed by 12 hours due to Google Daily Sending Limit reached on account "${targetEmail || 'default'}".`
+            `Campaign postponed by 12 hours due to Google Daily Sending / Multi-Modal Limit reached on account "${targetEmail || 'default'}". Resumes at ${new Date(twelveHoursLater).toLocaleTimeString()}.`
           );
           count++;
         }
       }
     }
 
+    // Save quota lock in chrome.storage.local
+    try {
+      const storage = await chrome.storage.local.get(['accountQuotaLocks']);
+      const locks = storage.accountQuotaLocks || {};
+      locks[targetEmail || 'default'] = {
+        accountEmail: targetEmail || 'default',
+        lockedAt: new Date().toISOString(),
+        resumesAt: twelveHoursLater,
+        count
+      };
+      await chrome.storage.local.set({ accountQuotaLocks: locks });
+    } catch (_) {}
+
     notifyDesktop(
       '⚠️ Google Sending Limit Reached',
-      `Daily limit reached for ${targetEmail || 'your account'}. ${count} pending campaign(s) paused for 12 hours.`,
+      `Multi-modal limit reached for ${targetEmail || 'your account'}. ${count} pending campaign(s) paused for 12 hours.`,
       true
     );
   } catch (err) {
@@ -1462,9 +2045,22 @@ async function findGmailTab(campaign) {
   }
 
   const targetEmail = (campaign?.accountEmail || '').toLowerCase().trim();
+  const targetUserIndex = String(campaign?.userIndex !== undefined ? campaign.userIndex : '0');
   let matchedTab = null;
 
-  // 1. Build and update the Account Tab Registry dynamically
+  // 1. Fast path: Check previously registered sender tab in accountTabRegistry
+  if (targetEmail && accountTabRegistry.has(targetEmail)) {
+    const regTabId = accountTabRegistry.get(targetEmail);
+    const existing = tabs.find((t) => t.id === regTabId);
+    if (existing) matchedTab = existing;
+  }
+  if (!matchedTab && accountTabRegistry.has(targetUserIndex)) {
+    const regTabId = accountTabRegistry.get(targetUserIndex);
+    const existing = tabs.find((t) => t.id === regTabId);
+    if (existing) matchedTab = existing;
+  }
+
+  // 2. Build and update the Account Tab Registry dynamically from live tabs
   for (const t of tabs) {
     try {
       await chrome.tabs.update(t.id, { autoDiscardable: false }).catch(() => {});
@@ -1473,14 +2069,14 @@ async function findGmailTab(campaign) {
         const cleanEmail = info.email.toLowerCase().trim();
         accountTabRegistry.set(cleanEmail, t.id);
 
-        if (targetEmail && cleanEmail === targetEmail) {
+        if (!matchedTab && targetEmail && cleanEmail === targetEmail) {
           matchedTab = t;
         }
       }
     } catch (_) {}
   }
 
-  // 2. If no exact email match, match by target userIndex URL
+  // 3. If no exact email match, match by target userIndex URL
   if (!matchedTab && campaign) {
     let targetPath = null;
     if (campaign.accountUrl) {
@@ -1491,7 +2087,13 @@ async function findGmailTab(campaign) {
     }
 
     if (targetPath) {
-      matchedTab = tabs.find((t) => t.url && t.url.includes(targetPath));
+      matchedTab = tabs.find((t) => {
+        if (!t.url) return false;
+        if (t.url.includes(targetPath)) return true;
+        // Account 0 fallback: standard /mail/ URL without /u/
+        if ((targetPath === '/mail/u/0/' || targetUserIndex === '0') && !t.url.includes('/mail/u/')) return true;
+        return false;
+      });
     }
   }
 
@@ -1750,6 +2352,12 @@ async function handleRuntimeMessage(message, sender) {
     }
 
     case 'REGISTER_SCHEDULED_ALARM': {
+      if (sender?.tab?.id && message.campaign) {
+        const email = (message.campaign.accountEmail || '').toLowerCase().trim();
+        if (email) accountTabRegistry.set(email, sender.tab.id);
+        const acctKey = email || String(message.campaign.userIndex !== undefined ? message.campaign.userIndex : '0');
+        accountTabRegistry.set(acctKey, sender.tab.id);
+      }
       if (message.campaign && self.IDBStore) {
         try {
           await self.IDBStore.saveCampaign(message.campaign);
@@ -1814,6 +2422,63 @@ async function handleRuntimeMessage(message, sender) {
         return { success: true, campaigns: missed };
       }
       return { success: true, campaigns: [] };
+    }
+
+    case 'GET_ACCOUNT_QUOTA_LOCKS': {
+      try {
+        const storage = await chrome.storage.local.get(['accountQuotaLocks']);
+        const locks = storage.accountQuotaLocks || {};
+        const now = Date.now();
+        let changed = false;
+        for (const [key, lock] of Object.entries(locks)) {
+          if (new Date(lock.resumesAt).getTime() <= now) {
+            delete locks[key];
+            changed = true;
+          }
+        }
+        if (changed) {
+          await chrome.storage.local.set({ accountQuotaLocks: locks });
+        }
+        return { success: true, locks };
+      } catch (err) {
+        return { success: false, error: err.message, locks: {} };
+      }
+    }
+
+    case 'UNPAUSE_ACCOUNT_QUOTA': {
+      const targetEmail = (message.accountEmail || '').toLowerCase().trim();
+      try {
+        const storage = await chrome.storage.local.get(['accountQuotaLocks']);
+        const locks = storage.accountQuotaLocks || {};
+        delete locks[targetEmail || 'default'];
+        await chrome.storage.local.set({ accountQuotaLocks: locks });
+
+        if (self.IDBStore) {
+          const campaigns = await self.IDBStore.getCampaigns();
+          const nowIso = new Date().toISOString();
+          for (const c of campaigns) {
+            const cEmail = (c.accountEmail || '').toLowerCase().trim();
+            if (c.status === 'QUEUED' && c.isQuotaPaused && (!targetEmail || cEmail === targetEmail)) {
+              await self.IDBStore.updateCampaign(c.id, {
+                scheduledAt: nowIso,
+                isQuotaPaused: false,
+                quotaPausedUntil: null
+              });
+              await self.IDBStore.addLog(
+                c.id,
+                'INFO',
+                `Quota pause manually overridden by user. Campaign rescheduled to immediate dispatch.`
+              );
+            }
+          }
+        }
+
+        checkAndExecuteDueCampaigns().catch(() => {});
+        await refreshBadge();
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
     }
 
     case 'RESCHEDULE_CAMPAIGN': {
@@ -1915,7 +2580,8 @@ async function handleRuntimeMessage(message, sender) {
               scheduledAt: new Date(nextTime).toISOString(),
               autoRetryCount: retryCount,
               errorMessage: message.logMessage || message.error || 'Execution interrupted',
-              progressMessage: `Auto-recovering in ${Math.round(delayMs / 1000)}s (attempt ${retryCount}/${RETRY_CONFIG.maxRetries})...`
+              progressMessage: `Auto-recovering in ${Math.round(delayMs / 1000)}s (attempt ${retryCount}/${RETRY_CONFIG.maxRetries})...`,
+              domAutopsy: message.domAutopsy || undefined
             });
             await self.IDBStore.addLog(
               message.campaignId,
@@ -1929,7 +2595,8 @@ async function handleRuntimeMessage(message, sender) {
               errorMessage: message.logMessage || message.error || 'Execution failed',
               errorCategory: message.errorCategory || undefined,
               canAutoRetry: !isDraftMissing && !isQuota,
-              failedAt: new Date().toISOString()
+              failedAt: new Date().toISOString(),
+              domAutopsy: message.domAutopsy || undefined
             });
           }
         } else {
@@ -1947,13 +2614,17 @@ async function handleRuntimeMessage(message, sender) {
         }
         await refreshBadge();
 
-        // Clean Auto-Close: close the dedicated execution tab on completion or failure
+        // Clean Auto-Close: close dedicated execution tab on completion; preserve on failure for debugging
         const activeTabInfo = ACTIVE_CAMPAIGN_TABS.get(message.campaignId);
-        if (activeTabInfo && (message.status === 'COMPLETED' || message.status === 'COMPLETED (DRY RUN)' || message.status === 'FAILED')) {
+        if (activeTabInfo) {
           if (activeTabInfo.timeoutId) clearTimeout(activeTabInfo.timeoutId);
-          setTimeout(() => {
-            chrome.tabs.remove(activeTabInfo.tabId).catch(() => {});
-          }, 3000);
+          if (message.status === 'COMPLETED' || message.status === 'COMPLETED (DRY RUN)') {
+            setTimeout(() => {
+              chrome.tabs.remove(activeTabInfo.tabId).catch(() => {});
+            }, 3000);
+          } else {
+            console.warn(`[ServiceWorker] Preserved failed tab ${activeTabInfo.tabId} for user inspection.`);
+          }
           ACTIVE_CAMPAIGN_TABS.delete(message.campaignId);
         }
 
@@ -1970,11 +2641,23 @@ async function handleRuntimeMessage(message, sender) {
             `Campaign sent${message.sentCount ? ' to ' + message.sentCount + ' recipients' : ''}.`
           );
         } else if (message.status === 'FAILED' && !willAutoRetry) {
-          if (message.isQuotaLimit || (message.logMessage && message.logMessage.includes('Daily Sending Limit'))) {
+          const isQuota = message.isQuotaLimit ||
+            message.errorCategory === 'QUOTA_EXCEEDED' ||
+            (message.logMessage && (
+              message.logMessage.includes('Daily Sending Limit') ||
+              message.logMessage.includes('multi-modal') ||
+              message.logMessage.includes('multi modal') ||
+              message.logMessage.includes('multimodal') ||
+              message.logMessage.includes('multi-merge') ||
+              message.logMessage.includes('quota') ||
+              message.logMessage.includes('limit exceeded')
+            ));
+
+          if (isQuota) {
             pauseAccountCampaignsForQuota(message.accountEmail);
           }
           notifyDesktop(
-            '❌ Mail Merge Error',
+            isQuota ? '⚠️ Google Sending Limit Reached' : '❌ Mail Merge Error',
             `Campaign failed: ${message.logMessage || 'Execution failed'}`,
             true
           );
@@ -2031,13 +2714,15 @@ async function handleRuntimeMessage(message, sender) {
         return { success: false, error: 'Database not ready' };
       }
       let removedCount = 0;
-      if (typeof self.IDBStore.archiveFailedCampaigns === 'function') {
-        removedCount = await self.IDBStore.archiveFailedCampaigns();
+      if (typeof self.IDBStore.deleteFailedCampaigns === 'function') {
+        removedCount = await self.IDBStore.deleteFailedCampaigns();
       } else {
         const campaigns = await self.IDBStore.getCampaigns();
         const failed = campaigns.filter((c) => c.status === 'FAILED');
         for (const camp of failed) {
           try {
+            await self.IDBStore.deleteForensicsByCampaign(camp.id).catch(() => {});
+            await self.IDBStore.deleteLogsByCampaign(camp.id).catch(() => {});
             await self.IDBStore.deleteCampaign(camp.id);
             await chrome.alarms.clear(`CAMPAIGN_${camp.id}`).catch(() => {});
             removedCount++;
@@ -2047,7 +2732,7 @@ async function handleRuntimeMessage(message, sender) {
         }
       }
 
-      await self.IDBStore.addLog(null, 'INFO', `Safely archived and removed ${removedCount} failed campaign(s) from active database.`);
+      await self.IDBStore.addLog(null, 'INFO', `Permanently purged ${removedCount} failed campaign(s), screenshots, and logs from database.`);
       await refreshBadge();
       await syncSystemWakeLock();
       return { success: true, count: removedCount };
@@ -2346,7 +3031,7 @@ async function handleRuntimeMessage(message, sender) {
 
 
 ================================================================================
-FILE: src\content\content.js
+FILE: src\\content\\content.js
 ================================================================================
 
 /**
@@ -2493,10 +3178,8 @@ FILE: src\content\content.js
    */
   function checkAndDismissSpamDisclaimer() {
     try {
-      if (root.GmailAutomator && typeof root.GmailAutomator.dismissGoogleInterferingModalsIfNeeded === 'function') {
-        root.GmailAutomator.dismissGoogleInterferingModalsIfNeeded(document).catch(() => {});
-        return;
-      }
+      // ONLY check for Google spam policy disclaimer ("Help fight junk emails").
+      // NEVER trigger full automator modal sweeps from general DOM mutation observers!
       const dialogs = Array.from(document.querySelectorAll('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, [aria-modal="true"], dialog, div[class*="modal"]'));
 
       // Fallback search if not captured by standard dialog selectors
@@ -3087,6 +3770,8 @@ FILE: src\content\content.js
         '</div>' +
       '</div>';
 
+    overlay.id = 'mmPopoverOverlay';
+    overlay.setAttribute('data-mm-schedule-popover', 'true');
     overlay.setAttribute('role', 'dialog');
     overlay.setAttribute('aria-modal', 'true');
     overlay.setAttribute('aria-label', 'Schedule Mail Merge');
@@ -3285,10 +3970,11 @@ FILE: src\content\content.js
         return;
       }
 
-      // Safety Guard 1: Enforce Non-Empty Subject
+      // Safety Guard 1: Enforce Non-Empty Subject (Reject placeholders like "New Message" or "Compose: New Message")
       const rawSubject = (getSubject(composeDialog) || '').trim();
-      const currentSubject = ((rawSubject && !rawSubject.startsWith('Mail Merge (')) ? rawSubject : (selectedTemplate?.subject || rawSubject || subject || '')).trim();
-      if (!currentSubject || currentSubject === '(No Subject)' || currentSubject.startsWith('Mail Merge (')) {
+      const isPlaceholder = !rawSubject || rawSubject === '(No Subject)' || /^(compose:?\s*)?new message$/i.test(rawSubject) || rawSubject.startsWith('Mail Merge (');
+      const currentSubject = (!isPlaceholder ? rawSubject : (selectedTemplate?.subject || '')).trim();
+      if (!currentSubject || /^(compose:?\s*)?new message$/i.test(currentSubject) || currentSubject.startsWith('Mail Merge (')) {
         alertBox.textContent = '⚠️ Please enter a clear email subject in your draft before scheduling.';
         alertBox.style.display = 'block';
         alertBox.style.background = '#fef3c7';
@@ -3500,8 +4186,8 @@ FILE: src\content\content.js
     if (composeDialog) {
       const subjectInput = composeDialog.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
       if (subjectInput && subjectInput.value.trim()) return subjectInput.value.trim();
-      const headerTitle = composeDialog.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp, span.aYF')?.textContent || '';
-      if (headerTitle.trim()) return headerTitle.trim();
+      const headerTitle = (composeDialog.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp, span.aYF')?.textContent || '').trim();
+      if (headerTitle && !/^(compose:?\s*)?new message$/i.test(headerTitle)) return headerTitle;
     }
     const globalSubject = document.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
     if (globalSubject && globalSubject.value.trim()) return globalSubject.value.trim();
@@ -3824,7 +4510,7 @@ FILE: src\content\content.js
 
 
 ================================================================================
-FILE: src\content\gmail-automator.js
+FILE: src\\content\\gmail-automator.js
 ================================================================================
 
 /**
@@ -4142,6 +4828,233 @@ FILE: src\content\gmail-automator.js
   }
 
   /**
+   * Captures a lightweight, searchable snapshot of the DOM state at the exact moment of failure.
+   * Complements visual screenshots with exact text, button labels, URL hash, and DOM snippets.
+   * Overhead is negligible (~1.5 - 2.5 KB JSON), causing zero UI or DB lag.
+   * @param {string} [currentStep]
+   * @returns {Object}
+   */
+  function captureFailureContext(currentStep = 'UNKNOWN') {
+    try {
+      // 1. Capture all open dialogs (Compose, Modals, Popups)
+      const dialogElements = Array.from(
+        document.querySelectorAll('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, div.M9, div.AD')
+      ).filter((d) => d.offsetWidth > 0 && d.offsetHeight > 0);
+
+      const dialogs = dialogElements.map((d) => {
+        // Extract all clickable buttons inside the dialog
+        const buttons = Array.from(d.querySelectorAll('button, div[role="button"], span[role="button"], a[role="button"]'))
+          .map((b) => (b.textContent || b.getAttribute('aria-label') || '').trim().replace(/\s+/g, ' '))
+          .filter((t) => t.length > 0 && t.length < 50);
+
+        // Deduplicate buttons
+        const uniqueButtons = Array.from(new Set(buttons));
+
+        // Truncate HTML snippet (max 1500 chars to prevent any DB bloat)
+        const htmlSnippet = d.outerHTML ? d.outerHTML.substring(0, 1500) : '';
+
+        return {
+          role: d.getAttribute('role') || 'unknown',
+          ariaLabel: d.getAttribute('aria-label') || '',
+          className: (d.className || '').toString().slice(0, 80),
+          visibleButtons: uniqueButtons,
+          htmlSnippet: htmlSnippet
+        };
+      });
+
+      // 2. Visible notification banners / alerts (e.g. daily limit, temporary error)
+      const alerts = Array.from(
+        document.querySelectorAll('.vh, [role="alert"], div[aria-live="assertive"]')
+      )
+        .filter((el) => el.offsetWidth > 0 && el.offsetHeight > 0)
+        .map((el) => (el.textContent || '').trim().replace(/\s+/g, ' '))
+        .filter((t) => t.length > 0 && t.length < 160);
+
+      // 3. Capture active focused element
+      const ae = document.activeElement;
+      let activeElDesc = 'none';
+      if (ae && ae !== document.body) {
+        const tag = (ae.tagName || '').toLowerCase();
+        const cls = ae.className && typeof ae.className === 'string'
+          ? '.' + ae.className.trim().split(/\s+/).slice(0, 2).join('.')
+          : '';
+        const aria = ae.getAttribute('aria-label') ? `[aria-label="${ae.getAttribute('aria-label')}"]` : '';
+        activeElDesc = `${tag}${cls}${aria}`;
+      }
+
+      return {
+        timestamp: new Date().toISOString(),
+        url: window.location.href,
+        hash: window.location.hash || '',
+        activeElement: activeElDesc,
+        lastKnownStep: currentStep || (typeof window !== 'undefined' && window.__MM_LAST_STEP__) || 'UNKNOWN',
+        visibleDialogs: dialogs,
+        visibleAlerts: Array.from(new Set(alerts))
+      };
+    } catch (err) {
+      return {
+        error: 'Failed to capture DOM autopsy',
+        message: err.message,
+        timestamp: new Date().toISOString(),
+        url: window.location.href,
+        hash: window.location.hash || ''
+      };
+    }
+  }
+
+  /**
+   * Detects Google multi-modal limit, daily sending limit, or quota error alerts
+   * across visible banners, toasts, and snackbars.
+   * Recognizes "multi-modal limit exceeded", red error snackbars, and all variations.
+   * @returns {{ detected: boolean, element: Element, message: string } | null}
+   */
+  function detectGoogleQuotaOrLimitAlert() {
+    try {
+      const candidates = Array.from(
+        document.querySelectorAll(
+          '.vh, [role="alert"], div[aria-live="assertive"], .bBe, .a8, .b8.UC, .aYF, div.Kj-JD, div[role="alertdialog"], span.bAf, span.bAg, div[class*="snackbar"], div[class*="toast"]'
+        )
+      );
+
+      for (const el of candidates) {
+        if (!el || !el.isConnected) continue;
+
+        // Verify element has physical presence / visibility
+        const rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+
+        const text = (el.textContent || '').toLowerCase().trim();
+        if (!text || text.length < 5) continue;
+
+        // 1. Textual patterns for Google sending limits, multi-modal blocks, and quota alerts
+        const isQuotaText =
+          text.includes('multi-modal limit') ||
+          text.includes('multi modal limit') ||
+          text.includes('multimodal limit') ||
+          text.includes('multi-merge limit') ||
+          text.includes('multi merge limit') ||
+          text.includes('limit exceeded') ||
+          (text.includes('exceeded') && text.includes('limit')) ||
+          text.includes('reached a limit') ||
+          text.includes('reached your limit') ||
+          text.includes('sending limit') ||
+          text.includes('daily sending limit') ||
+          text.includes('exceeded your sending limit') ||
+          text.includes('exceeds your daily sending limit') ||
+          text.includes('blocked sending') ||
+          (text.includes('quota') && (text.includes('exceeded') || text.includes('limit'))) ||
+          ((text.includes('unable to send') || text.includes('could not be sent')) && (text.includes('limit') || text.includes('try again later')));
+
+        // 2. Red toast / snackbar visual color check (Google error red #d93025 / rgb(217, 48, 37))
+        let isRedAlert = false;
+        try {
+          const style = window.getComputedStyle(el);
+          const bg = style.backgroundColor || '';
+          isRedAlert =
+            bg.includes('217, 48, 37') ||
+            bg.includes('217, 48, 38') ||
+            bg.includes('234, 67, 53') ||
+            bg.includes('220, 38, 38');
+        } catch (_) {}
+
+        if (isQuotaText || (isRedAlert && (text.includes('limit') || text.includes('error') || text.includes('failed')))) {
+          return {
+            detected: true,
+            element: el,
+            message: (el.textContent || '').trim()
+          };
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  let activeRetroactiveGuardInterval = null;
+
+  /**
+   * Spawns a 15-second retroactive safety guard.
+   * If Google displays a late asynchronous rejection red box ("multi-modal limit exceeded"),
+   * it intercepts it, retroactively flips the campaign status from COMPLETED -> FAILED (QUOTA_EXCEEDED),
+   * captures a screenshot & DOM autopsy, and triggers the 12-hour account pause.
+   */
+  function startRetroactiveQuotaGuard(campaignId, campaign, recipientCount) {
+    if (!campaignId) return;
+    if (activeRetroactiveGuardInterval) {
+      clearInterval(activeRetroactiveGuardInterval);
+    }
+
+    const guardStart = Date.now();
+    const GUARD_DURATION_MS = 15000; // 15 seconds
+
+    console.log(`[GmailAutomator] 🛡️ 15s Retroactive Quota Guard armed for campaign ${campaignId}...`);
+
+    activeRetroactiveGuardInterval = setInterval(async () => {
+      if (Date.now() - guardStart > GUARD_DURATION_MS) {
+        clearInterval(activeRetroactiveGuardInterval);
+        activeRetroactiveGuardInterval = null;
+        return;
+      }
+
+      const alert = detectGoogleQuotaOrLimitAlert();
+      if (alert) {
+        clearInterval(activeRetroactiveGuardInterval);
+        activeRetroactiveGuardInterval = null;
+
+        console.error(`[GmailAutomator] 🚨 Late Google Quota Alert Intercepted (${Math.round((Date.now() - guardStart) / 1000)}s post-send):`, alert.message);
+
+        // 1. Capture visual screenshot of the red box
+        await captureForensicSnapshot(
+          'LATE_QUOTA_REJECTION',
+          alert.element,
+          `Late Google Server Rejection: ${alert.message}`,
+          campaign
+        );
+
+        // 2. Capture DOM Autopsy
+        const domAutopsy = captureFailureContext('LATE_QUOTA_REJECTION');
+
+        // 3. Retroactively update campaign in IDB
+        if (root.IDBStore) {
+          await root.IDBStore.updateCampaign(campaignId, {
+            status: 'FAILED',
+            errorCategory: 'QUOTA_EXCEEDED',
+            errorMessage: `Late Google Server Rejection: "${alert.message.slice(0, 160)}"`,
+            canAutoRetry: false,
+            failedAt: new Date().toISOString(),
+            domAutopsy: domAutopsy
+          }).catch(() => {});
+
+          await root.IDBStore.addLog(
+            campaignId,
+            'ERROR',
+            `Campaign retroactively marked FAILED: Google returned asynchronous error "${alert.message}". Account sending paused for 12 hours.`
+          ).catch(() => {});
+        }
+
+        // 4. Update floating in-tab Execution HUD
+        try {
+          ExecutionHUD.error(`Quota Exceeded: ${alert.message.slice(0, 60)}`, 'POST_SEND');
+        } catch (_) {}
+
+        // 5. Notify service worker to pause account campaigns for 12 hours
+        if (chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({
+            action: 'CAMPAIGN_STATUS_UPDATE',
+            campaignId,
+            status: 'FAILED',
+            errorCategory: 'QUOTA_EXCEEDED',
+            isQuotaLimit: true,
+            logMessage: `Late Google multi-modal limit exceeded: ${alert.message}`,
+            canAutoRetry: false,
+            accountEmail: campaign?.accountEmail || campaign?.senderEmail,
+            domAutopsy: domAutopsy
+          }).catch(() => {});
+        }
+      }
+    }, 1000);
+  }
+
+  /**
    * Automatically detects and dismisses interfering Google dialogs:
    * 1. Bulk sender / spam policy warning ("Help fight junk mail") -> checks "Don't show again" + "Got it"
    * 2. "Missing merge tags" dialog -> clicks "Send anyway" so 24/7 campaigns never stall
@@ -4151,7 +5064,89 @@ FILE: src\content\gmail-automator.js
    * @param {Object} [campaign]
    * @returns {Promise<boolean>} True if an interfering dialog was found and dismissed
    */
+  /**
+   * Observes and classifies a dialog element before any action is taken.
+   * Returns: 'USER_SCHEDULE_POPOVER' | 'COMPOSE_DIALOG' | 'READY_TO_SEND_MODAL' |
+   *          'SPAM_DISCLAIMER' | 'MISSING_MERGE_TAGS' | 'COLUMN_SELECTION' |
+   *          'PROMO_POPUP' | 'GENERIC_ALERTDIALOG' | 'UNKNOWN'
+   */
+  function classifyDialog(dialog) {
+    if (!dialog || !isElementVisible(dialog)) return 'NONE';
+
+    // 1. User Campaign Scheduling Popover -> STRICTLY IGNORE (User UI!)
+    if (
+      dialog.id === 'mmPopoverOverlay' ||
+      dialog.id === 'mmPopover' ||
+      dialog.id === 'mm-schedule-popover-card' ||
+      dialog.getAttribute('data-mm-schedule-popover') === 'true' ||
+      dialog.querySelector('#mmDateTimeInput, #mmPopoverConfirm, [data-mm-schedule-popover]') ||
+      (dialog.className && typeof dialog.className === 'string' && dialog.className.includes('mm-schedule'))
+    ) {
+      return 'USER_SCHEDULE_POPOVER';
+    }
+
+    // 2. Compose Dialogs -> STRICTLY IGNORE
+    const isCompose = dialog.querySelector('input[name="subjectbox"]') || dialog.querySelector('[aria-label="Message Body"]');
+    if (isCompose) return 'COMPOSE_DIALOG';
+
+    const text = (dialog.textContent || '').toLowerCase();
+
+    // 3. Target "Ready to send" modal -> NEVER DISMISS
+    if (text.includes('ready to send') || text.includes('separate emails') || text.includes('send all')) {
+      return 'READY_TO_SEND_MODAL';
+    }
+
+    // 4. Google Spam Disclaimer ("Help fight junk emails")
+    if (
+      (text.includes('spam') || text.includes('junk') || text.includes('bulk email') || text.includes('bulk sender') || text.includes('best practices') || text.includes('fight junk')) &&
+      (text.includes("don't show") || text.includes("dont show") || text.includes("do not show") || text.includes("got it") || text.includes("learn more"))
+    ) {
+      return 'SPAM_DISCLAIMER';
+    }
+
+    // 5. Missing merge tags dialog
+    if (
+      (text.includes('merge tags') || text.includes('merge tag') || text.includes("couldn't be found in your sheet") || text.includes("cannot be found in your sheet")) &&
+      (text.includes('send anyway') || text.includes('edit draft'))
+    ) {
+      return 'MISSING_MERGE_TAGS';
+    }
+
+    // 6. Recipient column selection dialog
+    if (
+      (text.includes('which column') || text.includes("recipients' email") || text.includes("recipient email")) &&
+      (text.includes('done') || text.includes('select') || text.includes('insert'))
+    ) {
+      return 'COLUMN_SELECTION';
+    }
+
+    // 7. Google Promotional / Onboarding popups
+    if (
+      (text.includes("what's new") || text.includes("meet the new") || text.includes("turn on notifications") || text.includes("smart compose") || text.includes("gemini in gmail") || text.includes("try the new") || text.includes("workspace tip")) &&
+      !text.includes("can't open the sheet")
+    ) {
+      return 'PROMO_POPUP';
+    }
+
+    // 8. Google Alertdialog (role="alertdialog" or .Kj-JD)
+    const isAlert = dialog.getAttribute('role') === 'alertdialog' || dialog.classList.contains('Kj-JD');
+    if (isAlert) {
+      return 'GENERIC_ALERTDIALOG';
+    }
+
+    return 'UNKNOWN';
+  }
+
+  /**
+   * Observe-First modal handler: observes dialog type, then dispatches through switch.
+   * Only executes automated dismissals if an automated campaign is actively executing.
+   * @param {Element|Document} root
+   * @param {Object|null} campaign
+   * @returns {Promise<boolean>} True if an interfering dialog was found and dismissed
+   */
   async function dismissGoogleInterferingModalsIfNeeded(root = document, campaign = null) {
+    const isAutomatedRun = !!(campaign || currentActiveCampaign);
+
     try {
       const dialogs = Array.from(root.querySelectorAll('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, [aria-modal="true"], dialog, div[class*="modal"]'));
 
@@ -4168,180 +5163,166 @@ FILE: src\content\gmail-automator.js
         }
       }
 
+      let anyDismissed = false;
       for (const dialog of dialogs) {
         if (!isElementVisible(dialog)) continue;
-        const text = (dialog.textContent || '').toLowerCase();
+        const type = classifyDialog(dialog);
 
-        // Guard: Do NOT touch compose dialogs or the native "Ready to send" modal!
-        const isCompose = dialog.querySelector('input[name="subjectbox"]') || dialog.querySelector('[aria-label="Message Body"]');
-        if (isCompose) continue;
-        if (text.includes('ready to send') || text.includes('separate emails') || text.includes('send all')) continue;
+        switch (type) {
+          case 'USER_SCHEDULE_POPOVER':
+          case 'COMPOSE_DIALOG':
+          case 'READY_TO_SEND_MODAL':
+          case 'UNKNOWN':
+          case 'NONE':
+            // Strictly ignore
+            break;
 
-        // 1. Check for spam / junk / bulk email disclaimer patterns ("Help fight junk emails")
-        const isSpamNotice = (
-          text.includes('spam') ||
-          text.includes('junk') ||
-          text.includes('bulk email') ||
-          text.includes('bulk sender') ||
-          text.includes('best practices') ||
-          text.includes('fight junk')
-        ) && (
-          text.includes("don't show") ||
-          text.includes("dont show") ||
-          text.includes("do not show") ||
-          text.includes("got it") ||
-          text.includes("learn more")
-        );
-
-        if (isSpamNotice) {
-          console.log('[GmailAutomator] 🛡️ Detected Google spam/junk policy disclaimer ("Help fight junk emails"). Auto-handling...');
-          await captureForensicSnapshot('POPUP_INTERCEPTED', dialog, 'Detected Google spam policy disclaimer ("Help fight junk emails")', campaign);
-          const checkbox = dialog.querySelector('input[type="checkbox"], [role="checkbox"], div[role="checkbox"], span[role="checkbox"]')
-            || Array.from(dialog.querySelectorAll('label, div, span')).find((el) => /don't show|dont show/i.test(el.textContent || ''))?.querySelector('input, [role="checkbox"]');
-          if (checkbox) {
-            const isChecked = checkbox.checked || checkbox.getAttribute('aria-checked') === 'true';
-            if (!isChecked) {
-              await humanClick(checkbox);
-              await sleep(150);
+          case 'SPAM_DISCLAIMER': {
+            console.log('[GmailAutomator] 🛡️ Handling Google spam/junk policy disclaimer ("Help fight junk emails")...');
+            await captureForensicSnapshot('POPUP_INTERCEPTED', dialog, 'Detected Google spam policy disclaimer ("Help fight junk emails")', campaign);
+            const checkbox = dialog.querySelector('input[type="checkbox"], [role="checkbox"], div[role="checkbox"], span[role="checkbox"]')
+              || Array.from(dialog.querySelectorAll('label, div, span')).find((el) => /don't show|dont show/i.test(el.textContent || ''))?.querySelector('input, [role="checkbox"]');
+            if (checkbox) {
+              const isChecked = checkbox.checked || checkbox.getAttribute('aria-checked') === 'true';
+              if (!isChecked) {
+                await humanClick(checkbox);
+                await sleep(150);
+              }
             }
-          }
-          const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="Got it" i]'));
-          let confirmBtn = buttons.find((b) => {
-            const btnText = (b.textContent || '').trim().toLowerCase();
-            return /^(got it|continue|ok|i understand|proceed|acknowledge|agree)$/i.test(btnText);
-          }) || buttons.find((b) => /got it|continue|ok/i.test((b.textContent || '').trim()));
-
-          if (!confirmBtn) {
-            confirmBtn = Array.from(dialog.querySelectorAll('*')).find((el) => {
-              const txt = (el.textContent || '').trim().toLowerCase();
-              return (txt === 'got it' || txt === 'ok') && isElementVisible(el);
-            });
-          }
-
-          if (confirmBtn) {
-            await humanClick(confirmBtn);
-            // Native fallback & keyboard trigger for Google Closure / Material buttons
-            try {
-              if (typeof confirmBtn.click === 'function') confirmBtn.click();
-              confirmBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-              confirmBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-            } catch (_) {}
-            await sleep(500);
-            console.log('[GmailAutomator] ✅ Google spam/junk disclaimer ("Help fight junk emails") automatically dismissed.');
-            return true;
-          }
-        }
-
-        // 2. Check for "Missing merge tags" dialog ("Some merge tags couldn't be found in your sheet... Send anyway or edit draft?")
-        const isMissingTagsDialog = (
-          text.includes('merge tags') ||
-          text.includes('merge tag') ||
-          text.includes("couldn't be found in your sheet") ||
-          text.includes("cannot be found in your sheet")
-        ) && (
-          text.includes('send anyway') ||
-          text.includes('edit draft')
-        );
-
-        if (isMissingTagsDialog) {
-          console.warn('[GmailAutomator] ⚠️ Detected Google "Missing merge tags" modal. Auto-clicking "Send anyway" per unattended policy...');
-          await captureForensicSnapshot('MISSING_MERGE_TAGS', dialog, 'Google warned of missing merge tags in draft body', campaign);
-          const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="Send anyway" i]'));
-          let sendAnywayBtn = buttons.find((b) => /send anyway/i.test((b.textContent || '').trim()));
-          if (!sendAnywayBtn) {
-            sendAnywayBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /send anyway/i.test((el.textContent || '').trim()));
-          }
-          if (sendAnywayBtn) {
-            await humanClick(sendAnywayBtn);
-            try {
-              if (typeof sendAnywayBtn.click === 'function') sendAnywayBtn.click();
-              sendAnywayBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-              sendAnywayBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-            } catch (_) {}
-            await sleep(500);
-            if (campaign?.id && root.IDBStore) {
-              await root.IDBStore.addLog(campaign.id, 'WARN', 'Google warned of missing merge tags in draft body. Auto-clicked "Send anyway" per unattended 24/7 policy.').catch(() => {});
+            const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="Got it" i]'));
+            let confirmBtn = buttons.find((b) => /^(got it|continue|ok|i understand|proceed|acknowledge|agree)$/i.test((b.textContent || '').trim()))
+              || buttons.find((b) => /got it|continue|ok/i.test((b.textContent || '').trim()));
+            if (!confirmBtn) {
+              confirmBtn = Array.from(dialog.querySelectorAll('*')).find((el) => {
+                const txt = (el.textContent || '').trim().toLowerCase();
+                return (txt === 'got it' || txt === 'ok') && isElementVisible(el);
+              });
             }
-            console.log('[GmailAutomator] ✅ "Send anyway" clicked on missing merge tags dialog.');
-            return true;
-          }
-        }
-
-        // 3. Check for "Which column has your recipients' email addresses?" dialog
-        const isColumnSelectDialog = (
-          text.includes('which column') ||
-          text.includes("recipients' email") ||
-          text.includes("recipient email")
-        ) && (
-          text.includes('done') ||
-          text.includes('select') ||
-          text.includes('insert')
-        );
-
-        if (isColumnSelectDialog) {
-          console.log('[GmailAutomator] 🔍 Detected Google column selection prompt. Auto-selecting email column...');
-          await captureForensicSnapshot('COLUMN_SELECTION_PROMPT', dialog, 'Google prompted for recipient email column selection', campaign);
-          const selectEl = dialog.querySelector('select');
-          if (selectEl) {
-            const targetCol = (campaign?.recipientColumn || 'email').toLowerCase().trim();
-            const option = Array.from(selectEl.options).find((o) => (o.text || '').toLowerCase().includes(targetCol))
-              || Array.from(selectEl.options).find((o) => /email|mail|address|contact/i.test(o.text || ''));
-            if (option) {
-              selectEl.value = option.value;
-              selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+            if (confirmBtn) {
+              await humanClick(confirmBtn);
+              try {
+                if (typeof confirmBtn.click === 'function') confirmBtn.click();
+                confirmBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                confirmBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              } catch (_) {}
+              await sleep(400);
+              console.log('[GmailAutomator] ✅ Google spam/junk disclaimer ("Help fight junk emails") automatically dismissed.');
+              return true;
             }
+            break;
           }
-          const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button'));
-          let doneBtn = buttons.find((b) => /^(done|insert|select|ok)$/i.test((b.textContent || '').trim()));
-          if (!doneBtn) {
-            doneBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(done|insert|select|ok)$/i.test((el.textContent || '').trim()));
-          }
-          if (doneBtn) {
-            await humanClick(doneBtn);
-            try {
-              if (typeof doneBtn.click === 'function') doneBtn.click();
-              doneBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-              doneBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-            } catch (_) {}
-            await sleep(500);
-            console.log('[GmailAutomator] ✅ Recipient column auto-confirmed.');
-            return true;
-          }
-        }
 
-        // 4. Check for generic Google promotional / onboarding / feature modals ("What's new in Gmail", "Smart Compose tips", "Turn on notifications")
-        const isPromoModal = (
-          text.includes("what's new") ||
-          text.includes("meet the new") ||
-          text.includes("turn on notifications") ||
-          text.includes("smart compose") ||
-          text.includes("gemini in gmail") ||
-          text.includes("try the new") ||
-          text.includes("workspace tip")
-        ) && !text.includes("can't open the sheet");
-
-        if (isPromoModal) {
-          console.log('[GmailAutomator] 🛡️ Dismissing promotional / onboarding popup...');
-          await captureForensicSnapshot('PROMOTIONAL_POPUP', dialog, 'Google promotional modal detected', campaign);
-          const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="close" i], [aria-label*="dismiss" i]'));
-          let dismissBtn = buttons.find((b) => /^(got it|not now|dismiss|done|close|no thanks)$/i.test((b.textContent || '').trim()))
-            || dialog.querySelector('[aria-label="Close" i], [aria-label="Dismiss" i]');
-          if (!dismissBtn) {
-            dismissBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(got it|not now|dismiss|done|close|no thanks)$/i.test((el.textContent || '').trim()));
+          case 'MISSING_MERGE_TAGS': {
+            if (!isAutomatedRun) break;
+            console.warn('[GmailAutomator] ⚠️ Detected Google "Missing merge tags" modal. Auto-clicking "Send anyway"...');
+            await captureForensicSnapshot('MISSING_MERGE_TAGS', dialog, 'Google warned of missing merge tags in draft body', campaign);
+            const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="Send anyway" i]'));
+            let sendAnywayBtn = buttons.find((b) => /send anyway/i.test((b.textContent || '').trim()));
+            if (!sendAnywayBtn) {
+              sendAnywayBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /send anyway/i.test((el.textContent || '').trim()));
+            }
+            if (sendAnywayBtn) {
+              await humanClick(sendAnywayBtn);
+              try {
+                if (typeof sendAnywayBtn.click === 'function') sendAnywayBtn.click();
+                sendAnywayBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                sendAnywayBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              } catch (_) {}
+              await sleep(400);
+              if (campaign?.id && root.IDBStore) {
+                await root.IDBStore.addLog(campaign.id, 'WARN', 'Google warned of missing merge tags in draft body. Auto-clicked "Send anyway" per unattended 24/7 policy.').catch(() => {});
+              }
+              return true;
+            }
+            break;
           }
-          if (dismissBtn) {
-            await humanClick(dismissBtn);
-            try {
-              if (typeof dismissBtn.click === 'function') dismissBtn.click();
-              dismissBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-              dismissBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-            } catch (_) {}
-            await sleep(400);
-            console.log('[GmailAutomator] ✅ Promotional modal dismissed.');
-            return true;
+
+          case 'COLUMN_SELECTION': {
+            if (!isAutomatedRun) break;
+            console.log('[GmailAutomator] 🔍 Detected Google column selection prompt. Auto-selecting email column...');
+            await captureForensicSnapshot('COLUMN_SELECTION_PROMPT', dialog, 'Google prompted for recipient email column selection', campaign);
+            const selectEl = dialog.querySelector('select');
+            if (selectEl) {
+              const targetCol = (campaign?.recipientColumn || 'email').toLowerCase().trim();
+              const option = Array.from(selectEl.options).find((o) => (o.text || '').toLowerCase().includes(targetCol))
+                || Array.from(selectEl.options).find((o) => /email|mail|address|contact/i.test(o.text || ''));
+              if (option) {
+                selectEl.value = option.value;
+                selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            }
+            const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button'));
+            let doneBtn = buttons.find((b) => /^(done|insert|select|ok)$/i.test((b.textContent || '').trim()));
+            if (!doneBtn) {
+              doneBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(done|insert|select|ok)$/i.test((el.textContent || '').trim()));
+            }
+            if (doneBtn) {
+              await humanClick(doneBtn);
+              try {
+                if (typeof doneBtn.click === 'function') doneBtn.click();
+                doneBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                doneBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              } catch (_) {}
+              await sleep(400);
+              return true;
+            }
+            break;
+          }
+
+          case 'PROMO_POPUP': {
+            console.log('[GmailAutomator] 🛡️ Dismissing promotional / onboarding popup...');
+            await captureForensicSnapshot('PROMOTIONAL_POPUP', dialog, 'Google promotional modal detected', campaign);
+            const buttons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button, [aria-label*="close" i], [aria-label*="dismiss" i]'));
+            let dismissBtn = buttons.find((b) => /^(got it|not now|dismiss|done|close|no thanks)$/i.test((b.textContent || '').trim()))
+              || dialog.querySelector('[aria-label="Close" i], [aria-label="Dismiss" i]');
+            if (!dismissBtn) {
+              dismissBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(got it|not now|dismiss|done|close|no thanks)$/i.test((el.textContent || '').trim()));
+            }
+            if (dismissBtn) {
+              await humanClick(dismissBtn);
+              try {
+                if (typeof dismissBtn.click === 'function') dismissBtn.click();
+                dismissBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                dismissBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              } catch (_) {}
+              await sleep(400);
+              return true;
+            }
+            break;
+          }
+
+          case 'GENERIC_ALERTDIALOG': {
+            // ONLY auto-dismiss if an automated campaign is actively running!
+            // Never dismiss when a human user is manually interacting with Gmail!
+            if (!isAutomatedRun) break;
+            const alertButtons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button'));
+            let okBtn = alertButtons.find((b) => /^(ok|dismiss|got it|close|acknowledge|i understand)$/i.test((b.textContent || '').trim()))
+              || dialog.querySelector('[aria-label="OK" i], [aria-label="Dismiss" i], [aria-label="Close" i]');
+            if (!okBtn) {
+              okBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(ok|dismiss|got it|close)$/i.test((el.textContent || '').trim()));
+            }
+
+            if (okBtn) {
+              const alertText = (dialog.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 150);
+              console.warn(`[GmailAutomator] 🛡️ Auto-dismissing blocking alertdialog during automated run: "${alertText}"`);
+              await captureForensicSnapshot('ALERTDIALOG_DISMISSED', dialog, `Dismissed alertdialog: ${alertText}`, campaign);
+              if (campaign?.id && root.IDBStore) {
+                await root.IDBStore.addLog(campaign.id, 'WARN', `Auto-dismissed Google alertdialog: "${alertText}"`).catch(() => {});
+              }
+              await humanClick(okBtn);
+              try {
+                if (typeof okBtn.click === 'function') okBtn.click();
+                okBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+                okBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              } catch (_) {}
+              await sleep(300);
+              anyDismissed = true;
+            }
+            break;
           }
         }
       }
+      return anyDismissed;
     } catch (err) {
       console.warn('[GmailAutomator] Error handling interfering modals note:', err);
     }
@@ -5091,7 +6072,7 @@ FILE: src\content\gmail-automator.js
      */
     static async _runSingleExecution(draftId, campaign) {
       const campaignId = campaign?.id;
-      const subject = campaign?.subject;
+      let subject = campaign?.subject;
       currentActiveCampaign = campaign;
       let currentStep = 'NAVIGATE';
 
@@ -5103,6 +6084,9 @@ FILE: src\content\gmail-automator.js
       // Helper to report live progress to IDB, popup, and in-tab HUD
       const reportProgress = async (step, message, pct) => {
         currentStep = step;
+        if (typeof window !== 'undefined') {
+          window.__MM_LAST_STEP__ = step;
+        }
         console.log(`[GmailAutomator] [${pct}%] ${step}: ${message}`);
         try {
           ExecutionHUD.update(step, message, pct);
@@ -5149,6 +6133,7 @@ FILE: src\content\gmail-automator.js
 
       console.log('[GmailAutomator] 🚀 Executing scheduled native merge for draft: ' + (draftId || 'unknown') + ' (Subject: "' + (subject || '') + '")');
 
+      let composeDialog = null;
       try {
         // Auto-dismiss any Google spam / junk policy disclaimer modal right away
         await dismissGoogleSpamDisclaimerIfNeeded(document);
@@ -5156,7 +6141,7 @@ FILE: src\content\gmail-automator.js
         await reportProgress('NAVIGATE', 'Locating and verifying targeted draft...', 10);
 
         // 1. First check if matching compose dialog is ALREADY open or minimized in this tab
-        let composeDialog = await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
+        composeDialog = await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
 
         if (!composeDialog) {
           await dismissGoogleSpamDisclaimerIfNeeded(document);
@@ -5279,16 +6264,21 @@ FILE: src\content\gmail-automator.js
           composeDialog.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp, span.aYF')?.textContent || '').trim();
         const normExpectedSub = normalizeText(subject);
         const normVerifySub = normalizeText(verifySubject);
-        const isGenericSub = !normExpectedSub || normExpectedSub.startsWith('mail merge (');
+        const isGenericSub = !normExpectedSub ||
+          normExpectedSub.startsWith('mail merge (') ||
+          normExpectedSub.includes('compose') ||
+          normExpectedSub.includes('new message');
 
         if (!isGenericSub && normVerifySub && !normVerifySub.includes(normExpectedSub) && !normExpectedSub.includes(normVerifySub)) {
           throw new Error(`Subject Mismatch: Compose window subject "${verifySubject}" does not match campaign subject "${subject}".`);
         }
 
         // Auto-heal legacy campaigns with generic subject placeholders
-        if (isGenericSub && verifySubject && campaignId && root.IDBStore) {
+        if (isGenericSub && verifySubject && !/^(compose:?\s*)?new message$/i.test(verifySubject) && campaignId && root.IDBStore) {
           await root.IDBStore.updateCampaign(campaignId, { subject: verifySubject }).catch(() => {});
           console.log(`[GmailAutomator] 🔄 Auto-updated legacy campaign subject from "${subject}" to "${verifySubject}".`);
+          subject = verifySubject;
+          if (campaign) campaign.subject = verifySubject;
         }
 
         // Verify Mail Merge session
@@ -5324,17 +6314,17 @@ FILE: src\content\gmail-automator.js
             return null;
           },
           async () => {
-            // If Google intercepted with the spam/junk disclaimer modal, auto-accept and dismiss it
-            const intercepted = await dismissGoogleSpamDisclaimerIfNeeded(document);
+            // If Google intercepted with an alertdialog or policy modal, auto-accept and dismiss it
+            const intercepted = await dismissGoogleSpamDisclaimerIfNeeded(document, campaign);
             if (intercepted) {
               if (campaignId && root.IDBStore) {
-                await root.IDBStore.addLog(campaignId, 'INFO', 'Google bulk email policy disclaimer automatically accepted with "Don\'t show again". Re-triggering "Continue" click...').catch(() => {});
+                await root.IDBStore.addLog(campaignId, 'INFO', 'Google modal/alert automatically dismissed. Re-triggering "Continue" click...').catch(() => {});
               }
-              // Google's policy modal consumed the previous click! Immediately re-click "Continue"
+              // Google's modal consumed the previous click! Immediately re-click "Continue"
               await sleep(400);
               const continueBtn = composeDialog.querySelector('button, div[role="button"], [role="button"].continue, button.continue, .T-I-KE');
               if (continueBtn && isElementVisible(continueBtn)) {
-                console.log('[GmailAutomator] 🔄 Re-clicking "Continue" after dismissing Google policy modal...');
+                console.log('[GmailAutomator] 🔄 Re-clicking "Continue" after dismissing Google modal/alert...');
                 await humanClick(continueBtn);
               }
             }
@@ -5470,17 +6460,29 @@ FILE: src\content\gmail-automator.js
           { maxRetries: 3, actionName: 'Click "Send all"', retryDelay: 1200, timeoutPerAttempt: 3000 }
         );
 
-        await sleep(1500);
+        // 5-Second Active Post-Send Watchdog Window:
+        // Actively watch for Google red alert box ("multi-modal limit exceeded", daily sending limit, etc.)
+        await reportProgress('VERIFYING_DISPATCH', 'Verifying Gmail acceptance (watching for quota/limit alerts)...', 98);
+        const watchdogStart = Date.now();
+        const WATCHDOG_DURATION = 5000;
+        let quotaAlertFound = null;
 
-        // Check for Google daily sending limit alert
-        const alertEl = document.querySelector('.vh, [role="alert"], div[aria-live="assertive"]');
-        if (alertEl) {
-          const alertText = (alertEl.textContent || '').toLowerCase();
-          if (alertText.includes('reached a limit') || alertText.includes('sending limit')) {
-            const quotaErr = new Error('Google Daily Sending Limit Reached: Gmail has blocked sending for this account due to 24-hour quota limits.');
-            quotaErr.isQuotaLimit = true;
-            throw quotaErr;
+        while (Date.now() - watchdogStart < WATCHDOG_DURATION) {
+          const alert = detectGoogleQuotaOrLimitAlert();
+          if (alert) {
+            quotaAlertFound = alert;
+            break;
           }
+          await sleep(300);
+        }
+
+        if (quotaAlertFound) {
+          const quotaErrMsg = `Google Multi-Modal / Daily Sending Limit Exceeded: "${quotaAlertFound.message.slice(0, 160)}"`;
+          const quotaErr = new Error(quotaErrMsg);
+          quotaErr.isQuotaLimit = true;
+          quotaErr.category = 'QUOTA_EXCEEDED';
+          quotaErr.alertElement = quotaAlertFound.element;
+          throw quotaErr;
         }
 
         await reportProgress('COMPLETED', 'Sent successfully!', 100);
@@ -5517,6 +6519,9 @@ FILE: src\content\gmail-automator.js
           }).catch(() => {});
         }
 
+        // 7. Arm 15-Second Retroactive Quota Guard for slow network server rejections
+        startRetroactiveQuotaGuard(campaignId, campaign, liveRecipientCount);
+
         return { success: true, campaignId, sentCount: liveRecipientCount };
       } catch (error) {
         if (error && error.isPostponed) {
@@ -5530,17 +6535,55 @@ FILE: src\content\gmail-automator.js
           ExecutionHUD.error(error.message, currentStep);
         } catch (_) {}
 
-        // Capture visual snapshot of the screen at the moment of failure
+        // 1. Capture lightweight DOM Autopsy (~2 KB JSON snapshot of exact DOM, buttons, hash, alerts)
+        let domAutopsy = null;
+        try {
+          domAutopsy = captureFailureContext(currentStep);
+          if (typeof window !== 'undefined') {
+            window.__MM_LAST_STEP__ = null;
+          }
+        } catch (e) {
+          console.warn('[GmailAutomator] DOM autopsy capture warning:', e);
+        }
+
+        // 2. Capture visual snapshot of the screen at the moment of failure (Screenshots preserved!)
+        const alertOrModal = error?.alertElement || document.querySelector('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, div.AD, .vh, [role="alert"], .bBe') || document.body;
         await captureForensicSnapshot(
-          'EXECUTION_FAILED',
-          document.querySelector('div[role="dialog"], div[role="alertdialog"], div.Kj-JD, div.AD') || document.body,
+          error?.isQuotaLimit ? 'QUOTA_LIMIT_EXCEEDED' : 'EXECUTION_FAILED',
+          alertOrModal,
           error.message,
           campaign
         );
 
+        // 3. SMART DOM RESET: Clean up lingering alertdialogs and close corrupted compose modal
+        // so retry attempts or subsequent campaigns start from a fresh, unobstructed DOM.
+        if (!error?.isFatal && !error?.isQuotaLimit && error?.category !== 'DRAFT_NOT_FOUND') {
+          try {
+            const alertdialogs = Array.from(document.querySelectorAll('div[role="alertdialog"], div.Kj-JD'));
+            for (const ad of alertdialogs) {
+              if (!isElementVisible(ad)) continue;
+              const okBtn = ad.querySelector('button, [role="button"], .T-I, [aria-label*="OK" i], [aria-label*="Dismiss" i], [aria-label*="Close" i]');
+              if (okBtn) {
+                try { okBtn.click(); } catch (_) {}
+              }
+            }
+            if (composeDialog && composeDialog.isConnected) {
+              const closeBtn = composeDialog.querySelector('img[aria-label*="Save & close" i], div[aria-label*="Save & close" i], button[aria-label*="Close" i], [aria-label*="Close" i], img.Ha, div.Ha');
+              if (closeBtn) {
+                try { closeBtn.click(); } catch (_) {}
+                console.log('[GmailAutomator] 🚪 Closed stuck compose dialog to ensure clean slate for retry.');
+              }
+            }
+            await sleep(1000);
+          } catch (cleanErr) {
+            console.warn('[GmailAutomator] Tab DOM cleanup warning:', cleanErr);
+          }
+        }
+
+        const isQuota = !!error?.isQuotaLimit || (error?.category === 'QUOTA_EXCEEDED');
         const isDraftNotFound = (error && (error.category === 'DRAFT_NOT_FOUND' || (error.message && error.message.includes('[DRAFT_NOT_FOUND]'))));
-        const errorCategory = error?.category || (isDraftNotFound ? 'DRAFT_NOT_FOUND' : 'EXECUTION_ERROR');
-        const canAutoRetry = error?.canAutoRetry !== undefined ? error.canAutoRetry : !isDraftNotFound;
+        const errorCategory = isQuota ? 'QUOTA_EXCEEDED' : (error?.category || (isDraftNotFound ? 'DRAFT_NOT_FOUND' : 'EXECUTION_ERROR'));
+        const canAutoRetry = isQuota ? false : (error?.canAutoRetry !== undefined ? error.canAutoRetry : !isDraftNotFound);
 
         if (campaignId && root.IDBStore) {
           await root.IDBStore.updateCampaign(campaignId, {
@@ -5548,7 +6591,8 @@ FILE: src\content\gmail-automator.js
             errorMessage: error.message,
             errorCategory: errorCategory,
             canAutoRetry: canAutoRetry,
-            failedAt: new Date().toISOString()
+            failedAt: new Date().toISOString(),
+            domAutopsy: domAutopsy
           }).catch(() => {});
           await root.IDBStore.addLog(campaignId, 'ERROR', 'Scheduled dispatch failed: ' + error.message).catch(() => {});
         }
@@ -5561,12 +6605,15 @@ FILE: src\content\gmail-automator.js
             logMessage: error.message,
             errorCategory: errorCategory,
             canAutoRetry: canAutoRetry,
-            isQuotaLimit: !!error.isQuotaLimit,
-            accountEmail: campaign?.accountEmail
+            isQuotaLimit: isQuota,
+            accountEmail: campaign?.accountEmail || campaign?.senderEmail,
+            domAutopsy: domAutopsy
           }).catch(() => {});
         }
 
         throw error;
+      } finally {
+        currentActiveCampaign = null;
       }
     }
   }
@@ -5580,7 +6627,7 @@ FILE: src\content\gmail-automator.js
 
 
 ================================================================================
-FILE: src\dashboard\dashboard.css
+FILE: src\\dashboard\\dashboard.css
 ================================================================================
 
 /* ==========================================================================
@@ -6134,6 +7181,25 @@ body {
   color: #fbbf24;
 }
 
+.badge-quota-paused {
+  background: rgba(245, 158, 11, 0.18);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  color: #fcd34d;
+}
+
+.quota-warning-banner {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: 8px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  animation: fadeIn 0.3s ease-in-out;
+}
+
 .badge-idle {
   background: rgba(16, 185, 129, 0.12);
   border: 1px solid rgba(16, 185, 129, 0.3);
@@ -6617,8 +7683,10 @@ body {
 }
 
 
+
+
 ================================================================================
-FILE: src\dashboard\dashboard.html
+FILE: src\\dashboard\\dashboard.html
 ================================================================================
 
 <!DOCTYPE html>
@@ -6707,6 +7775,9 @@ FILE: src\dashboard\dashboard.html
     <!-- Main Content Panes -->
     <main class="dashboard-main">
 
+      <!-- Quota Lock Notification Banner Container -->
+      <div id="quotaWarningBannerContainer" style="display: none; margin-bottom: 14px;"></div>
+
       <!-- ================================================================= -->
       <!-- TAB 1: CAMPAIGNS -->
       <!-- ================================================================= -->
@@ -6725,13 +7796,13 @@ FILE: src\dashboard\dashboard.html
               <button class="filter-pill" data-status="COMPLETED">Completed (<span id="countFilterCompleted">0</span>)</button>
               <button class="filter-pill" data-status="FAILED">Failed (<span id="countFilterFailed">0</span>)</button>
               <button class="filter-pill" data-status="CANCELLED">Cancelled (<span id="countFilterCancelled">0</span>)</button>
-              <button id="btnRemoveAllFailedFilter" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4); margin-left: 6px;" title="Delete all failed campaigns from database (solves Unique ID conflicts)">
-                <span>🗑️ Remove All Failed</span>
+              <button id="btnRemoveAllFailedFilter" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4); margin-left: 6px;" title="Permanently delete all failed campaigns from IndexedDB database">
+                <span>🗑️ Delete All Failed</span>
               </button>
             </div>
             <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-              <button id="btnTopRemoveAllFailed" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4);" title="Archive and remove all failed campaigns from active queue (solves Unique ID conflicts)">
-                <span>🗑️ Remove All Failed (<span id="countTopFailed">0</span>)</span>
+              <button id="btnTopRemoveAllFailed" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4);" title="Permanently delete all failed campaigns from IndexedDB database">
+                <span>🗑️ Delete All Failed (<span id="countTopFailed">0</span>)</span>
               </button>
               <button id="btnTopViewArchived" class="btn btn-secondary btn-sm" style="color: #93c5fd; border-color: rgba(59, 130, 246, 0.4);" title="View archived campaigns and 1-click clone/restore">
                 <span>📦 Archived (<span id="countTopArchived">0</span>)</span>
@@ -7340,7 +8411,7 @@ FILE: src\dashboard\dashboard.html
 
 
 ================================================================================
-FILE: src\dashboard\dashboard.js
+FILE: src\\dashboard\\dashboard.js
 ================================================================================
 
 /**
@@ -8048,9 +9119,71 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       renderCampaignsTable();
       updateQueueStatusWidget();
+      await checkAndRenderQuotaBanner();
     } catch (err) {
       console.error('[Dashboard] Error loading campaigns:', err);
       campaignsTableBody.innerHTML = `<tr><td colspan="7" class="table-empty" style="color: var(--rose);">Error loading campaigns: ${escapeHtml(err.message)}</td></tr>`;
+    }
+  }
+
+  async function checkAndRenderQuotaBanner() {
+    const bannerContainer = document.getElementById('quotaWarningBannerContainer');
+    if (!bannerContainer) return;
+
+    try {
+      const resp = await chrome.runtime.sendMessage({ action: 'GET_ACCOUNT_QUOTA_LOCKS' }).catch(() => null);
+      const locks = resp?.locks || {};
+      const activeKeys = Object.keys(locks);
+
+      if (activeKeys.length === 0) {
+        bannerContainer.style.display = 'none';
+        bannerContainer.innerHTML = '';
+        return;
+      }
+
+      bannerContainer.style.display = 'block';
+      bannerContainer.innerHTML = activeKeys.map((key) => {
+        const lock = locks[key];
+        const resumesTimeStr = lock.resumesAt ? new Date(lock.resumesAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'in 12h';
+        return `
+          <div class="quota-warning-banner">
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <span style="font-size: 22px;">⚠️</span>
+              <div>
+                <div style="font-weight: 700; color: #fca5a5; font-size: 13px;">
+                  Google Multi-Modal / Daily Sending Limit Active: <span style="color: #fff; text-decoration: underline;">${escapeHtml(lock.accountEmail)}</span>
+                </div>
+                <div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">
+                  Pending campaigns for this account are postponed until <strong>${resumesTimeStr}</strong> to protect account health. Other sender accounts continue dispatching normally.
+                </div>
+              </div>
+            </div>
+            <button class="btn btn-sm btn-secondary btn-force-unpause-quota" data-account="${escapeHtml(lock.accountEmail)}" style="border-color: rgba(239, 68, 68, 0.5); color: #fca5a5; font-weight: 700; padding: 6px 12px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer;">
+              <span>⚡ Force Unpause Now</span>
+            </button>
+          </div>
+        `;
+      }).join('');
+
+      bannerContainer.querySelectorAll('.btn-force-unpause-quota').forEach((btn) => {
+        btn.onclick = async () => {
+          const account = btn.dataset.account;
+          btn.disabled = true;
+          btn.textContent = 'Unpausing...';
+          const unpauseResp = await chrome.runtime.sendMessage({ action: 'UNPAUSE_ACCOUNT_QUOTA', accountEmail: account }).catch(() => null);
+          if (unpauseResp && unpauseResp.success) {
+            showToast(`Account "${account}" unpaused! Campaigns re-queued.`);
+            await loadCampaigns();
+          } else {
+            alert('Failed to unpause account: ' + (unpauseResp?.error || 'Unknown error'));
+            btn.disabled = false;
+            btn.textContent = '⚡ Force Unpause Now';
+          }
+        };
+      });
+    } catch (err) {
+      console.warn('[Dashboard] Quota banner note:', err);
+      bannerContainer.style.display = 'none';
     }
   }
 
@@ -8066,12 +9199,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         remedy: 'Open Google Drive and grant Viewer access on this Google Sheet to the sender account.'
       };
     }
-    if (msg.includes("sending limit") || msg.includes("reached a limit") || msg.includes("quota")) {
+    if (msg.includes("sending limit") || msg.includes("reached a limit") || msg.includes("quota") || msg.includes("multi-modal") || msg.includes("multi modal") || msg.includes("multimodal") || msg.includes("multi-merge") || msg.includes("limit exceeded")) {
       return {
         category: 'DAILY_QUOTA',
-        badge: '⏳ Google Daily Quota Reached',
+        badge: '⏳ Multi-Modal / Daily Limit Reached',
         color: '#fbbf24',
-        remedy: 'Google 24-hour sending limit reached. Quota resets automatically in 12-24h.'
+        remedy: 'Google multi-merge sending limit reached. Account dispatches are postponed for 12 hours.'
       };
     }
     if (msg.includes("verify it's you") || msg.includes("login required") || msg.includes("auth required") || msg.includes("accounts.google.com")) {
@@ -8109,30 +9242,30 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function removeAllFailedCampaigns() {
     const failedList = allCampaigns.filter((c) => c.status === 'FAILED');
     if (failedList.length === 0) {
-      showToast('No failed campaigns to remove');
+      showToast('No failed campaigns to delete');
       return;
     }
 
-    const confirmMsg = `Are you sure you want to remove all ${failedList.length} failed campaign(s)?\n\nThey will be safely preserved in "📦 Archived Campaigns" where you can 1-click clone or retrieve them anytime. This resolves Unique ID conflicts and clears the active table.`;
+    const confirmMsg = `Are you sure you want to permanently delete all ${failedList.length} failed campaign(s)?\n\nThis will PERMANENTLY ERASE them, their forensic screenshots, and logs from the IndexedDB database. Zero data will remain.`;
     if (!confirm(confirmMsg)) {
       return;
     }
 
     try {
-      showToast(`Archiving & removing ${failedList.length} failed campaign(s)...`);
+      showToast(`Permanently deleting ${failedList.length} failed campaign(s)...`);
       const resp = await chrome.runtime.sendMessage({ action: 'DELETE_ALL_FAILED' }).catch(() => null);
       if (resp && resp.success) {
-        showToast(`📦 Safely archived and removed ${resp.count} failed campaign(s)!`);
-      } else if (window.IDBStore && typeof window.IDBStore.archiveFailedCampaigns === 'function') {
-        const count = await window.IDBStore.archiveFailedCampaigns();
-        showToast(`📦 Safely archived and removed ${count} failed campaign(s)!`);
+        showToast(`💥 Permanently deleted ${resp.count} failed campaign(s) and forensics from database!`);
+      } else if (window.IDBStore && typeof window.IDBStore.deleteFailedCampaigns === 'function') {
+        const count = await window.IDBStore.deleteFailedCampaigns();
+        showToast(`💥 Permanently deleted ${count} failed campaign(s) and forensics from database!`);
       } else {
-        showToast('Failed to remove: ' + (resp?.error || 'Unknown error'));
+        showToast('Failed to delete: ' + (resp?.error || 'Unknown error'));
       }
       await loadCampaigns();
       await loadLogs();
     } catch (err) {
-      console.error('[Dashboard] Error removing failed campaigns:', err);
+      console.error('[Dashboard] Error deleting failed campaigns:', err);
       showToast('Error: ' + err.message);
     }
   }
@@ -8230,11 +9363,28 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       // Status Badge Style
       let badgeClass = 'badge-queued';
-      if (camp.status === 'PROCESSING') badgeClass = 'badge-processing';
-      else if (camp.status === 'COMPLETED') badgeClass = 'badge-completed';
-      else if (camp.status === 'FAILED') badgeClass = 'badge-failed';
-      else if (camp.status === 'CANCELLED') badgeClass = 'badge-cancelled';
-      else if (camp.status === 'MISSED_OFFLINE') badgeClass = 'badge-missed-offline';
+      let statusLabel = escapeHtml(camp.status);
+      if (camp.status === 'PROCESSING') {
+        badgeClass = 'badge-processing';
+        statusLabel = '● PROCESSING';
+      } else if (camp.status === 'COMPLETED') {
+        badgeClass = 'badge-completed';
+        statusLabel = 'COMPLETED';
+      } else if (camp.status === 'FAILED') {
+        badgeClass = 'badge-failed';
+        statusLabel = camp.errorCategory === 'QUOTA_EXCEEDED' ? '⚠️ LIMIT EXCEEDED' : 'FAILED';
+      } else if (camp.status === 'CANCELLED') {
+        badgeClass = 'badge-cancelled';
+        statusLabel = 'CANCELLED';
+      } else if (camp.status === 'MISSED_OFFLINE') {
+        badgeClass = 'badge-missed-offline';
+        statusLabel = '⚠️ MISSED (OFFLINE)';
+      }
+
+      if (camp.status === 'QUEUED' && camp.isQuotaPaused) {
+        badgeClass = 'badge-quota-paused';
+        statusLabel = '⏸️ QUOTA PAUSED';
+      }
 
       // Sheet Link & Title
       const sheetTitle = camp.spreadsheetTitle || extractSheetName(camp.spreadsheetUrl) || 'Google Sheet';
@@ -8303,15 +9453,20 @@ document.addEventListener('DOMContentLoaded', async () => {
           </div>
         `;
       } else if (camp.status === 'QUEUED') {
-        const accountKey = (camp.accountEmail || '').toLowerCase().trim() || String(camp.userIndex !== undefined ? camp.userIndex : '0');
-        const isBusy = allCampaigns.some((c) => c.status === 'PROCESSING' && ((c.accountEmail || '').toLowerCase().trim() || String(c.userIndex !== undefined ? c.userIndex : '0')) === accountKey);
-        if (isBusy) {
-          const queuedList = allCampaigns
-            .filter((c) => c.status === 'QUEUED' && ((c.accountEmail || '').toLowerCase().trim() || String(c.userIndex !== undefined ? c.userIndex : '0')) === accountKey)
-            .sort((a, b) => new Date(a.scheduledAt || a.createdAt || 0) - new Date(b.scheduledAt || b.createdAt || 0));
-          const idx = queuedList.findIndex((c) => c.id === camp.id);
-          const pos = idx >= 0 ? idx + 1 : 1;
-          stageDisplayHtml = `<div style="font-size: 10px; color: #fbbf24; margin-top: 2px;">⏳ In line (#${pos})</div>`;
+        if (camp.isQuotaPaused) {
+          const resumeStr = camp.quotaPausedUntil ? formatTimeShort(camp.quotaPausedUntil) : 'in 12h';
+          stageDisplayHtml = `<div style="font-size: 10px; color: #fcd34d; margin-top: 2px;">⏳ Resumes ${resumeStr}</div>`;
+        } else {
+          const accountKey = (camp.accountEmail || '').toLowerCase().trim() || String(camp.userIndex !== undefined ? camp.userIndex : '0');
+          const isBusy = allCampaigns.some((c) => c.status === 'PROCESSING' && ((c.accountEmail || '').toLowerCase().trim() || String(c.userIndex !== undefined ? c.userIndex : '0')) === accountKey);
+          if (isBusy) {
+            const queuedList = allCampaigns
+              .filter((c) => c.status === 'QUEUED' && ((c.accountEmail || '').toLowerCase().trim() || String(c.userIndex !== undefined ? c.userIndex : '0')) === accountKey)
+              .sort((a, b) => new Date(a.scheduledAt || a.createdAt || 0) - new Date(b.scheduledAt || b.createdAt || 0));
+            const idx = queuedList.findIndex((c) => c.id === camp.id);
+            const pos = idx >= 0 ? idx + 1 : 1;
+            stageDisplayHtml = `<div style="font-size: 10px; color: #fbbf24; margin-top: 2px;">⏳ In line (#${pos})</div>`;
+          }
         }
       }
 
@@ -8342,7 +9497,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         </td>
         <td>
           <span class="badge ${badgeClass}">
-            ${camp.status === 'PROCESSING' ? '● PROCESSING' : (camp.status === 'MISSED_OFFLINE' ? '⚠️ MISSED (OFFLINE)' : escapeHtml(camp.status))}
+            ${statusLabel}
           </span>
           ${stageDisplayHtml}
         </td>
@@ -8831,6 +9986,58 @@ document.addEventListener('DOMContentLoaded', async () => {
           </div>
         ` : ''}
 
+        ${camp.domAutopsy ? `
+          <div>
+            <label style="font-size: 11px; font-weight: 600; color: #38bdf8; text-transform: uppercase; display: flex; align-items: center; justify-content: space-between;">
+              <span style="display: flex; align-items: center; gap: 6px;">
+                🔬 DOM Autopsy &amp; Machine Forensics
+              </span>
+              <span style="font-size: 10px; color: var(--text-muted); font-weight: 400; text-transform: none;">(~2 KB lightweight DOM state)</span>
+            </label>
+            <div style="background: #090d16; border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 6px; padding: 12px; margin-top: 6px; font-size: 11px;">
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; color: var(--text-muted);">
+                <div><strong>URL:</strong> <span style="color: var(--text-primary); word-break: break-all;">${escapeHtml(camp.domAutopsy.url || '')}</span></div>
+                <div><strong>Hash:</strong> <span style="color: #38bdf8; font-family: var(--font-mono);">${escapeHtml(camp.domAutopsy.hash || '(none)')}</span></div>
+                <div><strong>Last Step:</strong> <span style="color: #f59e0b; font-family: var(--font-mono); font-weight: 600;">${escapeHtml(camp.domAutopsy.lastKnownStep || 'UNKNOWN')}</span></div>
+                <div><strong>Active Focus:</strong> <span style="color: var(--text-primary); font-family: var(--font-mono);">${escapeHtml(camp.domAutopsy.activeElement || 'none')}</span></div>
+              </div>
+
+              ${camp.domAutopsy.visibleAlerts && camp.domAutopsy.visibleAlerts.length > 0 ? `
+                <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 4px; padding: 6px 10px; margin-bottom: 10px; color: #fca5a5;">
+                  <strong>⚠️ Visible Banner/Alert:</strong> ${camp.domAutopsy.visibleAlerts.map(a => escapeHtml(a)).join(' | ')}
+                </div>
+              ` : ''}
+
+              ${camp.domAutopsy.visibleDialogs && camp.domAutopsy.visibleDialogs.length > 0 ? `
+                <div style="margin-bottom: 6px;">
+                  <strong style="color: var(--text-secondary);">Visible Dialogs Found (${camp.domAutopsy.visibleDialogs.length}):</strong>
+                </div>
+                ${camp.domAutopsy.visibleDialogs.map((d, idx) => `
+                  <div style="background: rgba(56, 189, 248, 0.04); border: 1px solid rgba(56, 189, 248, 0.2); border-radius: 4px; padding: 8px; margin-bottom: 6px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                      <span style="color: #38bdf8; font-weight: 600;">Dialog ${idx + 1} (Role: ${escapeHtml(d.role)}${d.ariaLabel ? ' – "' + escapeHtml(d.ariaLabel) + '"' : ''})</span>
+                    </div>
+                    <div style="color: var(--text-muted); margin-bottom: 6px;">
+                      <strong style="color: var(--text-secondary);">Visible Buttons:</strong>
+                      ${d.visibleButtons && d.visibleButtons.length > 0
+                        ? d.visibleButtons.map(b => `<span style="display: inline-block; background: rgba(56, 189, 248, 0.15); color: #7dd3fc; padding: 1px 6px; border-radius: 3px; margin: 2px 3px; font-family: var(--font-mono); font-size: 10px;">${escapeHtml(b)}</span>`).join('')
+                        : '<span style="color: #f87171;">[None detected]</span>'}
+                    </div>
+                    ${d.htmlSnippet ? `
+                      <details style="cursor: pointer;">
+                        <summary style="color: var(--text-secondary); font-size: 10px;">View Truncated HTML Snippet (Ctrl+F to search)</summary>
+                        <pre style="background: #020617; color: #34d399; padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 10px; margin-top: 4px; white-space: pre-wrap; word-break: break-all; max-height: 120px;">${escapeHtml(d.htmlSnippet)}</pre>
+                      </details>
+                    ` : ''}
+                  </div>
+                `).join('')}
+              ` : `
+                <div style="color: #f87171; font-weight: 500; padding: 4px 0;">⚠️ No visible modal or compose dialogs found on screen at time of failure.</div>
+              `}
+            </div>
+          </div>
+        ` : ''}
+
         <div>
           <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase;">Body Template Preview</label>
           <div style="background: var(--bg-input); padding: 10px; border-radius: 6px; border: 1px solid var(--border-color); font-family: var(--font-mono); font-size: 11px; max-height: 140px; overflow-y: auto; white-space: pre-wrap; margin-top: 4px;">
@@ -8909,9 +10116,29 @@ document.addEventListener('DOMContentLoaded', async () => {
         errorTextEl.textContent = camp.errorMessage || 'No visual or DOM snapshot recorded.';
         imageEl.style.display = 'none';
         noImgPlaceholder.style.display = 'block';
-        noImgPlaceholder.textContent = 'No visual screenshot captured for this campaign.';
-        domSectionEl.style.display = 'none';
+        noImgPlaceholder.textContent = 'No visual screenshot captured for this campaign. DOM autopsy state preserved below.';
         btnDownload.style.display = 'none';
+
+        if (camp.domAutopsy) {
+          domSectionEl.style.display = 'block';
+          let snippet = `=== DOM AUTOPSY (MACHINE FORENSICS) ===\n`;
+          snippet += `Last Step: ${camp.domAutopsy.lastKnownStep || 'UNKNOWN'}\n`;
+          snippet += `URL: ${camp.domAutopsy.url || ''}\n`;
+          snippet += `Hash: ${camp.domAutopsy.hash || '(none)'}\n`;
+          snippet += `Active Element: ${camp.domAutopsy.activeElement || 'none'}\n`;
+          if (camp.domAutopsy.visibleAlerts && camp.domAutopsy.visibleAlerts.length > 0) {
+            snippet += `Visible Alerts: ${camp.domAutopsy.visibleAlerts.join(' | ')}\n`;
+          }
+          if (camp.domAutopsy.visibleDialogs && camp.domAutopsy.visibleDialogs.length > 0) {
+            snippet += `Visible Dialogs (${camp.domAutopsy.visibleDialogs.length}):\n`;
+            camp.domAutopsy.visibleDialogs.forEach((d, i) => {
+              snippet += `  [#${i + 1}] Role="${d.role}" Aria="${d.ariaLabel || ''}" Buttons=[${(d.visibleButtons || []).join(', ')}]\n`;
+            });
+          }
+          domSnippetEl.textContent = snippet.trim();
+        } else {
+          domSectionEl.style.display = 'none';
+        }
         return;
       }
 
@@ -8935,10 +10162,33 @@ document.addEventListener('DOMContentLoaded', async () => {
         btnDownload.style.display = 'none';
       }
 
-      if (capture.domSnippet || capture.popupTitle) {
+      if (capture.domSnippet || capture.popupTitle || camp.domAutopsy) {
         domSectionEl.style.display = 'block';
-        const snippet = (capture.popupTitle ? `[Popup/Modal Title: ${capture.popupTitle}]\n\n` : '') + (capture.domSnippet || '');
-        domSnippetEl.textContent = snippet;
+        let snippet = '';
+        if (camp.domAutopsy) {
+          snippet += `=== DOM AUTOPSY (MACHINE FORENSICS) ===\n`;
+          snippet += `Last Step: ${camp.domAutopsy.lastKnownStep || 'UNKNOWN'}\n`;
+          snippet += `URL: ${camp.domAutopsy.url || ''}\n`;
+          snippet += `Hash: ${camp.domAutopsy.hash || '(none)'}\n`;
+          snippet += `Active Element: ${camp.domAutopsy.activeElement || 'none'}\n`;
+          if (camp.domAutopsy.visibleAlerts && camp.domAutopsy.visibleAlerts.length > 0) {
+            snippet += `Visible Alerts: ${camp.domAutopsy.visibleAlerts.join(' | ')}\n`;
+          }
+          if (camp.domAutopsy.visibleDialogs && camp.domAutopsy.visibleDialogs.length > 0) {
+            snippet += `Visible Dialogs (${camp.domAutopsy.visibleDialogs.length}):\n`;
+            camp.domAutopsy.visibleDialogs.forEach((d, i) => {
+              snippet += `  [#${i + 1}] Role="${d.role}" Aria="${d.ariaLabel || ''}" Buttons=[${(d.visibleButtons || []).join(', ')}]\n`;
+            });
+          }
+          snippet += `\n=== CAPTURED ELEMENT SNIPPET ===\n`;
+        }
+        if (capture.popupTitle) {
+          snippet += `[Popup/Modal Title: ${capture.popupTitle}]\n\n`;
+        }
+        if (capture.domSnippet) {
+          snippet += capture.domSnippet;
+        }
+        domSnippetEl.textContent = snippet.trim();
       } else {
         domSectionEl.style.display = 'none';
       }
@@ -9598,7 +10848,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 
 ================================================================================
-FILE: src\db\idb-store.js
+FILE: src\\db\\idb-store.js
 ================================================================================
 
 /**
@@ -9900,15 +11150,21 @@ FILE: src\db\idb-store.js
     },
 
     /**
-     * Deletes a campaign by ID.
+     * Deletes a campaign by ID, including its forensics, logs, and any archive records.
      * @param {string} id
      * @returns {Promise<boolean>}
      */
     async deleteCampaign(id) {
       await this.deleteForensicsByCampaign(id).catch(() => {});
+      await this.deleteLogsByCampaign(id).catch(() => {});
       await this._transaction('campaigns', 'readwrite', (store) => {
         store.delete(id);
       });
+      try {
+        await this._transaction('archived_campaigns', 'readwrite', (store) => {
+          store.delete(id);
+        });
+      } catch (_) {}
       return true;
     },
 
@@ -9932,6 +11188,7 @@ FILE: src\db\idb-store.js
             const campId = cursor.value?.id || cursor.primaryKey;
             if (campId) {
               this.deleteForensicsByCampaign(campId).catch(() => {});
+              this.deleteLogsByCampaign(campId).catch(() => {});
             }
             cursor.delete();
             count++;
@@ -9946,11 +11203,32 @@ FILE: src\db\idb-store.js
     },
 
     /**
-     * Removes all failed campaigns from IndexedDB.
-     * @returns {Promise<number>}
+     * Permanently wipes all failed campaigns, their forensic screenshots, and their logs from IndexedDB.
+     * Hard database purge with ZERO archival.
+     * @returns {Promise<number>} Number of deleted campaigns
      */
     async deleteFailedCampaigns() {
-      return this.archiveFailedCampaigns();
+      const all = await this.getCampaigns();
+      const failedList = all.filter((c) => c.status === 'FAILED');
+      let count = 0;
+      for (const camp of failedList) {
+        try {
+          await this.deleteForensicsByCampaign(camp.id).catch(() => {});
+          await this.deleteLogsByCampaign(camp.id).catch(() => {});
+          await this._transaction('campaigns', 'readwrite', (store) => {
+            store.delete(camp.id);
+          });
+          try {
+            await this._transaction('archived_campaigns', 'readwrite', (store) => {
+              store.delete(camp.id);
+            });
+          } catch (_) {}
+          count++;
+        } catch (err) {
+          console.warn('[IDBStore] Error permanently deleting failed campaign:', camp.id, err);
+        }
+      }
+      return count;
     },
 
     /**
@@ -10187,6 +11465,32 @@ FILE: src\db\idb-store.js
       return true;
     },
 
+    /**
+     * Deletes all log entries associated with a specific campaign ID.
+     * @param {string} campaignId
+     * @returns {Promise<boolean>}
+     */
+    async deleteLogsByCampaign(campaignId) {
+      if (!campaignId) return false;
+      await this._transaction('logs', 'readwrite', (store) => {
+        return new Promise((resolve, reject) => {
+          const idx = store.index('campaignId');
+          const req = idx.openKeyCursor(IDBKeyRange.only(campaignId));
+          req.onsuccess = (e) => {
+            const cursor = e.target.result;
+            if (cursor) {
+              store.delete(cursor.primaryKey);
+              cursor.continue();
+            } else {
+              resolve(true);
+            }
+          };
+          req.onerror = () => reject(req.error);
+        });
+      });
+      return true;
+    },
+
     // =========================================================================
     // FORENSICS & VISUAL SCREENSHOTS
     // =========================================================================
@@ -10399,7 +11703,7 @@ FILE: src\db\idb-store.js
 
 
 ================================================================================
-FILE: src\popup\popup.css
+FILE: src\\popup\\popup.css
 ================================================================================
 
 /* Modern Dark Slate Theme for Gmail Mail Merge Extension Popup */
@@ -11049,7 +12353,7 @@ input:checked + .slider:before {
 
 
 ================================================================================
-FILE: src\popup\popup.html
+FILE: src\\popup\\popup.html
 ================================================================================
 
 <!DOCTYPE html>
@@ -11147,7 +12451,7 @@ FILE: src\popup\popup.html
 
 
 ================================================================================
-FILE: src\popup\popup.js
+FILE: src\\popup\\popup.js
 ================================================================================
 
 /**
