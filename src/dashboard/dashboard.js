@@ -109,23 +109,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const modalDetailsTitle = document.getElementById('modalDetailsTitle');
   const modalDetailsContent = document.getElementById('modalDetailsContent');
 
-  // Fix Draft Modal elements
-  const modalFixDraft = document.getElementById('modalFixDraft');
-  const fixDraftCampaignBadge = document.getElementById('fixDraftCampaignBadge');
-  const fixDraftCampaignId = document.getElementById('fixDraftCampaignId');
-  const fixDraftAccountEmail = document.getElementById('fixDraftAccountEmail');
-  const fixDraftOriginalSubject = document.getElementById('fixDraftOriginalSubject');
-  const fixDraftSheetInfo = document.getElementById('fixDraftSheetInfo');
-  const fixDraftSelect = document.getElementById('fixDraftSelect');
-  const btnRefreshOpenDrafts = document.getElementById('btnRefreshOpenDrafts');
-  const fixDraftScannerHelp = document.getElementById('fixDraftScannerHelp');
-  const radioFixDraftImmediate = document.getElementById('radioFixDraftImmediate');
-  const radioFixDraftScheduled = document.getElementById('radioFixDraftScheduled');
-  const fixDraftScheduledContainer = document.getElementById('fixDraftScheduledContainer');
-  const inputFixDraftTime = document.getElementById('inputFixDraftTime');
-  const btnConfirmFixDraft = document.getElementById('btnConfirmFixDraft');
-  let currentFixCampaign = null;
-
   const toast = document.getElementById('dashboardToast');
 
   // =========================================================================
@@ -136,22 +119,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupEventListeners();
   await refreshAll();
 
-  // Handle URL navigation & auto-modal triggers
-  try {
-    const urlParams = new URLSearchParams(window.location.search);
-    const fixDraftId = urlParams.get('fixDraft');
-    if (fixDraftId) {
-      switchTab('tab-campaigns');
-      setTimeout(async () => {
-        const targetCamp = allCampaigns.find((c) => c.id === fixDraftId) || (await window.IDBStore?.getCampaignById(fixDraftId));
-        if (targetCamp) {
-          openFixDraftModal(targetCamp);
-        }
-      }, 300);
-    }
-  } catch (urlErr) {
-    console.warn('[Dashboard] URL param check note:', urlErr);
-  }
+
 
   // Periodic status poll every 10 seconds
   schedulerIntervalTimer = setInterval(async () => {
@@ -449,26 +417,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Reschedule Confirmation
     btnConfirmReschedule.addEventListener('click', handleConfirmReschedule);
-
-    // Fix Draft Modal listeners
-    if (radioFixDraftImmediate) {
-      radioFixDraftImmediate.addEventListener('change', () => {
-        if (fixDraftScheduledContainer) fixDraftScheduledContainer.style.display = 'none';
-      });
-    }
-    if (radioFixDraftScheduled) {
-      radioFixDraftScheduled.addEventListener('change', () => {
-        if (fixDraftScheduledContainer) fixDraftScheduledContainer.style.display = 'block';
-      });
-    }
-    if (btnRefreshOpenDrafts) {
-      btnRefreshOpenDrafts.addEventListener('click', () => {
-        if (currentFixCampaign) scanAndPopulateDrafts(currentFixCampaign);
-      });
-    }
-    if (btnConfirmFixDraft) {
-      btnConfirmFixDraft.addEventListener('click', handleConfirmFixDraft);
-    }
   }
 
   // =========================================================================
@@ -1148,28 +1096,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         </td>
         <td style="text-align: right; white-space: nowrap;">
           <div style="display: inline-flex; gap: 6px; justify-content: flex-end;">
-            ${(camp.hasForensic || camp.status === 'FAILED')
-              ? `<button class="btn btn-secondary btn-sm btn-table-forensics" data-id="${camp.id}" title="View Overnight Screen Capture & Observation">
-                   📸 Capture
-                 </button>`
-              : ''}
             ${camp.status === 'FAILED'
-              ? (camp.errorCategory === 'DRAFT_NOT_FOUND' || camp.canAutoRetry === false || (camp.errorMessage && camp.errorMessage.includes('[DRAFT_NOT_FOUND]'))
-                  ? `<button class="btn btn-warning btn-sm btn-table-fix-draft" style="background: rgba(251, 146, 60, 0.2); border: 1px solid #fb923c; color: #fb923c;" data-id="${camp.id}" title="Fix missing draft & re-schedule">
-                       🔧 Fix Draft
-                     </button>`
-                  : `<button class="btn btn-primary btn-sm btn-table-run" style="background: #ef4444; border-color: #dc2626;" data-id="${camp.id}" title="Retry immediately">
-                       ↻ Retry Now
-                     </button>`)
+              ? `<button class="btn btn-primary btn-sm btn-table-run" style="background: #ef4444; border-color: #dc2626;" data-id="${camp.id}" title="Retry immediately">
+                   ↻ Retry Now
+                 </button>`
               : `<button class="btn btn-secondary btn-sm btn-table-run" data-id="${camp.id}" title="Run immediately">
-                  ▶ Run Now
-                </button>`}
-            <button class="btn btn-secondary btn-sm btn-table-clone" data-id="${camp.id}" title="1-Click Clone: Pre-fill all campaign settings into Queue Form without re-typing">
-              ♻️ Clone
-            </button>
-            <button class="btn btn-secondary btn-sm btn-table-reschedule" data-id="${camp.id}" title="Reschedule">
-              ⏰ Reschedule
-            </button>
+                   ▶ Run Now
+                 </button>`}
             <button class="btn btn-secondary btn-sm btn-table-details" data-id="${camp.id}" title="View Details & Logs">
               📋 Details
             </button>
@@ -1181,17 +1114,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       `;
 
       // Actions
-      tr.querySelector('.btn-table-forensics')?.addEventListener('click', () => openForensicsViewer(camp));
-      tr.querySelector('.btn-table-clone')?.addEventListener('click', () => cloneCampaignToForm(camp));
-      const btnFix = tr.querySelector('.btn-table-fix-draft');
-      if (btnFix) {
-        btnFix.addEventListener('click', () => openFixDraftModal(camp));
-      }
       const btnRun = tr.querySelector('.btn-table-run');
       if (btnRun) {
         btnRun.addEventListener('click', () => triggerCampaign(camp.id, btnRun));
       }
-      tr.querySelector('.btn-table-reschedule')?.addEventListener('click', () => openRescheduleModal(camp));
       tr.querySelector('.btn-table-details')?.addEventListener('click', () => openDetailsModal(camp));
       tr.querySelector('.btn-table-cancel')?.addEventListener('click', () => deleteOrCancelCampaign(camp.id));
 
@@ -1357,186 +1283,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // =========================================================================
-  // FIX DRAFT & RE-SCHEDULE MODAL
-  // =========================================================================
 
-  function openFixDraftModal(camp) {
-    if (!camp) return;
-    currentFixCampaign = camp;
-
-    if (fixDraftCampaignId) fixDraftCampaignId.value = camp.id;
-    if (fixDraftCampaignBadge) {
-      fixDraftCampaignBadge.textContent = 'ID: ' + (camp.id ? camp.id.substring(0, 10) : 'camp');
-    }
-    if (fixDraftAccountEmail) {
-      fixDraftAccountEmail.textContent = camp.accountEmail || camp.senderEmail || ('Account #' + (camp.userIndex !== undefined ? camp.userIndex : '0'));
-    }
-    if (fixDraftOriginalSubject) {
-      fixDraftOriginalSubject.textContent = camp.subject || '(Untitled Subject)';
-    }
-    if (fixDraftSheetInfo) {
-      const sheetName = camp.spreadsheetTitle || extractSheetName(camp.spreadsheetUrl) || camp.spreadsheetUrl || 'None linked';
-      fixDraftSheetInfo.textContent = sheetName;
-    }
-
-    if (radioFixDraftImmediate) radioFixDraftImmediate.checked = true;
-    if (fixDraftScheduledContainer) fixDraftScheduledContainer.style.display = 'none';
-    if (inputFixDraftTime) {
-      inputFixDraftTime.value = formatDateTimeLocal(new Date(Date.now() + 15 * 60000));
-    }
-
-    openModal('modalFixDraft');
-    scanAndPopulateDrafts(camp);
-  }
-
-  async function scanAndPopulateDrafts(camp) {
-    if (!fixDraftSelect || !btnRefreshOpenDrafts) return;
-
-    btnRefreshOpenDrafts.disabled = true;
-    btnRefreshOpenDrafts.textContent = 'Scanning...';
-    fixDraftSelect.innerHTML = '<option value="">Scanning open Gmail tabs for drafts...</option>';
-    if (fixDraftScannerHelp) {
-      fixDraftScannerHelp.innerHTML = 'Scanning open Gmail compose windows...';
-    }
-
-    try {
-      const resp = await chrome.runtime.sendMessage({
-        action: 'SCAN_OPEN_GMAIL_DRAFTS',
-        accountEmail: camp?.accountEmail || camp?.senderEmail,
-        userIndex: camp?.userIndex
-      });
-
-      btnRefreshOpenDrafts.disabled = false;
-      btnRefreshOpenDrafts.textContent = '🔄 Refresh Drafts';
-
-      if (!resp || !resp.success || !Array.isArray(resp.drafts) || resp.drafts.length === 0) {
-        fixDraftSelect.innerHTML = '<option value="">⚠️ No open compose drafts detected in Gmail</option>';
-        if (fixDraftScannerHelp) {
-          const accountName = camp?.accountEmail || ('Account #' + (camp?.userIndex !== undefined ? camp?.userIndex : '0'));
-          fixDraftScannerHelp.innerHTML = `
-            <span style="color: #fb923c;">
-              ⚠️ No compose window detected in Gmail. Please switch to your Gmail tab (${escapeHtml(accountName)}), click <strong>"Compose"</strong> or open your saved draft, then click <strong>🔄 Refresh Drafts</strong>.
-            </span>
-          `;
-        }
-        return;
-      }
-
-      fixDraftSelect.innerHTML = `<option value="">-- Choose an open draft (${resp.drafts.length} found) --</option>`;
-
-      let matchedOptionIndex = -1;
-      const targetSub = (camp?.subject || '').trim().toLowerCase();
-
-      resp.drafts.forEach((d, idx) => {
-        const opt = document.createElement('option');
-        opt.value = d.draftId || '';
-        opt.dataset.draftJson = JSON.stringify(d);
-
-        let label = d.subject || '(Untitled Draft)';
-        if (d.sheetTitle) label += ` [Sheet: ${d.sheetTitle}]`;
-        if (d.recipientCount) label += ` (${d.recipientCount} recipients)`;
-        if (d.matchesAccount) label += ` ✓ Account Matched`;
-
-        opt.textContent = label;
-        fixDraftSelect.appendChild(opt);
-
-        if (matchedOptionIndex === -1) {
-          const dSub = (d.subject || '').trim().toLowerCase();
-          if (targetSub && dSub && (dSub.includes(targetSub) || targetSub.includes(dSub))) {
-            matchedOptionIndex = idx + 1;
-          }
-        }
-      });
-
-      if (matchedOptionIndex > 0) {
-        fixDraftSelect.selectedIndex = matchedOptionIndex;
-      }
-
-      if (fixDraftScannerHelp) {
-        fixDraftScannerHelp.innerHTML = `
-          <span style="color: var(--emerald);">
-            ✓ Detected ${resp.drafts.length} open compose draft(s). Select the correct draft and confirm below.
-          </span>
-        `;
-      }
-    } catch (err) {
-      console.error('[Dashboard] Error scanning open drafts:', err);
-      btnRefreshOpenDrafts.disabled = false;
-      btnRefreshOpenDrafts.textContent = '🔄 Refresh Drafts';
-      fixDraftSelect.innerHTML = `<option value="">Error scanning: ${escapeHtml(err.message)}</option>`;
-    }
-  }
-
-  async function handleConfirmFixDraft() {
-    if (!currentFixCampaign) return;
-
-    if (!fixDraftSelect || fixDraftSelect.selectedIndex < 0) {
-      alert('Please select an open compose draft from the dropdown.');
-      return;
-    }
-
-    const selectedOpt = fixDraftSelect.options[fixDraftSelect.selectedIndex];
-    if (!selectedOpt || !selectedOpt.value) {
-      alert('Please choose a valid compose draft from the list. If no drafts appear, open one in Gmail and click Refresh Drafts.');
-      return;
-    }
-
-    let draftData = {};
-    try {
-      draftData = JSON.parse(selectedOpt.dataset.draftJson || '{}');
-    } catch (_) {}
-
-    const isScheduled = radioFixDraftScheduled && radioFixDraftScheduled.checked;
-    let scheduledTime = null;
-
-    if (isScheduled) {
-      const timeVal = inputFixDraftTime ? inputFixDraftTime.value : null;
-      if (!timeVal) {
-        alert('Please select a valid scheduled date & time.');
-        return;
-      }
-      scheduledTime = new Date(timeVal).getTime();
-      if (isNaN(scheduledTime)) {
-        alert('Invalid scheduled date/time selected.');
-        return;
-      }
-    }
-
-    btnConfirmFixDraft.disabled = true;
-    btnConfirmFixDraft.textContent = 'Re-queueing...';
-
-    try {
-      const response = await chrome.runtime.sendMessage({
-        action: 'REBIND_AND_QUEUE_CAMPAIGN',
-        campaignId: currentFixCampaign.id,
-        draftId: selectedOpt.value,
-        subject: draftData.subject || undefined,
-        sheetTitle: draftData.sheetTitle || undefined,
-        sheetUrl: draftData.sheetUrl || undefined,
-        recipientCount: draftData.recipientCount || undefined,
-        dispatchTiming: isScheduled ? 'scheduled' : 'immediate',
-        scheduledTime: scheduledTime
-      });
-
-      btnConfirmFixDraft.disabled = false;
-      btnConfirmFixDraft.textContent = 'Save & Re-queue Campaign';
-
-      if (response && response.success) {
-        closeModal('modalFixDraft');
-        showToast(isScheduled ? 'Campaign scheduled successfully!' : 'Campaign rebound & added to FIFO dispatch queue!');
-        await loadCampaigns();
-        await loadLogs();
-      } else {
-        alert('Failed to re-bind campaign: ' + (response?.error || 'Unknown error'));
-      }
-    } catch (err) {
-      btnConfirmFixDraft.disabled = false;
-      btnConfirmFixDraft.textContent = 'Save & Re-queue Campaign';
-      console.error('[Dashboard] Rebind error:', err);
-      alert('Error re-binding draft: ' + err.message);
-    }
-  }
 
   async function deleteOrCancelCampaign(campaignId) {
     if (!confirm('Are you sure you want to cancel and remove this campaign?')) {

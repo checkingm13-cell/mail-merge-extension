@@ -126,19 +126,9 @@
               <button id="btnTopRemoveAllFailed" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4);" title="Permanently delete all failed campaigns from IndexedDB database">
                 <span>🗑️ Delete All Failed (<span id="countTopFailed">0</span>)</span>
               </button>
-              <button id="btnTopViewArchived" class="btn btn-secondary btn-sm" style="color: #93c5fd; border-color: rgba(59, 130, 246, 0.4);" title="View archived campaigns and 1-click clone/restore">
-                <span>📦 Archived (<span id="countTopArchived">0</span>)</span>
-              </button>
               <button id="btnRefreshCampaigns" class="btn btn-secondary btn-sm" title="Refresh list">
                 <span>🔄 Refresh</span>
               </button>
-              <button id="btnExportBackup" class="btn btn-secondary btn-sm" title="Backup all campaigns, templates & data to JSON">
-                <span>💾 Backup JSON</span>
-              </button>
-              <button id="btnImportBackup" class="btn btn-secondary btn-sm" title="Restore campaigns & templates from JSON backup">
-                <span>📂 Restore</span>
-              </button>
-              <input type="file" id="importFileInput" accept=".json" style="display: none;">
               <button id="btnJumpToQueue" class="btn btn-primary btn-sm">
                 <span>➕ New Campaign</span>
               </button>
@@ -570,78 +560,7 @@
     </div>
   </div>
 
-  <!-- Fix Draft & Re-schedule Modal -->
-  <div class="modal-overlay" id="modalFixDraft">
-    <div class="modal-card" style="max-width: 650px;">
-      <div class="modal-header">
-        <h3 class="modal-title" style="display: flex; align-items: center; gap: 8px;">
-          <span>🔧 Fix Draft &amp; Re-schedule</span>
-          <span id="fixDraftCampaignBadge" class="badge badge-failed" style="font-size: 11px;"></span>
-        </h3>
-        <button class="modal-close" data-close-modal="modalFixDraft">&times;</button>
-      </div>
-      <div class="modal-body">
-        <input type="hidden" id="fixDraftCampaignId">
 
-        <!-- Error Info Alert -->
-        <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; font-size: 12px; color: #fca5a5;">
-          <strong>Draft Missing in Gmail:</strong> The draft previously bound to this campaign was deleted or could not be found. Select an open compose draft from Gmail below to re-bind and resume execution.
-        </div>
-
-        <!-- Stored Campaign Info Preview -->
-        <div style="background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-bottom: 14px; font-size: 12px;">
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 6px;">
-            <div><span style="color: var(--text-muted);">Target Account:</span> <strong id="fixDraftAccountEmail" style="color: var(--text-white);">-</strong></div>
-            <div><span style="color: var(--text-muted);">Original Subject:</span> <strong id="fixDraftOriginalSubject" style="color: var(--text-white);">-</strong></div>
-          </div>
-          <div><span style="color: var(--text-muted);">Linked Google Sheet:</span> <span id="fixDraftSheetInfo" style="color: var(--sky); font-weight: 500;">-</span></div>
-        </div>
-
-        <!-- Open Draft Scanner Section -->
-        <div class="form-group" style="margin-bottom: 14px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-            <label class="form-label" for="fixDraftSelect" style="margin: 0; font-weight: 600; color: #38bdf8;">
-              Select Open Compose Draft from Gmail
-            </label>
-            <button type="button" id="btnRefreshOpenDrafts" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 11px;">
-              🔄 Refresh Drafts
-            </button>
-          </div>
-          <select id="fixDraftSelect" class="form-select">
-            <option value="">Scanning Gmail tabs for open drafts...</option>
-          </select>
-          <span class="form-help" id="fixDraftScannerHelp" style="margin-top: 5px;">
-            💡 Tip: Open or compose your draft in Gmail, then click <strong>Refresh Drafts</strong>.
-          </span>
-        </div>
-
-        <!-- Dispatch Timing Section -->
-        <div class="form-group" style="background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px;">
-          <label class="form-label" style="font-weight: 600; margin-bottom: 8px;">Dispatch Timing</label>
-          <div style="display: flex; flex-direction: column; gap: 8px;">
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; color: var(--text-white);">
-              <input type="radio" name="fixDraftTiming" value="immediate" checked id="radioFixDraftImmediate">
-              <span>⚡ <strong>Queue for Immediate Dispatch</strong> (Enters account FIFO queue)</span>
-            </label>
-            <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; color: var(--text-white);">
-              <input type="radio" name="fixDraftTiming" value="scheduled" id="radioFixDraftScheduled">
-              <span>📅 <strong>Set New Scheduled Date &amp; Time</strong></span>
-            </label>
-          </div>
-
-          <div id="fixDraftScheduledContainer" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-color);">
-            <label class="form-label" for="inputFixDraftTime" style="font-size: 12px;">New Schedule Date &amp; Time:</label>
-            <input type="datetime-local" id="inputFixDraftTime" class="form-input">
-          </div>
-        </div>
-
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary btn-sm" data-close-modal="modalFixDraft">Cancel</button>
-        <button id="btnConfirmFixDraft" class="btn btn-primary btn-sm">Save &amp; Re-queue Campaign</button>
-      </div>
-    </div>
-  </div>
 
   <!-- Overnight Screen Forensics Lightbox Modal -->
   <div class="modal-overlay" id="modalForensicsViewer">
