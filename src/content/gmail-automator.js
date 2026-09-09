@@ -566,6 +566,7 @@
         }
       }
 
+      let anyDismissed = false;
       for (const dialog of dialogs) {
         if (!isElementVisible(dialog)) continue;
         const text = (dialog.textContent || '').toLowerCase();
@@ -739,7 +740,36 @@
             return true;
           }
         }
+
+        // 5. Check for unexpected Google alertdialogs / warning popups (role="alertdialog" or .Kj-JD with OK/Dismiss)
+        const isAlertDialog = dialog.getAttribute('role') === 'alertdialog' || dialog.classList.contains('Kj-JD');
+        if (isAlertDialog) {
+          const alertButtons = Array.from(dialog.querySelectorAll('button, [role="button"], span[role="button"], div[role="button"], .T-I, .jfk-button'));
+          let okBtn = alertButtons.find((b) => /^(ok|dismiss|got it|close|acknowledge|i understand)$/i.test((b.textContent || '').trim()))
+            || dialog.querySelector('[aria-label="OK" i], [aria-label="Dismiss" i], [aria-label="Close" i]');
+          if (!okBtn) {
+            okBtn = Array.from(dialog.querySelectorAll('*')).find((el) => isElementVisible(el) && /^(ok|dismiss|got it|close)$/i.test((el.textContent || '').trim()));
+          }
+
+          if (okBtn) {
+            const alertText = (dialog.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 150);
+            console.warn(`[GmailAutomator] 🛡️ Auto-dismissing unexpected Google alertdialog: "${alertText}"`);
+            await captureForensicSnapshot('ALERTDIALOG_DISMISSED', dialog, `Dismissed alertdialog: ${alertText}`, campaign);
+            if (campaign?.id && root.IDBStore) {
+              await root.IDBStore.addLog(campaign.id, 'WARN', `Auto-dismissed Google alertdialog: "${alertText}"`).catch(() => {});
+            }
+            await humanClick(okBtn);
+            try {
+              if (typeof okBtn.click === 'function') okBtn.click();
+              okBtn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+              okBtn.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+            } catch (_) {}
+            await sleep(300);
+            anyDismissed = true;
+          }
+        }
       }
+      return anyDismissed;
     } catch (err) {
       console.warn('[GmailAutomator] Error handling interfering modals note:', err);
     }
@@ -1489,7 +1519,7 @@
      */
     static async _runSingleExecution(draftId, campaign) {
       const campaignId = campaign?.id;
-      const subject = campaign?.subject;
+      let subject = campaign?.subject;
       currentActiveCampaign = campaign;
       let currentStep = 'NAVIGATE';
 
@@ -1550,6 +1580,7 @@
 
       console.log('[GmailAutomator] 🚀 Executing scheduled native merge for draft: ' + (draftId || 'unknown') + ' (Subject: "' + (subject || '') + '")');
 
+      let composeDialog = null;
       try {
         // Auto-dismiss any Google spam / junk policy disclaimer modal right away
         await dismissGoogleSpamDisclaimerIfNeeded(document);
@@ -1557,7 +1588,7 @@
         await reportProgress('NAVIGATE', 'Locating and verifying targeted draft...', 10);
 
         // 1. First check if matching compose dialog is ALREADY open or minimized in this tab
-        let composeDialog = await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
+        composeDialog = await GmailAutomator.findAndExpandMatchingComposeDialog(draftId, campaign);
 
         if (!composeDialog) {
           await dismissGoogleSpamDisclaimerIfNeeded(document);
@@ -1680,16 +1711,21 @@
           composeDialog.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp, span.aYF')?.textContent || '').trim();
         const normExpectedSub = normalizeText(subject);
         const normVerifySub = normalizeText(verifySubject);
-        const isGenericSub = !normExpectedSub || normExpectedSub.startsWith('mail merge (');
+        const isGenericSub = !normExpectedSub ||
+          normExpectedSub.startsWith('mail merge (') ||
+          normExpectedSub.includes('compose') ||
+          normExpectedSub.includes('new message');
 
         if (!isGenericSub && normVerifySub && !normVerifySub.includes(normExpectedSub) && !normExpectedSub.includes(normVerifySub)) {
           throw new Error(`Subject Mismatch: Compose window subject "${verifySubject}" does not match campaign subject "${subject}".`);
         }
 
         // Auto-heal legacy campaigns with generic subject placeholders
-        if (isGenericSub && verifySubject && campaignId && root.IDBStore) {
+        if (isGenericSub && verifySubject && !/^(compose:?\s*)?new message$/i.test(verifySubject) && campaignId && root.IDBStore) {
           await root.IDBStore.updateCampaign(campaignId, { subject: verifySubject }).catch(() => {});
           console.log(`[GmailAutomator] 🔄 Auto-updated legacy campaign subject from "${subject}" to "${verifySubject}".`);
+          subject = verifySubject;
+          if (campaign) campaign.subject = verifySubject;
         }
 
         // Verify Mail Merge session
@@ -1725,17 +1761,17 @@
             return null;
           },
           async () => {
-            // If Google intercepted with the spam/junk disclaimer modal, auto-accept and dismiss it
-            const intercepted = await dismissGoogleSpamDisclaimerIfNeeded(document);
+            // If Google intercepted with an alertdialog or policy modal, auto-accept and dismiss it
+            const intercepted = await dismissGoogleSpamDisclaimerIfNeeded(document, campaign);
             if (intercepted) {
               if (campaignId && root.IDBStore) {
-                await root.IDBStore.addLog(campaignId, 'INFO', 'Google bulk email policy disclaimer automatically accepted with "Don\'t show again". Re-triggering "Continue" click...').catch(() => {});
+                await root.IDBStore.addLog(campaignId, 'INFO', 'Google modal/alert automatically dismissed. Re-triggering "Continue" click...').catch(() => {});
               }
-              // Google's policy modal consumed the previous click! Immediately re-click "Continue"
+              // Google's modal consumed the previous click! Immediately re-click "Continue"
               await sleep(400);
               const continueBtn = composeDialog.querySelector('button, div[role="button"], [role="button"].continue, button.continue, .T-I-KE');
               if (continueBtn && isElementVisible(continueBtn)) {
-                console.log('[GmailAutomator] 🔄 Re-clicking "Continue" after dismissing Google policy modal...');
+                console.log('[GmailAutomator] 🔄 Re-clicking "Continue" after dismissing Google modal/alert...');
                 await humanClick(continueBtn);
               }
             }
@@ -1965,6 +2001,32 @@
           error.message,
           campaign
         );
+
+        // 3. SMART DOM RESET: Clean up lingering alertdialogs and close corrupted compose modal
+        // so retry attempts or subsequent campaigns start from a fresh, unobstructed DOM.
+        if (!error?.isFatal && !error?.isQuotaLimit && error?.category !== 'DRAFT_NOT_FOUND') {
+          try {
+            const alertdialogs = Array.from(document.querySelectorAll('div[role="alertdialog"], div.Kj-JD'));
+            for (const ad of alertdialogs) {
+              if (!isElementVisible(ad)) continue;
+              const okBtn = ad.querySelector('button, [role="button"], .T-I, [aria-label*="OK" i], [aria-label*="Dismiss" i], [aria-label*="Close" i]');
+              if (okBtn) {
+                try { okBtn.click(); } catch (_) {}
+              }
+            }
+            const targetCompose = composeDialog || document.querySelector('div[role="dialog"]');
+            if (targetCompose && targetCompose.isConnected) {
+              const closeBtn = targetCompose.querySelector('img[aria-label*="Save & close" i], div[aria-label*="Save & close" i], button[aria-label*="Close" i], [aria-label*="Close" i], img.Ha, div.Ha');
+              if (closeBtn) {
+                try { closeBtn.click(); } catch (_) {}
+                console.log('[GmailAutomator] 🚪 Closed stuck compose dialog to ensure clean slate for retry.');
+              }
+            }
+            await sleep(1000);
+          } catch (cleanErr) {
+            console.warn('[GmailAutomator] Tab DOM cleanup warning:', cleanErr);
+          }
+        }
 
         const isQuota = !!error?.isQuotaLimit || (error?.category === 'QUOTA_EXCEEDED');
         const isDraftNotFound = (error && (error.category === 'DRAFT_NOT_FOUND' || (error.message && error.message.includes('[DRAFT_NOT_FOUND]'))));

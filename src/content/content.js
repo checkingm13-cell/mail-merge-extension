@@ -934,10 +934,11 @@
         return;
       }
 
-      // Safety Guard 1: Enforce Non-Empty Subject
+      // Safety Guard 1: Enforce Non-Empty Subject (Reject placeholders like "New Message" or "Compose: New Message")
       const rawSubject = (getSubject(composeDialog) || '').trim();
-      const currentSubject = ((rawSubject && !rawSubject.startsWith('Mail Merge (')) ? rawSubject : (selectedTemplate?.subject || rawSubject || subject || '')).trim();
-      if (!currentSubject || currentSubject === '(No Subject)' || currentSubject.startsWith('Mail Merge (')) {
+      const isPlaceholder = !rawSubject || rawSubject === '(No Subject)' || /^(compose:?\s*)?new message$/i.test(rawSubject) || rawSubject.startsWith('Mail Merge (');
+      const currentSubject = (!isPlaceholder ? rawSubject : (selectedTemplate?.subject || '')).trim();
+      if (!currentSubject || /^(compose:?\s*)?new message$/i.test(currentSubject) || currentSubject.startsWith('Mail Merge (')) {
         alertBox.textContent = '⚠️ Please enter a clear email subject in your draft before scheduling.';
         alertBox.style.display = 'block';
         alertBox.style.background = '#fef3c7';
@@ -1149,8 +1150,8 @@
     if (composeDialog) {
       const subjectInput = composeDialog.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
       if (subjectInput && subjectInput.value.trim()) return subjectInput.value.trim();
-      const headerTitle = composeDialog.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp, span.aYF')?.textContent || '';
-      if (headerTitle.trim()) return headerTitle.trim();
+      const headerTitle = (composeDialog.querySelector('h2, div[role="heading"], div.aaq, div.aAU, div.Hp, span.aYF')?.textContent || '').trim();
+      if (headerTitle && !/^(compose:?\s*)?new message$/i.test(headerTitle)) return headerTitle;
     }
     const globalSubject = document.querySelector('input[name="subjectbox"], input[aria-label="Subject"]');
     if (globalSubject && globalSubject.value.trim()) return globalSubject.value.trim();
