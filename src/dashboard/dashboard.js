@@ -806,7 +806,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         category: 'DAILY_QUOTA',
         badge: '⏳ Multi-Modal / Daily Limit Reached',
         color: '#fbbf24',
-        remedy: 'Google multi-merge sending limit reached. Account dispatches are postponed for 12 hours.'
+        remedy: 'Google multi-send daily quota (1,500/day external for Workspace, 500/day for standard) or short-term burst velocity limit reached. Dispatches for this account are paused for 12 hours so the 24-hour rolling window resets.'
+      };
+    }
+    if (msg.includes("mailer-daemon") || msg.includes("bounce") || msg.includes("550 5.1.1") || msg.includes("550 5.7.1") || msg.includes("undelivered") || msg.includes("delivery status notification") || msg.includes("address not found")) {
+      return {
+        category: 'MAILER_DAEMON_BOUNCE',
+        badge: '📬 Bounce Notice (mailer-daemon)',
+        color: '#f59e0b',
+        remedy: 'Non-delivery reports received from mailer-daemon@googlemail.com (e.g. 550 5.1.1 User unknown). Google mandates bounce rate < 2.0% to protect domain reputation. Please remove dead recipient emails from your Google Sheet.'
       };
     }
     if (msg.includes("verify it's you") || msg.includes("login required") || msg.includes("auth required") || msg.includes("accounts.google.com")) {
@@ -981,7 +989,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (filtered.length === 0) {
       const isFiltered = currentCampaignFilter !== 'ALL' || (currentCampaignSearch && currentCampaignSearch.trim().length > 0);
       campaignsTableBody.innerHTML = `
-        <tr>
+        <tr class="table-empty">
           <td colspan="7" class="table-empty">
             <div style="font-size: 14px; font-weight: 600; margin-bottom: 4px;">No campaigns found</div>
             <div style="font-size: 12px; color: var(--text-muted);">
