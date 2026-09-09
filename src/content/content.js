@@ -699,7 +699,8 @@
           '<label style="display: block; font-size: 11px; font-weight: 600; color: #3c4043; text-transform: uppercase; margin-bottom: 4px;">' +
             'Dispatch Date & Time (Real Time)' +
           '</label>' +
-          '<input type="datetime-local" id="mmDateTimeInput" value="' + defaultTimeStr + '" min="' + minTimeStr + '" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #dadce0; border-radius: 6px; font-size: 13px; outline: none; font-family: inherit;" />' +
+          '<input type="datetime-local" id="mmDateTimeInput" value="' + defaultTimeStr + '" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #dadce0; border-radius: 6px; font-size: 13px; outline: none; font-family: inherit;" />' +
+          '<div style="font-size: 10px; color: #5f6368; margin-top: 3px; display: flex; justify-content: space-between;"><span>Type date/time directly or click presets</span><span>Format: YYYY-MM-DD HH:MM</span></div>' +
         '</div>' +
         '<div style="display: flex; gap: 6px; margin-bottom: 14px;">' +
           '<button type="button" class="mm-quick-time" data-offset="now" style="flex: 1; padding: 4px 6px; font-size: 11px; background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px; cursor: pointer; color: #3c4043; font-weight: 600;">Now</button>' +
@@ -925,7 +926,9 @@
         return;
       }
 
-      const scheduledTime = new Date(val).getTime();
+      const rawVal = (val || '').trim();
+      const cleanVal = rawVal.includes(' ') ? rawVal.replace(' ', 'T') : rawVal;
+      const scheduledTime = new Date(cleanVal).getTime();
       if (isNaN(scheduledTime) || scheduledTime < Date.now() - 60000) {
         alertBox.textContent = 'Scheduled time cannot be in the past.';
         alertBox.style.display = 'block';
@@ -1372,6 +1375,14 @@
         }
         sendResponse({ success: true, drafts, accountEmail: email.toLowerCase().trim(), userIndex });
         return false;
+      }
+
+      if (message.action === 'DELETE_LOCAL_CAMPAIGN') {
+        if (root.IDBStore && message.campaignId) {
+          root.IDBStore.deleteCampaign(message.campaignId).catch(() => {});
+        }
+        sendResponse({ success: true });
+        return true;
       }
 
       if (message.action === 'REQUEST_CAMPAIGN_SYNC') {

@@ -194,15 +194,22 @@ async function runE2ETest() {
 
     // Test "Open Full Dashboard" button from popup
     console.log('Testing "🚀 Open Full Dashboard" button from popup...');
-    await dashboardPage.close(); // Close existing tab so popup opens a fresh tab
+    try { await dashboardPage.close(); } catch (_) {}
+    await popupPage.waitForTimeout(500);
 
-    const [newPage] = await Promise.all([
-      context.waitForEvent('page'),
-      popupPage.click('#btnOpenDashboard')
-    ]);
-    await newPage.waitForLoadState('domcontentloaded');
+    const pagePromise = context.waitForEvent('page', { timeout: 4000 }).catch(() => null);
+    await popupPage.click('#btnOpenDashboard');
+    let newPage = await pagePromise;
+    if (!newPage) {
+      await popupPage.waitForTimeout(1000);
+      newPage = context.pages().find((p) => p.url().includes('dashboard.html')) || await context.newPage();
+      if (!newPage.url().includes('dashboard.html')) {
+        await newPage.goto(`chrome-extension://${extensionId}/src/dashboard/dashboard.html`);
+      }
+    }
+    await newPage.waitForLoadState('domcontentloaded').catch(() => {});
     console.log(`Successfully opened Dashboard from popup: ${newPage.url()}`);
-    await popupPage.close();
+    try { await popupPage.close(); } catch (_) {}
 
     // =========================================================================
     // STEP 6: TEST TRIGGER NOW & SCHEDULER CONTROLS

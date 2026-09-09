@@ -609,7 +609,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         await window.IDBStore.deleteCampaign(campaignId);
       }
       try {
-        await chrome.runtime.sendMessage({ action: 'REFRESH_BADGE' });
+        await chrome.runtime.sendMessage({ action: 'DELETE_CAMPAIGN', campaignId });
       } catch (_) {}
 
       showToast('Campaign deleted');

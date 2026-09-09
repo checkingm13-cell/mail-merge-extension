@@ -97,17 +97,30 @@
               <h2 class="panel-title">Campaign Dispatches</h2>
               <p class="panel-subtitle">Monitor, trigger, reschedule, or cancel background mail merges</p>
             </div>
-            <div class="filter-bar">
-              <span style="font-size: 11px; color: var(--text-muted); margin-right: 4px;">Status:</span>
+            <div class="filter-bar" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span style="font-size: 11px; color: var(--text-muted); margin-right: 2px;">Status:</span>
               <button class="filter-pill active" data-status="ALL">All (<span id="countAll">0</span>)</button>
               <button class="filter-pill" data-status="QUEUED">Queued (<span id="countFilterQueued">0</span>)</button>
               <button class="filter-pill" data-status="PROCESSING">Processing (<span id="countFilterProcessing">0</span>)</button>
               <button class="filter-pill" data-status="COMPLETED">Completed (<span id="countFilterCompleted">0</span>)</button>
               <button class="filter-pill" data-status="FAILED">Failed (<span id="countFilterFailed">0</span>)</button>
               <button class="filter-pill" data-status="CANCELLED">Cancelled (<span id="countFilterCancelled">0</span>)</button>
-              <button id="btnRemoveAllFailedFilter" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4); margin-left: 6px;" title="Permanently delete all failed campaigns from IndexedDB database">
+              <button id="btnRemoveAllFailedFilter" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4); margin-left: 4px;" title="Permanently delete all failed campaigns from IndexedDB database">
                 <span>🗑️ Delete All Failed</span>
               </button>
+
+              <div style="display: inline-flex; align-items: center; gap: 6px; margin-left: 6px;">
+                <span style="font-size: 11px; color: var(--text-muted);">Sort:</span>
+                <select id="campaignSortSelect" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(71, 85, 105, 0.6); border-radius: 6px; padding: 4px 8px; font-size: 11px; color: var(--text-primary); outline: none; cursor: pointer;">
+                  <option value="NEWEST">🕒 Newest First</option>
+                  <option value="RUNNING_FIRST">⚡ Running First</option>
+                  <option value="SCHEDULED">📅 Scheduled (Soonest)</option>
+                  <option value="OLDEST">⏳ Oldest First</option>
+                  <option value="SUBJECT">🔤 Subject (A-Z)</option>
+                </select>
+              </div>
+
+              <input type="text" id="campaignSearchInput" placeholder="🔍 Search campaigns..." style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(71, 85, 105, 0.6); border-radius: 6px; padding: 4px 10px; font-size: 11px; color: var(--text-primary); outline: none; min-width: 170px; margin-left: 4px;" />
             </div>
             <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
               <button id="btnTopRemoveAllFailed" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4);" title="Permanently delete all failed campaigns from IndexedDB database">

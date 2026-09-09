@@ -9,6 +9,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   let allTemplates = [];
   let allLogs = [];
   let currentCampaignFilter = 'ALL';
+  let currentCampaignSort = 'NEWEST';
+  let currentCampaignSearch = '';
   let currentLogFilter = 'ALL';
   let schedulerIntervalTimer = null;
 
@@ -302,6 +304,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderCampaignsTable();
       });
     });
+
+    const campaignSortSelect = document.getElementById('campaignSortSelect');
+    if (campaignSortSelect) {
+      campaignSortSelect.addEventListener('change', () => {
+        currentCampaignSort = campaignSortSelect.value;
+        renderCampaignsTable();
+      });
+    }
+
+    const campaignSearchInput = document.getElementById('campaignSearchInput');
+    if (campaignSearchInput) {
+      campaignSearchInput.addEventListener('input', () => {
+        currentCampaignSearch = campaignSearchInput.value || '';
+        renderCampaignsTable();
+      });
+    }
 
     // Queue Form Interactions
     formSheetUrl.addEventListener('input', () => {
@@ -926,13 +944,48 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     }
 
+    if (currentCampaignSearch && currentCampaignSearch.trim()) {
+      const q = currentCampaignSearch.toLowerCase().trim();
+      filtered = filtered.filter((c) => 
+        (c.subject && c.subject.toLowerCase().includes(q)) ||
+        (c.sheetTitle && c.sheetTitle.toLowerCase().includes(q)) ||
+        (c.accountEmail && c.accountEmail.toLowerCase().includes(q)) ||
+        (c.id && c.id.toLowerCase().includes(q))
+      );
+    }
+
+    // Sort according to user preference
+    filtered = [...filtered].sort((a, b) => {
+      if (currentCampaignSort === 'RUNNING_FIRST') {
+        if (a.status === 'PROCESSING' && b.status !== 'PROCESSING') return -1;
+        if (b.status === 'PROCESSING' && a.status !== 'PROCESSING') return 1;
+        if (a.status === 'QUEUED' && b.status !== 'QUEUED') return -1;
+        if (b.status === 'QUEUED' && a.status !== 'QUEUED') return 1;
+      } else if (currentCampaignSort === 'SCHEDULED') {
+        const timeA = new Date(a.scheduledAt || a.createdAt || 0).getTime();
+        const timeB = new Date(b.scheduledAt || b.createdAt || 0).getTime();
+        return timeA - timeB; // soonest first
+      } else if (currentCampaignSort === 'OLDEST') {
+        const timeA = new Date(a.createdAt || a.scheduledAt || 0).getTime();
+        const timeB = new Date(b.createdAt || b.scheduledAt || 0).getTime();
+        return timeA - timeB;
+      } else if (currentCampaignSort === 'SUBJECT') {
+        return (a.subject || '').localeCompare(b.subject || '');
+      }
+      // Default: NEWEST created first
+      const timeA = new Date(a.createdAt || a.scheduledAt || 0).getTime();
+      const timeB = new Date(b.createdAt || b.scheduledAt || 0).getTime();
+      return timeB - timeA;
+    });
+
     if (filtered.length === 0) {
+      const isFiltered = currentCampaignFilter !== 'ALL' || (currentCampaignSearch && currentCampaignSearch.trim().length > 0);
       campaignsTableBody.innerHTML = `
         <tr>
           <td colspan="7" class="table-empty">
             <div style="font-size: 14px; font-weight: 600; margin-bottom: 4px;">No campaigns found</div>
             <div style="font-size: 12px; color: var(--text-muted);">
-              ${currentCampaignFilter === 'ALL' ? 'Queue your first mail merge campaign using the "+ Queue New Campaign" tab.' : `No campaigns with status "${currentCampaignFilter}".`}
+              ${isFiltered ? 'No campaigns match the current filter or search criteria.' : 'Queue your first mail merge campaign using the "+ Queue New Campaign" tab.'}
             </div>
           </td>
         </tr>
@@ -1483,12 +1536,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     try {
-      await window.IDBStore.deleteCampaign(campaignId);
-      await window.IDBStore.addLog(campaignId, 'WARN', 'Campaign deleted from dashboard.');
+      if (window.IDBStore) {
+        await window.IDBStore.deleteCampaign(campaignId);
+        await window.IDBStore.addLog(campaignId, 'WARN', 'Campaign deleted from dashboard.').catch(() => {});
+      }
 
-      try {
-        await chrome.runtime.sendMessage({ action: 'REFRESH_BADGE' });
-      } catch (e) {}
+      // Notify central background to permanently tombstone, clear alarms & purge from all open Gmail tabs
+      if (chrome.runtime && typeof chrome.runtime.sendMessage === 'function') {
+        try {
+          await chrome.runtime.sendMessage({ action: 'DELETE_CAMPAIGN', campaignId });
+        } catch (e) {}
+      }
 
       showToast('Campaign removed');
       await loadCampaigns();

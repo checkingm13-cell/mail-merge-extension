@@ -83,6 +83,23 @@ async function syncSystemWakeLock() {
 }
 
 // =============================================================================
+// PERMANENT DELETION TRACKING (Prevents Ghost Campaign Resurrections)
+// =============================================================================
+const DELETED_CAMPAIGNS_KEY = 'mm_deleted_campaign_ids';
+let cachedDeletedCampaignIds = new Set();
+
+async function initDeletedCampaigns() {
+  try {
+    const data = await chrome.storage.local.get([DELETED_CAMPAIGNS_KEY]);
+    if (Array.isArray(data[DELETED_CAMPAIGNS_KEY])) {
+      cachedDeletedCampaignIds = new Set(data[DELETED_CAMPAIGNS_KEY]);
+      console.log(`[ServiceWorker] 🛡️ Loaded ${cachedDeletedCampaignIds.size} tombstoned campaign ID(s) to prevent ghost syncs.`);
+    }
+  } catch (_) {}
+}
+initDeletedCampaigns();
+
+// =============================================================================
 // LIFECYCLE & ALARM MANAGEMENT
 // =============================================================================
 
@@ -1273,10 +1290,48 @@ async function handleRuntimeMessage(message, sender) {
       return { success: true };
     }
 
+    case 'DELETE_CAMPAIGN': {
+      const campaignId = message.campaignId;
+      if (!campaignId) return { success: false, error: 'Missing campaignId' };
+
+      cachedDeletedCampaignIds.add(campaignId);
+      // Persist last 1000 deleted IDs
+      const idArray = Array.from(cachedDeletedCampaignIds).slice(-1000);
+      chrome.storage.local.set({ [DELETED_CAMPAIGNS_KEY]: idArray }).catch(() => {});
+
+      if (self.IDBStore) {
+        try {
+          await self.IDBStore.deleteCampaign(campaignId);
+        } catch (_) {}
+      }
+
+      // Clear any pending alarm
+      chrome.alarms.clear(`CAMPAIGN_${campaignId}`).catch(() => {});
+
+      // Broadcast to ALL open Gmail tabs so they purge it from their local origin IDB
+      try {
+        const openTabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
+        for (const tab of openTabs) {
+          chrome.tabs.sendMessage(tab.id, {
+            action: 'DELETE_LOCAL_CAMPAIGN',
+            campaignId
+          }).catch(() => {});
+        }
+      } catch (_) {}
+
+      await refreshBadge();
+      console.log(`[ServiceWorker] 🗑️ Campaign ${campaignId} permanently deleted across central store & Gmail tabs.`);
+      return { success: true };
+    }
+
     case 'SYNC_CAMPAIGNS': {
       if (Array.isArray(message.campaigns) && self.IDBStore) {
         let addedCount = 0;
         for (const camp of message.campaigns) {
+          if (!camp || !camp.id) continue;
+          // PERMANENT FIX: Never re-save or resurrect deleted campaigns!
+          if (cachedDeletedCampaignIds.has(camp.id)) continue;
+
           try {
             const existing = await self.IDBStore.getCampaignById(camp.id);
             if (!existing) {
@@ -1605,24 +1660,34 @@ async function handleRuntimeMessage(message, sender) {
       if (!self.IDBStore) {
         return { success: false, error: 'Database not ready' };
       }
-      let removedCount = 0;
-      if (typeof self.IDBStore.deleteFailedCampaigns === 'function') {
-        removedCount = await self.IDBStore.deleteFailedCampaigns();
-      } else {
-        const campaigns = await self.IDBStore.getCampaigns();
-        const failed = campaigns.filter((c) => c.status === 'FAILED');
-        for (const camp of failed) {
-          try {
-            await self.IDBStore.deleteForensicsByCampaign(camp.id).catch(() => {});
-            await self.IDBStore.deleteLogsByCampaign(camp.id).catch(() => {});
-            await self.IDBStore.deleteCampaign(camp.id);
-            await chrome.alarms.clear(`CAMPAIGN_${camp.id}`).catch(() => {});
-            removedCount++;
-          } catch (delErr) {
-            console.warn(`[ServiceWorker] Error deleting failed campaign ${camp.id}:`, delErr.message);
-          }
+      const campaigns = await self.IDBStore.getCampaigns();
+      const failed = campaigns.filter((c) => c.status === 'FAILED');
+      for (const camp of failed) {
+        try {
+          cachedDeletedCampaignIds.add(camp.id);
+          await self.IDBStore.deleteForensicsByCampaign(camp.id).catch(() => {});
+          await self.IDBStore.deleteLogsByCampaign(camp.id).catch(() => {});
+          await self.IDBStore.deleteCampaign(camp.id);
+          await chrome.alarms.clear(`CAMPAIGN_${camp.id}`).catch(() => {});
+          removedCount++;
+        } catch (delErr) {
+          console.warn(`[ServiceWorker] Error deleting failed campaign ${camp.id}:`, delErr.message);
         }
       }
+
+      // Persist tombstones
+      const idArray = Array.from(cachedDeletedCampaignIds).slice(-1000);
+      chrome.storage.local.set({ [DELETED_CAMPAIGNS_KEY]: idArray }).catch(() => {});
+
+      // Broadcast to tabs
+      try {
+        const openTabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
+        for (const tab of openTabs) {
+          for (const camp of failed) {
+            chrome.tabs.sendMessage(tab.id, { action: 'DELETE_LOCAL_CAMPAIGN', campaignId: camp.id }).catch(() => {});
+          }
+        }
+      } catch (_) {}
 
       await self.IDBStore.addLog(null, 'INFO', `Permanently purged ${removedCount} failed campaign(s), screenshots, and logs from database.`);
       await refreshBadge();
