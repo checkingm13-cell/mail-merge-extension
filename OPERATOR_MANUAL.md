@@ -95,14 +95,49 @@ You can create and customize rich templates with live hyperlinks that automatica
 
 ---
 
-## ✅ 6. Daily 30-Second Operator Checklist
+## 🖥️ 6. PC, Laptop & Monitor Setup: What Will You See on Screen?
+
+### A. Power & Hardware Settings (PC & Laptop)
+| Setting | Recommended Value | Why It Matters |
+| :--- | :--- | :--- |
+| **Power Charger** | **Always Plugged In** | Windows throttles CPU and background timers when running on battery. |
+| **Laptop Lid Action** | **"Do Nothing"** | Allows you to shut the laptop lid overnight while mail merge continues running. |
+| **System Sleep** | **"Never"** | Prevents Windows from putting the computer into deep sleep. |
+| **Screen / Display** | **Turns off after 15 min** | Completely safe! Turning off the physical screen saves power & prevents screen burn-in; CPU, WiFi, and Chrome stay 100% active. |
+| **Windows Lock (`Win + L`)** | **Supported** | You can lock your workstation for security; background dispatches continue uninterrupted. |
+| **Chrome Setting** | **Background Apps ON** | In `chrome://settings/system`, keep *"Continue running background apps when Google Chrome is closed"* turned **ON**. |
+
+> 💡 **Tip:** Running **`SETUP_FRESH_PC.bat`** as Administrator once automatically configures all of the above Windows and Chrome settings for you.
+
+---
+
+### B. What Will the Operator See on Screen During Operation?
+
+1. **While Campaigns Are Waiting in Queue (e.g. Scheduled for 11:00 PM tonight):**
+   - **On Screen:** Nothing interrupts you. Normal desktop and normal Gmail inbox.
+   - **In Dashboard:** Status shows `QUEUED` with the exact scheduled dispatch time.
+   - **What you can do:** You can minimize Chrome, lock the PC (`Win + L`), or let the monitor turn off.
+
+2. **At the Exact Moment of Dispatch (The Automated Send):**
+   - **If Chrome is minimized or screen is locked:** The dispatch executes **silently in the background** without waking your screen or disturbing you.
+   - **If you are actively looking at the Gmail tab:** The draft compose window will open briefly (3–5 seconds), automate the Mail Merge popup dialog, click "Send", and automatically close once sent.
+   - **In the Dashboard (`dashboard.html`):** The campaign status automatically updates in real-time without reloading:
+     - `QUEUED` ➡️ `PROCESSING` (with live progress bar 0% ➡️ 100%).
+     - `PROCESSING` ➡️ `COMPLETED` (green badge).
+   - **Windows Notification:** A native desktop notification pops up in the bottom-right corner:  
+     *"Mail Merge Completed: Campaign successfully dispatched."*
+
+---
+
+## ✅ 7. Daily 30-Second Operator Checklist
 
 Before you clock out or leave your laptop for unattended overnight sending:
 
 - [ ] **PC Setup:** You ran `SETUP_FRESH_PC.bat` on this computer at least once.
+- [ ] **Power:** Laptop is plugged into its power charger (AC power).
 - [ ] **Browser Window:** Google Chrome is open with at least one **Gmail** tab active.
-- [ ] **Laptop Lid:** The laptop is plugged into its power charger. (Closing the lid is fine if `SETUP_FRESH_PC.bat` was run).
-- [ ] **Dashboard Check:** The green dot shows **"Scheduler Active"** in the Dashboard header.
-- [ ] **Queue Check:** Click the **"Queued"** filter tab to verify your scheduled times are set correctly.
+- [ ] **Dashboard Check:** The green indicator shows **"Scheduler Active"** in the Dashboard header.
+- [ ] **Queue Check:** Click the **"Queued"** filter to verify your scheduled dispatches are set correctly.
+- [ ] **Leaving the PC:** You can lock Windows (`Win + L`), close the laptop lid, or turn off the physical monitor.
 
 **You are all set for smooth, automatic 24/7 mail merge operations!**
