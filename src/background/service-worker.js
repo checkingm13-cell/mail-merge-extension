@@ -1760,6 +1760,7 @@ async function handleRuntimeMessage(message, sender) {
       }
       const campaigns = await self.IDBStore.getCampaigns();
       const failed = campaigns.filter((c) => c.status === 'FAILED');
+      let removedCount = 0;
       for (const camp of failed) {
         try {
           cachedDeletedCampaignIds.add(camp.id);

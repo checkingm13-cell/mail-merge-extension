@@ -14,7 +14,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   let currentCampaignPage = 1;
   let currentCampaignPageSize = 50;
   let currentLogFilter = 'ALL';
-  let schedulerIntervalTimer = null;
   let liveStreamPort = null;
 
   // DOM Elements - Navigation & Header
@@ -2703,6 +2702,8 @@ pause
         ? `<button class="btn-log-forensic badge-forensic" data-camp-id="${escapeHtml(log.campaignId)}" style="cursor: pointer; border: none; margin-left: 6px;" title="View Screen Capture & Observation">📸 View Capture</button>`
         : '';
 
+      const campIdStr = log.campaignId || 'SYSTEM';
+
       entry.innerHTML = `
         <span class="log-time">${timeStr}</span>
         <span class="log-level ${log.level}">${log.level}</span>
@@ -2895,9 +2896,10 @@ pause
   // Connect live stream on initial load
   connectLiveStream();
 
-  // Fallback broadcast listener for standard runtime messages
+  // Fallback broadcast listener for standard runtime messages (only used if live stream port is disconnected)
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((msg) => {
+      if (liveStreamPort) return; // Prevent duplicate execution when liveStreamPort is active
       if (
         msg.action === 'CAMPAIGN_PROGRESS' ||
         msg.action === 'CAMPAIGN_STATUS_UPDATE' ||

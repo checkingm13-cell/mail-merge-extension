@@ -773,9 +773,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   connectPopupLiveStream();
 
-  // Fallback broadcast listener for standard runtime messages
+  // Fallback broadcast listener for standard runtime messages (only used if live stream port is disconnected)
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((msg) => {
+      if (liveStreamPort) return; // Prevent duplicate execution when liveStreamPort is active
       if (
         msg.action === 'CAMPAIGN_PROGRESS' ||
         msg.action === 'CAMPAIGN_STATUS_UPDATE' ||
