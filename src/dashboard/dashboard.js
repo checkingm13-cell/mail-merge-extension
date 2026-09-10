@@ -76,26 +76,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const queueWaitingCount = document.getElementById('queueWaitingCount');
   const queueLockStateBadge = document.getElementById('queueLockStateBadge');
 
-  // Queue Tab elements
-  const newCampaignForm = document.getElementById('newCampaignForm');
-  const formSenderEmail = document.getElementById('formSenderEmail');
-  const formRecipientCol = document.getElementById('formRecipientCol');
-  const formSheetUrl = document.getElementById('formSheetUrl');
-  const extractedSheetIdBadge = document.getElementById('extractedSheetIdBadge');
-  const formSheetTitle = document.getElementById('formSheetTitle');
-  const dropdownTemplateSelect = document.getElementById('dropdownTemplateSelect');
-  const formSubject = document.getElementById('formSubject');
-  const formBodyTemplate = document.getElementById('formBodyTemplate');
-  const modeImmediate = document.getElementById('modeImmediate');
-  const modeScheduled = document.getElementById('modeScheduled');
-  const formScheduledTime = document.getElementById('formScheduledTime');
-  const formIncludeUnsub = document.getElementById('formIncludeUnsub');
-  const formDryRun = document.getElementById('formDryRun');
-  const btnResetForm = document.getElementById('btnResetForm');
-  const btnPresetCfp = document.getElementById('btnPresetCfp');
-  const btnPresetResearch = document.getElementById('btnPresetResearch');
-  const btnPresetReminder = document.getElementById('btnPresetReminder');
-
   // Templates Tab elements
   const templatesGrid = document.getElementById('templatesGrid');
   const btnOpenCreateTemplate = document.getElementById('btnOpenCreateTemplate');
@@ -202,7 +182,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     });
 
-    btnJumpToQueue.addEventListener('click', () => switchTab('tab-queue'));
+    if (btnJumpToQueue) btnJumpToQueue.addEventListener('click', openGmailTab);
 
     // Header Actions
     btnTopToggleScheduler.addEventListener('click', toggleScheduler);
@@ -379,80 +359,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderCampaignsTable();
       });
     }
-
-    // Queue Form Interactions
-    formSheetUrl.addEventListener('input', () => {
-      const url = formSheetUrl.value.trim();
-      const match = url.match(/\/d\/([a-zA-Z0-9-_]+)/);
-      if (match && match[1]) {
-        extractedSheetIdBadge.textContent = `ID: ${match[1].substring(0, 12)}...`;
-        extractedSheetIdBadge.style.display = 'inline-flex';
-      } else {
-        extractedSheetIdBadge.style.display = 'none';
-      }
-    });
-
-    modeImmediate.addEventListener('change', () => {
-      formScheduledTime.style.display = 'none';
-      formScheduledTime.removeAttribute('required');
-    });
-
-    modeScheduled.addEventListener('change', () => {
-      formScheduledTime.style.display = 'block';
-      formScheduledTime.setAttribute('required', 'true');
-      if (!formScheduledTime.value) {
-        // Set default to 15 minutes from now
-        const d = new Date(Date.now() + 15 * 60000);
-        formScheduledTime.value = formatDateTimeLocal(d);
-      }
-    });
-
-    // Merge Tag Pills for Form
-    document.querySelectorAll('.tag-pill').forEach((pill) => {
-      pill.addEventListener('click', () => {
-        const targetId = pill.getAttribute('data-target');
-        const tag = pill.getAttribute('data-tag');
-        const inputEl = document.getElementById(targetId);
-        if (inputEl) {
-          insertAtCursor(inputEl, tag);
-        }
-      });
-    });
-
-    // Canned Template Preset Buttons
-    btnPresetCfp.addEventListener('click', () => applyTemplatePreset('template-cfp'));
-    btnPresetResearch.addEventListener('click', () => applyTemplatePreset('template-research'));
-    btnPresetReminder.addEventListener('click', () => applyTemplatePreset('template-deadline'));
-
-    // 1-Click Template Selector Dropdown
-    if (dropdownTemplateSelect) {
-      dropdownTemplateSelect.addEventListener('change', () => {
-        const selectedId = dropdownTemplateSelect.value;
-        if (!selectedId) return;
-        const tpl = allTemplates.find((t) => t.id === selectedId);
-        if (tpl) {
-          if (tpl.subject !== undefined) formSubject.value = tpl.subject;
-          if (tpl.body !== undefined) {
-            formBodyTemplate.value = tpl.body;
-            formBodyTemplate.dataset.bodyHtml = tpl.bodyHtml || '';
-          }
-          showToast(`⚡ Loaded template: ${tpl.name || 'Template'}`);
-        }
-      });
-    }
-
-    // Reset Form
-    btnResetForm.addEventListener('click', () => {
-      newCampaignForm.reset();
-      extractedSheetIdBadge.style.display = 'none';
-      formScheduledTime.style.display = 'none';
-      if (dropdownTemplateSelect) dropdownTemplateSelect.value = '';
-      modeImmediate.checked = true;
-      showToast('Form reset');
-    });
-
-    // Queue Form Submit
-    newCampaignForm.addEventListener('submit', handleQueueCampaignSubmit);
 
     // Templates Tab Controls
     if (btnRefreshTemplates) {
@@ -1526,11 +1432,8 @@ pause
                    ↻ Retry Now
                  </button>`
               : `<button class="btn btn-secondary btn-sm btn-table-run" data-id="${camp.id}" title="Run immediately">
-                   ▶ Run Now
+                    ▶ Run Now
                  </button>`}
-            <button class="btn btn-secondary btn-sm btn-table-clone" data-id="${camp.id}" title="1-Click Clone to Queue Form">
-              📋 Clone
-            </button>
             <button class="btn btn-secondary btn-sm btn-table-details" data-id="${camp.id}" title="View Details & Logs">
               🔍 Details
             </button>
@@ -1546,7 +1449,6 @@ pause
       if (btnRun) {
         btnRun.addEventListener('click', () => triggerCampaign(camp.id, btnRun));
       }
-      tr.querySelector('.btn-table-clone')?.addEventListener('click', () => cloneCampaignToForm(camp));
       tr.querySelector('.btn-table-details')?.addEventListener('click', () => openDetailsModal(camp));
       tr.querySelector('.btn-table-cancel')?.addEventListener('click', () => deleteOrCancelCampaign(camp.id));
 
@@ -1872,8 +1774,8 @@ pause
         </div>
 
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-          <button id="btnDetailsCloneCampaign" class="btn btn-secondary btn-sm btn-table-clone" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 8px;">
-            <span>♻️ Clone to Queue Form (Zero Re-typing)</span>
+          <button id="btnDetailsOpenGmail" class="btn btn-primary btn-sm" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 8px;">
+            <span>✉️ Open Gmail Compose</span>
           </button>
           ${(camp.hasForensic || camp.status === 'FAILED') ? `
             <button id="btnDetailsForensicsViewer" class="btn btn-secondary btn-sm btn-table-forensics" style="flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 8px;">
@@ -1891,9 +1793,9 @@ pause
       </div>
     `;
 
-    modalDetailsContent.querySelector('#btnDetailsCloneCampaign')?.addEventListener('click', () => {
+    modalDetailsContent.querySelector('#btnDetailsOpenGmail')?.addEventListener('click', () => {
       closeModal('modalCampaignDetails');
-      cloneCampaignToForm(camp);
+      openGmailTab();
     });
 
     modalDetailsContent.querySelector('#btnDetailsForensicsViewer')?.addEventListener('click', () => {
@@ -2048,80 +1950,8 @@ pause
   }
 
   // =========================================================================
-  // 1-CLICK CLONE / RECOVERY & ARCHIVED STORAGE
+  // ARCHIVED STORAGE
   // =========================================================================
-
-  function cloneCampaignToForm(camp) {
-    if (!camp) return;
-
-    // 1. Sender account
-    if (camp.senderEmail || camp.accountEmail) {
-      const email = (camp.accountEmail || camp.senderEmail).toLowerCase().trim();
-      let matched = false;
-      if (formSenderEmail) {
-        for (let i = 0; i < formSenderEmail.options.length; i++) {
-          if (formSenderEmail.options[i].value.toLowerCase().trim() === email) {
-            formSenderEmail.selectedIndex = i;
-            matched = true;
-            break;
-          }
-        }
-        if (!matched) {
-          const opt = document.createElement('option');
-          opt.value = camp.accountEmail || camp.senderEmail;
-          opt.textContent = `${camp.accountEmail || camp.senderEmail} (Cloned Account)`;
-          formSenderEmail.appendChild(opt);
-          formSenderEmail.value = opt.value;
-        }
-      }
-    }
-
-    // 2. Recipient column
-    if (formRecipientCol) {
-      formRecipientCol.value = camp.recipientColumn || 'Email';
-    }
-
-    // 3. Spreadsheet URL & Title
-    if (formSheetUrl) {
-      formSheetUrl.value = camp.spreadsheetUrl || '';
-      formSheetUrl.dispatchEvent(new Event('input', { bubbles: true }));
-    }
-    if (formSheetTitle) {
-      formSheetTitle.value = camp.spreadsheetTitle || '';
-    }
-
-    // 4. Subject & Body Template
-    if (formSubject) {
-      formSubject.value = camp.subject || '';
-    }
-    if (formBodyTemplate) {
-      formBodyTemplate.value = camp.bodyTemplate || '';
-      if (camp.bodyHtmlTemplate) {
-        formBodyTemplate.dataset.bodyHtml = camp.bodyHtmlTemplate;
-      }
-    }
-
-    // 5. Checkboxes
-    if (formIncludeUnsub) {
-      formIncludeUnsub.checked = !!camp.includeUnsub;
-    }
-    if (formDryRun) {
-      formDryRun.checked = camp.dryRun !== false;
-    }
-
-    // 6. Reset schedule timing to immediate by default (user can toggle to scheduled if desired)
-    if (modeImmediate) {
-      modeImmediate.checked = true;
-      const schedGroup = document.getElementById('scheduledTimeGroup');
-      if (schedGroup) schedGroup.style.display = 'none';
-    }
-
-    // 7. Switch to Queue Tab smoothly
-    switchTab('tab-queue');
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-
-    showToast('✨ Campaign cloned into form! Check details and click Queue.');
-  }
 
   async function openArchivedCampaignsModal() {
     const tableBody = document.getElementById('archivedTableBody');
@@ -2136,16 +1966,13 @@ pause
         list = await window.IDBStore.getArchivedCampaigns();
       }
 
-      const countTopArchived = document.getElementById('countTopArchived');
-      if (countTopArchived) countTopArchived.textContent = String(list.length);
-
       if (list.length === 0) {
         tableBody.innerHTML = `
           <tr>
-            <td colspan="6" class="table-empty">
-              <div style="font-size: 14px; font-weight: 600; margin-bottom: 4px;">No archived campaigns</div>
-              <div style="font-size: 12px; color: var(--text-muted);">
-                When failed campaigns are removed, they are safely preserved here so you can 1-click clone them at any time without re-typing.
+            <td colspan="6" class="table-empty" style="padding: 24px;">
+              <div style="font-size: 13px; font-weight: 600; margin-bottom: 4px; color: var(--text-primary);">No Archived Campaigns</div>
+              <div style="font-size: 11px; color: var(--text-muted);">
+                When failed or completed campaigns are archived, they are safely preserved here for audit.
               </div>
             </td>
           </tr>
@@ -2156,27 +1983,20 @@ pause
       tableBody.innerHTML = '';
       list.forEach((c) => {
         const tr = document.createElement('tr');
-        const archivedTimeStr = formatTimeShort(c.archivedAt);
         const sheetTitle = c.spreadsheetTitle || extractSheetName(c.spreadsheetUrl) || 'Google Sheet';
         const sheetLinkHtml = c.spreadsheetUrl
-          ? `<a href="${escapeHtml(c.spreadsheetUrl)}" target="_blank" style="color: var(--sky); text-decoration: none;">${escapeHtml(sheetTitle)}</a>`
+          ? `<a href="${escapeHtml(c.spreadsheetUrl)}" target="_blank" style="color: var(--sky); text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">
+              <span>${escapeHtml(sheetTitle)}</span>
+              <svg width="10" height="10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+             </a>`
           : `<span style="color: var(--text-muted);">None</span>`;
 
         tr.innerHTML = `
-          <td style="font-size: 11px; white-space: nowrap; color: var(--text-muted);">
-            ${escapeHtml(archivedTimeStr)}
+          <td style="font-family: var(--font-mono); font-size: 11px; color: var(--text-muted);">${formatTimeShort(c.archivedAt || c.updatedAt)}</td>
+          <td style="font-weight: 600; color: var(--text-white); max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(c.subject || '')}">
+            ${escapeHtml(c.subject || 'Untitled Subject')}
           </td>
-          <td style="font-weight: 600; color: var(--text-white); max-width: 260px;">
-            <div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(c.subject || '')}">
-              ${escapeHtml(c.subject || 'Untitled Subject')}
-            </div>
-            ${c.errorMessage ? `
-              <div style="color: #fca5a5; font-size: 10px; font-family: var(--font-mono); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escapeHtml(c.errorMessage)}">
-                ⚠️ ${escapeHtml(c.errorMessage)}
-              </div>
-            ` : ''}
-          </td>
-          <td style="max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+          <td style="max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
             ${sheetLinkHtml}
           </td>
           <td style="font-size: 11px; color: var(--text-secondary);">
@@ -2189,8 +2009,8 @@ pause
           </td>
           <td style="text-align: right; white-space: nowrap;">
             <div style="display: inline-flex; gap: 6px; justify-content: flex-end;">
-              <button class="btn btn-secondary btn-sm btn-archived-clone" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8;" title="1-Click Clone: Pre-fill into Queue Form">
-                ♻️ Clone to Queue
+              <button class="btn btn-secondary btn-sm btn-archived-open" style="border-color: rgba(56, 189, 248, 0.4); color: #38bdf8;" title="Open Gmail to compose">
+                ✉️ Open Gmail
               </button>
               <button class="btn btn-danger btn-sm btn-archived-del" title="Permanently delete from archive">
                 ✕
@@ -2199,9 +2019,9 @@ pause
           </td>
         `;
 
-        tr.querySelector('.btn-archived-clone')?.addEventListener('click', () => {
+        tr.querySelector('.btn-archived-open')?.addEventListener('click', () => {
           closeModal('modalArchivedCampaigns');
-          cloneCampaignToForm(c);
+          openGmailTab();
         });
 
         tr.querySelector('.btn-archived-del')?.addEventListener('click', async () => {
@@ -2235,127 +2055,7 @@ pause
   }
 
   // =========================================================================
-  // TAB 2: QUEUE NEW CAMPAIGN
-  // =========================================================================
-
-  async function handleQueueCampaignSubmit(e) {
-    e.preventDefault();
-
-    const senderEmail = formSenderEmail.value;
-    const recipientColumn = formRecipientCol.value.trim() || 'Email';
-    const spreadsheetUrl = formSheetUrl.value.trim();
-    const spreadsheetTitle = formSheetTitle.value.trim();
-    const subject = formSubject.value.trim();
-    const bodyTemplate = formBodyTemplate.value.trim();
-    const includeUnsub = formIncludeUnsub.checked;
-    const dryRun = formDryRun ? formDryRun.checked : true;
-
-    if (!spreadsheetUrl) {
-      alert('Please provide a Google Sheet URL.');
-      return;
-    }
-
-    if (!subject && !bodyTemplate) {
-      alert('Please provide at least a Subject or an Email Body.');
-      return;
-    }
-
-    // Determine scheduled date
-    let scheduledAt = null;
-    if (modeScheduled.checked && formScheduledTime.value) {
-      scheduledAt = new Date(formScheduledTime.value).toISOString();
-    }
-
-    const campaign = {
-      id: 'camp_' + Date.now(),
-      senderEmail,
-      recipientColumn,
-      spreadsheetUrl,
-      spreadsheetTitle: spreadsheetTitle || extractSheetName(spreadsheetUrl) || 'Google Sheet',
-      subject: subject || '(No Subject)',
-      bodyTemplate: bodyTemplate || '',
-      bodyHtmlTemplate: formBodyTemplate.dataset.bodyHtml || '',
-      includeUnsub,
-      dryRun,
-      scheduledAt,
-      status: 'QUEUED',
-      createdAt: new Date().toISOString()
-    };
-
-    try {
-      await window.IDBStore.saveCampaign(campaign);
-      await window.IDBStore.addLog(
-        campaign.id,
-        'INFO',
-        `Campaign "${campaign.subject}" queued directly from Dashboard.`
-      );
-
-      // Notify background to update badge
-      try {
-        await chrome.runtime.sendMessage({ action: 'REFRESH_BADGE' });
-      } catch (err) {}
-
-      // If immediate, trigger scheduler check, else register exact alarm
-      if (!scheduledAt) {
-        try {
-          await chrome.runtime.sendMessage({
-            action: 'TRIGGER_CAMPAIGN_NOW',
-            campaignId: campaign.id
-          });
-        } catch (runErr) {
-          console.warn('[Dashboard] Immediate trigger error (will be picked up by alarm):', runErr);
-        }
-      } else {
-        try {
-          await chrome.runtime.sendMessage({
-            action: 'REGISTER_SCHEDULED_ALARM',
-            campaignId: campaign.id,
-            scheduledTime: new Date(scheduledAt).getTime()
-          });
-        } catch (alarmErr) {
-          console.warn('[Dashboard] Failed to register alarm:', alarmErr);
-        }
-      }
-
-      showToast(scheduledAt ? 'Campaign scheduled successfully!' : 'Campaign queued & dispatched!');
-
-      // Reset form and switch to Campaigns tab
-      newCampaignForm.reset();
-      extractedSheetIdBadge.style.display = 'none';
-      formScheduledTime.style.display = 'none';
-      if (dropdownTemplateSelect) dropdownTemplateSelect.value = '';
-      modeImmediate.checked = true;
-
-      await loadCampaigns();
-      switchTab('tab-campaigns');
-    } catch (err) {
-      console.error('[Dashboard] Error saving campaign:', err);
-      alert('Failed to save campaign: ' + err.message);
-    }
-  }
-
-  async function applyTemplatePreset(templateId) {
-    try {
-      let tpl = allTemplates.find((t) => t.id === templateId);
-      if (!tpl && window.IDBStore) {
-        const templates = await window.IDBStore.getTemplates();
-        tpl = templates.find((t) => t.id === templateId);
-      }
-
-      if (tpl) {
-        formSubject.value = tpl.subject || '';
-        formBodyTemplate.value = tpl.body || '';
-        showToast(`Applied preset: ${tpl.name}`);
-      } else {
-        showToast('Preset template not found');
-      }
-    } catch (err) {
-      console.error('[Dashboard] Preset load error:', err);
-    }
-  }
-
-  // =========================================================================
-  // TAB 3: TEMPLATES MANAGER
+  // TAB 2: TEMPLATES MANAGER
   // =========================================================================
 
   async function loadTemplates() {
@@ -2368,26 +2068,9 @@ pause
 
       tabBadgeTemplates.textContent = String(allTemplates.length);
       renderTemplatesGrid();
-      populateTemplateDropdown();
     } catch (err) {
       console.error('[Dashboard] Error loading templates:', err);
       templatesGrid.innerHTML = `<div class="table-empty" style="color: var(--rose); grid-column: 1 / -1;">Error loading templates: ${escapeHtml(err.message)}</div>`;
-    }
-  }
-
-  function populateTemplateDropdown() {
-    if (!dropdownTemplateSelect) return;
-    const currentVal = dropdownTemplateSelect.value;
-    dropdownTemplateSelect.innerHTML = '<option value="">-- Choose a Saved Template (Optional) --</option>';
-    allTemplates.forEach((tpl) => {
-      const opt = document.createElement('option');
-      opt.value = tpl.id;
-      const preview = tpl.subject ? ` — "${tpl.subject}"` : (tpl.body ? ' — (Body only)' : '');
-      opt.textContent = `${tpl.name || 'Untitled Template'}${preview}`;
-      dropdownTemplateSelect.appendChild(opt);
-    });
-    if (currentVal && allTemplates.some((t) => t.id === currentVal)) {
-      dropdownTemplateSelect.value = currentVal;
     }
   }
 

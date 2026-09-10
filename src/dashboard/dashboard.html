@@ -68,9 +68,6 @@
         <span>📋 Campaigns</span>
         <span class="tab-badge" id="tabBadgeCampaigns">0</span>
       </button>
-      <button class="tab-btn" data-tab="tab-queue">
-        <span>➕ Queue New Campaign</span>
-      </button>
       <button class="tab-btn" data-tab="tab-templates">
         <span>📝 Templates Manager</span>
         <span class="tab-badge" id="tabBadgeTemplates">0</span>
@@ -151,8 +148,8 @@
               <button id="btnRefreshCampaigns" class="btn btn-secondary btn-sm" title="Refresh list">
                 <span>🔄 Refresh</span>
               </button>
-              <button id="btnJumpToQueue" class="btn btn-primary btn-sm">
-                <span>➕ New Campaign</span>
+              <button id="btnJumpToQueue" class="btn btn-primary btn-sm" title="Open Gmail to compose and schedule natively">
+                <span>✉️ Compose in Gmail</span>
               </button>
             </div>
           </div>
@@ -259,157 +256,7 @@
       </section>
 
       <!-- ================================================================= -->
-      <!-- TAB 2: QUEUE NEW CAMPAIGN -->
-      <!-- ================================================================= -->
-      <section id="tab-queue" class="tab-pane">
-        <div class="panel-card" style="max-width: 900px; margin: 0 auto;">
-          <div class="panel-header">
-            <div>
-              <h2 class="panel-title">Queue New Campaign</h2>
-              <p class="panel-subtitle">Configure Google Sheet source, subject, personalized tags, and schedule</p>
-            </div>
-            <button type="button" id="btnResetForm" class="btn btn-secondary btn-sm">Clear Form</button>
-          </div>
-
-          <form id="newCampaignForm">
-            <!-- Row 1: Sender & Recipient Column -->
-            <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px;">
-              <div class="form-group">
-                <label class="form-label" for="formSenderEmail">Sender Account Profile</label>
-                <select id="formSenderEmail" class="form-select">
-                  <option value="editor@worldwidejournals.co.in">editor@worldwidejournals.co.in (Profile 1: worldwidejournals)</option>
-                  <option value="editorial@researchworldwidejournals.com">editorial@researchworldwidejournals.com (Profile 2: researchworldwide)</option>
-                  <option value="current_gmail">Current Active Gmail Account (Default)</option>
-                </select>
-                <span class="form-help">Ensure you have logged into this profile in your Chrome browser.</span>
-              </div>
-
-              <div class="form-group">
-                <label class="form-label" for="formRecipientCol">Recipient Column</label>
-                <input type="text" id="formRecipientCol" class="form-input" value="Email" placeholder="e.g. Email, Contact Email" required>
-                <span class="form-help">Exact column header containing email addresses.</span>
-              </div>
-            </div>
-
-            <!-- Row 2: Sheet URL -->
-            <div class="form-group">
-              <label class="form-label" for="formSheetUrl">
-                <span>Google Sheet URL</span>
-                <span id="extractedSheetIdBadge" class="badge badge-completed" style="display: none; font-family: var(--font-mono); font-size: 10px;"></span>
-              </label>
-              <input type="url" id="formSheetUrl" class="form-input" placeholder="https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit" required>
-              <span class="form-help">Ensure the sheet is accessible by the selected account. Sheet ID is parsed automatically.</span>
-            </div>
-
-            <!-- Row 3: Sheet Title (Optional) -->
-            <div class="form-group">
-              <label class="form-label" for="formSheetTitle">Sheet Title / Campaign Label (Optional)</label>
-              <input type="text" id="formSheetTitle" class="form-input" placeholder="e.g. IJSR Sept 2026 Authors or leave blank">
-            </div>
-
-            <!-- Row 3.5: 1-Click Saved Template Dropdown -->
-            <div class="form-group" style="background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                <label class="form-label" for="dropdownTemplateSelect" style="margin-bottom: 0; font-weight: 600; color: #38bdf8;">
-                  ⚡ 1-Click Saved Template
-                </label>
-                <span class="form-help" style="margin: 0;">Auto-fills Subject & Body instantly</span>
-              </div>
-              <select id="dropdownTemplateSelect" class="form-select" style="font-weight: 500;">
-                <option value="">-- Choose a Saved Template (Optional) --</option>
-              </select>
-            </div>
-
-            <!-- Row 4: Subject Line -->
-            <div class="form-group">
-              <label class="form-label" for="formSubject">
-                <span>Subject Line</span>
-                <span class="form-help">Click tags below to insert</span>
-              </label>
-              <div class="tag-pills" id="subjectTagPills">
-                <span class="tag-pill" data-target="formSubject" data-tag="{{First Name}}">+ {{First Name}}</span>
-                <span class="tag-pill" data-target="formSubject" data-tag="{{Last Name}}">+ {{Last Name}}</span>
-                <span class="tag-pill" data-target="formSubject" data-tag="{{Paper Title}}">+ {{Paper Title}}</span>
-                <span class="tag-pill" data-target="formSubject" data-tag="{{Conference Name}}">+ {{Conference Name}}</span>
-              </div>
-              <input type="text" id="formSubject" class="form-input" placeholder="Call for Papers: {{Conference Name}} - Deadline {{Deadline}}" required>
-            </div>
-
-            <!-- Row 5: Body Template -->
-            <div class="form-group">
-              <label class="form-label" for="formBodyTemplate">
-                <span>Email Body Template</span>
-                <span style="font-size: 11px; color: var(--text-secondary);">Supports HTML & {{merge_tags}}</span>
-              </label>
-
-              <!-- Quick Template Presets -->
-              <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center; flex-wrap: wrap;">
-                <span style="font-size: 11px; color: var(--text-muted);">Presets:</span>
-                <button type="button" class="btn btn-secondary btn-sm" id="btnPresetCfp">📄 Call for Papers</button>
-                <button type="button" class="btn btn-secondary btn-sm" id="btnPresetResearch">✉️ Research Invite</button>
-                <button type="button" class="btn btn-secondary btn-sm" id="btnPresetReminder">⏰ Deadline Reminder</button>
-              </div>
-
-              <!-- Body Tags -->
-              <div class="tag-pills" id="bodyTagPills">
-                <span class="tag-pill" data-target="formBodyTemplate" data-tag="{{Title}}">+ {{Title}}</span>
-                <span class="tag-pill" data-target="formBodyTemplate" data-tag="{{First Name}}">+ {{First Name}}</span>
-                <span class="tag-pill" data-target="formBodyTemplate" data-tag="{{Last Name}}">+ {{Last Name}}</span>
-                <span class="tag-pill" data-target="formBodyTemplate" data-tag="{{Conference Name}}">+ {{Conference Name}}</span>
-                <span class="tag-pill" data-target="formBodyTemplate" data-tag="{{Deadline}}">+ {{Deadline}}</span>
-                <span class="tag-pill" data-target="formBodyTemplate" data-tag="{{Submission Link}}">+ {{Submission Link}}</span>
-              </div>
-
-              <textarea id="formBodyTemplate" class="form-textarea font-mono" rows="8" placeholder="Dear {{Title}} {{Last Name}},&#10;&#10;We cordially invite you to submit your paper to {{Conference Name}}...&#10;&#10;Best regards,&#10;Editorial Team" required></textarea>
-            </div>
-
-            <!-- Row 6: Scheduling & Options -->
-            <div style="background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; margin-bottom: 20px;">
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
-                <div>
-                  <label class="form-label" style="margin-bottom: 8px;">Schedule Dispatch</label>
-                  <div style="display: flex; gap: 16px; margin-bottom: 10px;">
-                    <label class="toggle-label">
-                      <input type="radio" name="scheduleMode" id="modeImmediate" value="immediate" checked>
-                      <span>⚡ Send Immediately (Queued Now)</span>
-                    </label>
-                  </div>
-                  <div style="display: flex; gap: 16px; margin-bottom: 10px;">
-                    <label class="toggle-label">
-                      <input type="radio" name="scheduleMode" id="modeScheduled" value="scheduled">
-                      <span>📅 Schedule for Specific Time</span>
-                    </label>
-                  </div>
-                  <input type="datetime-local" id="formScheduledTime" class="form-input" style="display: none;">
-                </div>
-
-                <div>
-                  <label class="form-label" style="margin-bottom: 8px;">Compliance & Safety</label>
-                  <label class="toggle-label" style="margin-bottom: 8px;">
-                    <input type="checkbox" id="formIncludeUnsub" checked>
-                    <span>Add Unsubscribe notice at bottom</span>
-                  </label>
-                  <label class="toggle-label" style="margin-bottom: 8px; color: #38bdf8;">
-                    <input type="checkbox" id="formDryRun" checked>
-                    <span>🛡️ Safe Preview / Dry Run Mode (Stop before Send)</span>
-                  </label>
-                  <p class="form-help">Prepares Mail Merge and fills templates in Gmail, stopping safely before final send.</p>
-                </div>
-              </div>
-            </div>
-
-            <!-- Submit Buttons -->
-            <div style="display: flex; justify-content: flex-end; gap: 12px;">
-              <button type="submit" id="btnSubmitCampaign" class="btn btn-primary" style="padding: 10px 24px;">
-                <span>🚀 Queue Campaign</span>
-              </button>
-            </div>
-          </form>
-        </div>
-      </section>
-
-      <!-- ================================================================= -->
-      <!-- TAB 3: TEMPLATES MANAGER -->
+      <!-- TAB 2: TEMPLATES MANAGER -->
       <!-- ================================================================= -->
       <section id="tab-templates" class="tab-pane">
         <div class="panel-card">
