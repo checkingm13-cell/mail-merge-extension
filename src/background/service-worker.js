@@ -30,6 +30,50 @@ const RETRY_CONFIG = {
 };
 
 // =============================================================================
+// REAL-TIME ZERO-RELOAD LIVE STREAMING & HEARTBEAT (Keep-Alive)
+// =============================================================================
+const activeLivePorts = new Set();
+
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name === 'MM_LIVE_STREAM') {
+    activeLivePorts.add(port);
+    console.log(`[ServiceWorker] ⚡ Live stream client connected (${activeLivePorts.size} active). Background kept awake.`);
+
+    port.onDisconnect.addListener(() => {
+      activeLivePorts.delete(port);
+      console.log(`[ServiceWorker] Live stream client disconnected (${activeLivePorts.size} remaining).`);
+    });
+
+    port.onMessage.addListener((msg) => {
+      if (msg.action === 'PING') {
+        port.postMessage({ action: 'PONG', timestamp: Date.now() });
+      }
+    });
+
+    // Send immediate greeting
+    port.postMessage({ action: 'CONNECTED', timestamp: Date.now() });
+  }
+});
+
+function broadcastToViews(action, data = {}) {
+  const payload = { action, ...data, timestamp: Date.now() };
+
+  // 1. Send to all long-lived streaming ports (Dashboard & Popup)
+  for (const port of activeLivePorts) {
+    try {
+      port.postMessage(payload);
+    } catch (_) {
+      activeLivePorts.delete(port);
+    }
+  }
+
+  // 2. Broadcast via standard runtime messages (for standard views)
+  try {
+    chrome.runtime.sendMessage(payload).catch(() => {});
+  } catch (_) {}
+}
+
+// =============================================================================
 // HYBRID PARALLEL ARCHITECTURE: Account-Level Locks & Concurrency Pool
 // =============================================================================
 const MAX_CONCURRENT_ACCOUNTS = 3; // Max parallel executing accounts (3x throughput)
@@ -634,6 +678,15 @@ async function executeCampaign(campaign) {
     startedAt: Date.now(),
     timeoutId
   });
+
+  // Mark PROCESSING in database and broadcast live update
+  if (self.IDBStore) {
+    await self.IDBStore.updateCampaign(campaign.id, {
+      status: 'PROCESSING',
+      startedAt: new Date().toISOString()
+    }).catch(() => {});
+  }
+  broadcastToViews('CAMPAIGN_STATUS_UPDATE', { campaignId: campaign.id, status: 'PROCESSING' });
 
   let createdBackgroundTabId = null;
 
@@ -1287,6 +1340,11 @@ async function handleRuntimeMessage(message, sender) {
       }
       await refreshBadge();
       await syncSystemWakeLock();
+      broadcastToViews('CAMPAIGN_STATUS_UPDATE', {
+        campaignId: message.campaignId,
+        status: 'QUEUED',
+        campaign: message.campaign
+      });
       return { success: true };
     }
 
@@ -1320,6 +1378,10 @@ async function handleRuntimeMessage(message, sender) {
       } catch (_) {}
 
       await refreshBadge();
+      broadcastToViews('CAMPAIGN_STATUS_UPDATE', {
+        campaignId,
+        status: 'DELETED'
+      });
       console.log(`[ServiceWorker] 🗑️ Campaign ${campaignId} permanently deleted across central store & Gmail tabs.`);
       return { success: true };
     }
@@ -1422,6 +1484,7 @@ async function handleRuntimeMessage(message, sender) {
 
         checkAndExecuteDueCampaigns().catch(() => {});
         await refreshBadge();
+        broadcastToViews('CAMPAIGN_STATUS_UPDATE', { action: 'QUOTA_UNPAUSED', accountEmail: targetEmail });
         return { success: true };
       } catch (err) {
         return { success: false, error: err.message };
@@ -1611,6 +1674,14 @@ async function handleRuntimeMessage(message, sender) {
         }
 
         syncSystemWakeLock().catch(() => {});
+        broadcastToViews('CAMPAIGN_STATUS_UPDATE', {
+          campaignId: message.campaignId,
+          status: message.status,
+          sentCount: message.sentCount,
+          recipientCount: message.recipientCount,
+          failedCount: message.failedCount,
+          errorMessage: message.logMessage || message.error
+        });
         return { success: true };
       }
       return { success: false, error: 'Missing campaignId or status' };
@@ -1624,6 +1695,12 @@ async function handleRuntimeMessage(message, sender) {
           progressMessage: message.message,
           progressPct: message.pct
         }).catch(() => {});
+        broadcastToViews('CAMPAIGN_PROGRESS', {
+          campaignId: message.campaignId,
+          step: message.step,
+          message: message.message,
+          pct: message.pct
+        });
       }
       return { success: true };
     }
@@ -1653,7 +1730,28 @@ async function handleRuntimeMessage(message, sender) {
 
       checkAndExecuteDueCampaigns().catch((err) => console.error('[ServiceWorker] Retry all error:', err));
       await refreshBadge();
+      broadcastToViews('CAMPAIGN_STATUS_UPDATE', { action: 'RETRY_ALL_FAILED', count: retryable.length });
       return { success: true, count: retryable.length };
+    }
+
+    case 'ARCHIVE_COMPLETED_CAMPAIGNS': {
+      if (!self.IDBStore) {
+        return { success: false, error: 'Database not ready' };
+      }
+      const campaigns = await self.IDBStore.getCampaigns();
+      const completed = campaigns.filter((c) => c.status === 'COMPLETED' || c.status === 'COMPLETED (DRY RUN)');
+      let count = 0;
+      for (const camp of completed) {
+        try {
+          if (typeof self.IDBStore.archiveCampaign === 'function') {
+            await self.IDBStore.archiveCampaign(camp.id);
+            count++;
+          }
+        } catch (_) {}
+      }
+      broadcastToViews('CAMPAIGN_STATUS_UPDATE', { action: 'CAMPAIGNS_ARCHIVED', count });
+      await refreshBadge();
+      return { success: true, count };
     }
 
     case 'DELETE_ALL_FAILED': {

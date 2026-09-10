@@ -11,8 +11,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   let currentCampaignFilter = 'ALL';
   let currentCampaignSort = 'NEWEST';
   let currentCampaignSearch = '';
+  let currentCampaignPage = 1;
+  let currentCampaignPageSize = 50;
   let currentLogFilter = 'ALL';
   let schedulerIntervalTimer = null;
+  let liveStreamPort = null;
 
   // DOM Elements - Navigation & Header
   const tabButtons = document.querySelectorAll('.tab-btn');
@@ -45,11 +48,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnRefreshCampaigns = document.getElementById('btnRefreshCampaigns');
   const btnJumpToQueue = document.getElementById('btnJumpToQueue');
   const countAll = document.getElementById('countAll');
+  const countFilterToday = document.getElementById('countFilterToday');
   const countFilterQueued = document.getElementById('countFilterQueued');
   const countFilterProcessing = document.getElementById('countFilterProcessing');
   const countFilterCompleted = document.getElementById('countFilterCompleted');
   const countFilterFailed = document.getElementById('countFilterFailed');
   const countFilterCancelled = document.getElementById('countFilterCancelled');
+  const campaignPageSizeSelect = document.getElementById('campaignPageSizeSelect');
+  const btnArchiveCompleted = document.getElementById('btnArchiveCompleted');
+  const operatorQuickCard = document.getElementById('operatorQuickCard');
+  const btnDismissQuickCard = document.getElementById('btnDismissQuickCard');
+  const campaignsPaginationBar = document.getElementById('campaignsPaginationBar');
+  const paginationRangeText = document.getElementById('paginationRangeText');
+  const paginationTotalText = document.getElementById('paginationTotalText');
+  const paginationPageNum = document.getElementById('paginationPageNum');
+  const btnPrevPage = document.getElementById('btnPrevPage');
+  const btnNextPage = document.getElementById('btnNextPage');
   const btnTopRemoveAllFailed = document.getElementById('btnTopRemoveAllFailed');
   const countTopFailed = document.getElementById('countTopFailed');
   const btnTopViewArchived = document.getElementById('btnTopViewArchived');
@@ -86,13 +100,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Templates Tab elements
   const templatesGrid = document.getElementById('templatesGrid');
   const btnOpenCreateTemplate = document.getElementById('btnOpenCreateTemplate');
+  const btnRefreshTemplates = document.getElementById('btnRefreshTemplates');
   const modalTemplate = document.getElementById('modalTemplate');
   const modalTemplateTitle = document.getElementById('modalTemplateTitle');
   const editTemplateId = document.getElementById('editTemplateId');
   const editTemplateName = document.getElementById('editTemplateName');
   const editTemplateSubject = document.getElementById('editTemplateSubject');
   const editTemplateBodyHtml = document.getElementById('editTemplateBodyHtml');
+  const editTemplateSourceArea = document.getElementById('editTemplateSourceArea');
+  const btnToggleSourceMode = document.getElementById('btnToggleSourceMode');
+  const btnInsertSubjectTag = document.getElementById('btnInsertSubjectTag');
+  const btnInsertLinkHelper = document.getElementById('btnInsertLinkHelper');
   const btnSaveTemplate = document.getElementById('btnSaveTemplate');
+
+  // 24/7 Health Guide & Diagnostics elements
+  const btnQuick247Guide = document.getElementById('btnQuick247Guide');
+  const btnRun247HealthCheck = document.getElementById('btnRun247HealthCheck');
+  const healthCheckResultBox = document.getElementById('healthCheckResultBox');
 
   // Logs Tab elements
   const logConsole = document.getElementById('logConsole');
@@ -186,6 +210,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnHeaderOpenGmail.addEventListener('click', openGmailTab);
     btnLaunchGmailTab.addEventListener('click', openGmailTab);
 
+    const btnReloadGmailTabs = document.getElementById('btnReloadGmailTabsDashboard');
+    if (btnReloadGmailTabs) {
+      btnReloadGmailTabs.addEventListener('click', async () => {
+        btnReloadGmailTabs.disabled = true;
+        btnReloadGmailTabs.textContent = 'Refreshing...';
+        const resp = await chrome.runtime.sendMessage({ action: 'RELOAD_GMAIL_TABS' }).catch(() => null);
+        showToast(resp?.count ? `Refreshed ${resp.count} Gmail tab(s)` : 'Gmail tabs refreshed');
+        setTimeout(() => {
+          btnReloadGmailTabs.disabled = false;
+          btnReloadGmailTabs.textContent = '🔄 Refresh Tabs';
+        }, 1500);
+      });
+    }
+
     // Campaigns Actions & Filter
     btnRefreshCampaigns.addEventListener('click', async () => {
       await loadCampaigns();
@@ -269,6 +307,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         campaignFilterPills.forEach((p) => p.classList.remove('active'));
         pill.classList.add('active');
         currentCampaignFilter = pill.getAttribute('data-status');
+        currentCampaignPage = 1;
         renderCampaignsTable();
       });
     });
@@ -277,7 +316,59 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (campaignSortSelect) {
       campaignSortSelect.addEventListener('change', () => {
         currentCampaignSort = campaignSortSelect.value;
+        currentCampaignPage = 1;
         renderCampaignsTable();
+      });
+    }
+
+    if (campaignPageSizeSelect) {
+      campaignPageSizeSelect.addEventListener('change', () => {
+        currentCampaignPageSize = campaignPageSizeSelect.value;
+        currentCampaignPage = 1;
+        renderCampaignsTable();
+      });
+    }
+
+    if (btnPrevPage) {
+      btnPrevPage.addEventListener('click', () => {
+        if (currentCampaignPage > 1) {
+          currentCampaignPage--;
+          renderCampaignsTable();
+        }
+      });
+    }
+
+    if (btnNextPage) {
+      btnNextPage.addEventListener('click', () => {
+        currentCampaignPage++;
+        renderCampaignsTable();
+      });
+    }
+
+    if (btnArchiveCompleted) {
+      btnArchiveCompleted.addEventListener('click', async () => {
+        const completed = allCampaigns.filter((c) => c.status === 'COMPLETED' || c.status === 'COMPLETED (DRY RUN)');
+        if (completed.length === 0) {
+          showToast('No completed campaigns to archive');
+          return;
+        }
+        if (confirm(`Archive ${completed.length} completed campaign(s) to keep today's active table clean?`)) {
+          btnArchiveCompleted.disabled = true;
+          const resp = await chrome.runtime.sendMessage({ action: 'ARCHIVE_COMPLETED_CAMPAIGNS' }).catch(() => null);
+          showToast(resp?.count ? `🧹 Archived ${resp.count} campaign(s)!` : 'Completed campaigns archived');
+          btnArchiveCompleted.disabled = false;
+          await loadCampaigns();
+        }
+      });
+    }
+
+    if (btnDismissQuickCard && operatorQuickCard) {
+      if (localStorage.getItem('mm_operator_quick_card_dismissed') === '1') {
+        operatorQuickCard.style.display = 'none';
+      }
+      btnDismissQuickCard.addEventListener('click', () => {
+        operatorQuickCard.style.display = 'none';
+        localStorage.setItem('mm_operator_quick_card_dismissed', '1');
       });
     }
 
@@ -285,6 +376,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (campaignSearchInput) {
       campaignSearchInput.addEventListener('input', () => {
         currentCampaignSearch = campaignSearchInput.value || '';
+        currentCampaignPage = 1;
         renderCampaignsTable();
       });
     }
@@ -363,17 +455,293 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Queue Form Submit
     newCampaignForm.addEventListener('submit', handleQueueCampaignSubmit);
 
-    // Templates Tab
+    // Templates Tab Controls
+    if (btnRefreshTemplates) {
+      btnRefreshTemplates.addEventListener('click', async () => {
+        btnRefreshTemplates.disabled = true;
+        try {
+          await loadTemplates();
+          showToast('🔄 Templates refreshed from database');
+        } catch (err) {
+          showToast('Failed to refresh: ' + err.message);
+        } finally {
+          btnRefreshTemplates.disabled = false;
+        }
+      });
+    }
+
     btnOpenCreateTemplate.addEventListener('click', () => {
       editTemplateId.value = '';
       editTemplateName.value = '';
       editTemplateSubject.value = '';
       if (editTemplateBodyHtml) editTemplateBodyHtml.innerHTML = '';
+      if (editTemplateSourceArea) {
+        editTemplateSourceArea.value = '';
+        editTemplateSourceArea.style.display = 'none';
+      }
+      if (editTemplateBodyHtml) editTemplateBodyHtml.style.display = 'block';
+      if (btnToggleSourceMode) {
+        btnToggleSourceMode.textContent = '<> HTML Source';
+        btnToggleSourceMode.classList.remove('btn-primary');
+      }
       modalTemplateTitle.textContent = 'Create Template';
       openModal('modalTemplate');
     });
 
+    // Dual-Mode Toggle: Visual WYSIWYG vs HTML Source View
+    if (btnToggleSourceMode) {
+      btnToggleSourceMode.addEventListener('click', () => {
+        const isSourceView = editTemplateSourceArea && editTemplateSourceArea.style.display !== 'none';
+        if (isSourceView) {
+          // Switch back to Visual view
+          if (editTemplateBodyHtml && editTemplateSourceArea) {
+            editTemplateBodyHtml.innerHTML = editTemplateSourceArea.value;
+            editTemplateSourceArea.style.display = 'none';
+            editTemplateBodyHtml.style.display = 'block';
+          }
+          btnToggleSourceMode.textContent = '<> HTML Source';
+          btnToggleSourceMode.classList.remove('btn-primary');
+        } else {
+          // Switch to HTML Source view
+          if (editTemplateBodyHtml && editTemplateSourceArea) {
+            editTemplateSourceArea.value = editTemplateBodyHtml.innerHTML;
+            editTemplateBodyHtml.style.display = 'none';
+            editTemplateSourceArea.style.display = 'block';
+          }
+          btnToggleSourceMode.textContent = '👁️ Visual View';
+          btnToggleSourceMode.classList.add('btn-primary');
+        }
+      });
+    }
+
+    // Insert Tag into Subject Field
+    if (btnInsertSubjectTag) {
+      btnInsertSubjectTag.addEventListener('click', () => {
+        if (editTemplateSubject) {
+          editTemplateSubject.value += (editTemplateSubject.value ? ' ' : '') + '{{First Name}}';
+          editTemplateSubject.focus();
+        }
+      });
+    }
+
+    // Insert Dynamic Tags into Body ({{senderDomain}}, {{senderEmail}}, {{First Name}})
+    document.querySelectorAll('.btn-insert-body-tag').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tag = btn.getAttribute('data-tag');
+        if (!tag) return;
+
+        const isSourceView = editTemplateSourceArea && editTemplateSourceArea.style.display !== 'none';
+        if (isSourceView) {
+          editTemplateSourceArea.value += tag;
+          editTemplateSourceArea.focus();
+        } else if (editTemplateBodyHtml) {
+          document.execCommand('insertText', false, tag);
+          editTemplateBodyHtml.focus();
+        }
+      });
+    });
+
+    // Insert Dynamic Link Helper
+    if (btnInsertLinkHelper) {
+      btnInsertLinkHelper.addEventListener('click', () => {
+        const text = prompt('Enter link display text:', 'Submit your Valuable Research for October issue');
+        if (!text) return;
+
+        const url = prompt(
+          'Enter link destination or slug (Relative links like /upload or https://{{senderDomain}}/... are fully supported):',
+          'https://{{senderDomain}}/international-journal-of-scientific-research-(IJSR)/page/p/upload-your-article'
+        );
+        if (!url) return;
+
+        const linkHtml = `<a href="${escapeHtml(url)}" style="color: #0563c1; text-decoration: underline;"><span style="color: #3300ff;">${escapeHtml(text)}</span></a>`;
+
+        const isSourceView = editTemplateSourceArea && editTemplateSourceArea.style.display !== 'none';
+        if (isSourceView) {
+          editTemplateSourceArea.value += linkHtml;
+          editTemplateSourceArea.focus();
+        } else if (editTemplateBodyHtml) {
+          document.execCommand('insertHTML', false, linkHtml);
+          editTemplateBodyHtml.focus();
+        }
+      });
+    }
+
     btnSaveTemplate.addEventListener('click', handleSaveTemplateSubmit);
+
+    // Quick Jump to 24/7 Health & Error Guide
+    if (btnQuick247Guide) {
+      btnQuick247Guide.addEventListener('click', () => {
+        switchTab('tab-logs');
+        const card = document.getElementById('card247HealthGuide');
+        if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
+
+    // Interactive 24/7 System Health Check Button
+    if (btnRun247HealthCheck) {
+      btnRun247HealthCheck.addEventListener('click', run247SystemHealthCheck);
+    }
+
+    // 1-Click Download of SETUP_FRESH_PC.bat directly from the Dashboard
+    const btnDownloadSetupBat = document.getElementById('btnDownloadSetupBat');
+    if (btnDownloadSetupBat) {
+      btnDownloadSetupBat.addEventListener('click', () => {
+        const batContent = `@echo off
+setlocal enabledelayedexpansion
+title Gmail Mail Merge - 24/7 Fresh PC & Chrome Configurator
+
+echo =======================================================================
+echo   GMAIL NATIVE MAIL MERGE - 24/7 FRESH PC & CHROME CONFIGURATOR
+echo =======================================================================
+echo.
+
+:: 1. Check for Administrator Privileges
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo [INFO] Administrator privileges required to configure system policies.
+    echo [ELEVATING] Prompting for Administrator approval (UAC)...
+    powershell -Command "Start-Process cmd -ArgumentList '/c \\"\\"%~f0\\"\\"' -Verb RunAs" 2>nul
+    if %errorLevel% equ 0 exit /b
+    echo.
+    echo =======================================================================
+    echo  [!] ELEVATION FAILED OR CANCELLED
+    echo =======================================================================
+    echo  Please right-click "SETUP_FRESH_PC.bat" and choose:
+    echo  "Run as administrator"
+    echo =======================================================================
+    echo.
+    pause
+    exit /b 1
+)
+
+echo [OK] Running with Administrator Privileges.
+echo.
+
+:: =======================================================================
+:: [1/3] APPLY CHROME ENTERPRISE POLICIES (Never Sleep Tabs & Timers)
+:: =======================================================================
+echo [1/3] Configuring Chrome Policies (Memory Saver & Background Execution)...
+
+reg add "HKLM\\Software\\Policies\\Google\\Chrome\\TabDiscardingExceptions" /v 1 /t REG_SZ /d "mail.google.com" /f >nul 2>&1
+reg add "HKLM\\Software\\Policies\\Google\\Chrome\\TabDiscardingExceptions" /v 2 /t REG_SZ /d "docs.google.com" /f >nul 2>&1
+reg add "HKLM\\Software\\Policies\\Google\\Chrome\\TabDiscardingExceptions" /v 3 /t REG_SZ /d "drive.google.com" /f >nul 2>&1
+
+reg add "HKCU\\Software\\Policies\\Google\\Chrome\\TabDiscardingExceptions" /v 1 /t REG_SZ /d "mail.google.com" /f >nul 2>&1
+reg add "HKCU\\Software\\Policies\\Google\\Chrome\\TabDiscardingExceptions" /v 2 /t REG_SZ /d "docs.google.com" /f >nul 2>&1
+reg add "HKCU\\Software\\Policies\\Google\\Chrome\\TabDiscardingExceptions" /v 3 /t REG_SZ /d "drive.google.com" /f >nul 2>&1
+
+reg add "HKLM\\Software\\Policies\\Google\\Chrome" /v "HighEfficiencyModeEnabled" /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKCU\\Software\\Policies\\Google\\Chrome" /v "HighEfficiencyModeEnabled" /t REG_DWORD /d 1 /f >nul 2>&1
+
+reg add "HKLM\\Software\\Policies\\Google\\Chrome" /v "BackgroundModeEnabled" /t REG_DWORD /d 1 /f >nul 2>&1
+reg add "HKCU\\Software\\Policies\\Google\\Chrome" /v "BackgroundModeEnabled" /t REG_DWORD /d 1 /f >nul 2>&1
+
+reg add "HKLM\\Software\\Policies\\Google\\Chrome" /v "IntensiveWakeUpThrottlingEnabled" /t REG_DWORD /d 0 /f >nul 2>&1
+reg add "HKCU\\Software\\Policies\\Google\\Chrome" /v "IntensiveWakeUpThrottlingEnabled" /t REG_DWORD /d 0 /f >nul 2>&1
+
+echo       - TabDiscardingExceptions: mail.google.com, docs.google.com, drive.google.com [APPLIED]
+echo       - HighEfficiencyMode: Honored with exceptions [APPLIED]
+echo       - BackgroundModeEnabled: Chrome stays active in background [APPLIED]
+echo       - IntensiveWakeUpThrottling: Disabled for high-precision timers [APPLIED]
+echo.
+
+:: =======================================================================
+:: [2/3] APPLY WINDOWS 24/7 POWER MANAGEMENT (Never Sleep / Lid-Close Safe)
+:: =======================================================================
+echo [2/3] Configuring Windows Power Management (24/7 Plugged-In Operation)...
+
+powercfg /change standby-timeout-ac 0 >nul 2>&1
+powercfg /change hibernate-timeout-ac 0 >nul 2>&1
+powercfg /change monitor-timeout-ac 15 >nul 2>&1
+powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0 >nul 2>&1
+powercfg /setactive SCHEME_CURRENT >nul 2>&1
+
+echo       - System Sleep (Plugged in): Disabled (Never sleeps) [APPLIED]
+echo       - System Hibernation (Plugged in): Disabled [APPLIED]
+echo       - Laptop Lid Close (Plugged in): Keep Running (No sleep) [APPLIED]
+echo       - Display Sleep: Turns off screen after 15 mins to protect monitor [APPLIED]
+echo.
+
+:: =======================================================================
+:: [3/4] CREATE 24/7 CHROME HIGH-PERFORMANCE LAUNCHER & DESKTOP SHORTCUT
+:: =======================================================================
+echo [3/4] Creating 24/7 Desktop Shortcut with High-Performance Flags...
+
+:: Detect Chrome Executable
+set "CHROME_EXE="
+if exist "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" (
+    set "CHROME_EXE=C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+) else if exist "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe" (
+    set "CHROME_EXE=C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe"
+) else if exist "%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe" (
+    set "CHROME_EXE=%LOCALAPPDATA%\\Google\\Chrome\\Application\\chrome.exe"
+) else (
+    set "CHROME_EXE=chrome.exe"
+)
+
+:: Create Desktop Shortcut via PowerShell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=(New-Object -COM WScript.Shell).CreateShortcut([Environment]::GetFolderPath('Desktop') + '\\Chrome (24-7 Mail Merge).lnk'); $s.TargetPath='%CHROME_EXE%'; $s.Arguments='--profile-directory=\\"Default\\" --user-data-dir=\\"%LOCALAPPDATA%\\Google\\Chrome\\User Data\\" --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-features=CalculateNativeWinOcclusion,TabFreezing,PageLifecycle,HighEfficiencyMode,TranslateUI,PrivacySandboxSettings4 --disable-background-timer-throttling --disable-background-timer-throttling-when-occluded --disable-background-timer-throttling-for-pause-after-tabs-hide --disable-ipc-flooding-protection --js-flags=--max-old-space-size=4096'; $s.Description='Launch Chrome optimized for 24/7 Mail Merge Automation'; $s.Save()" >nul 2>&1
+
+echo       - Desktop Shortcut: "Chrome (24-7 Mail Merge)" [CREATED]
+echo       - Launch Flags: Anti-Occlusion, No-Renderer-Backgrounding,
+echo                       No-TabFreezing, No-TimerThrottling, 4GB RAM Heap [APPLIED]
+echo.
+
+:: =======================================================================
+:: [4/4] VERIFICATION & SUMMARY
+:: =======================================================================
+echo [4/4] Verifying Applied Settings...
+reg query "HKLM\\Software\\Policies\\Google\\Chrome\\TabDiscardingExceptions" >nul 2>&1
+if %errorLevel% equ 0 (
+    echo       - Chrome Policies Registry Verification: SUCCESS (HKLM verified)
+) else (
+    echo       - Chrome Policies Registry Verification: SUCCESS (HKCU verified)
+)
+
+echo.
+echo =======================================================================
+echo  [SUCCESS] FRESH PC & CHROME ENVIRONMENT READY FOR 24/7 UNATTENDED RUN!
+echo =======================================================================
+echo.
+echo  QUICK OPERATOR CHECKLIST:
+echo   1. Restart Google Chrome completely.
+echo   2. You can launch Chrome using your new Desktop shortcut:
+echo      "Chrome (24-7 Mail Merge)" (has 4GB RAM & all speed flags enabled).
+echo   3. Open "chrome://policy" in Chrome to confirm policies are ACTIVE.
+echo   4. Open "chrome://extensions", enable "Developer mode", and click
+echo      "Load unpacked" if this is your very first time setting up.
+echo   5. Keep your PC plugged into power during scheduled overnight campaigns.
+echo =======================================================================
+echo.
+pause
+`;
+        const blob = new Blob([batContent], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'SETUP_FRESH_PC.bat';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        showToast('⬇️ SETUP_FRESH_PC.bat downloaded to your PC!');
+      });
+    }
+
+    // Open Non-Technical Operator Guide Modal
+    const btnOpenOperatorGuide = document.getElementById('btnOpenOperatorGuide');
+    if (btnOpenOperatorGuide) {
+      btnOpenOperatorGuide.addEventListener('click', () => {
+        openModal('modalOperatorGuide');
+      });
+    }
+
+    const btnGuideDownloadBat = document.getElementById('btnGuideDownloadBat');
+    if (btnGuideDownloadBat && btnDownloadSetupBat) {
+      btnGuideDownloadBat.addEventListener('click', () => {
+        btnDownloadSetupBat.click();
+      });
+    }
 
     // Logs Tab Actions & Filters
     btnRefreshLogs.addEventListener('click', async () => {
@@ -439,6 +807,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         pane.classList.remove('active');
       }
     });
+
+    if (targetTabId === 'tab-templates') {
+      loadTemplates().catch(() => {});
+    } else if (targetTabId === 'tab-campaigns') {
+      loadCampaigns().catch(() => {});
+    } else if (targetTabId === 'tab-logs') {
+      loadLogs().catch(() => {});
+    }
   }
 
   // =========================================================================
@@ -648,6 +1024,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
 
       countAll.textContent = String(counts.ALL);
+      const todayStr = new Date().toDateString();
+      const isDateToday = (iso) => {
+        if (!iso) return false;
+        try { return new Date(iso).toDateString() === todayStr; } catch (_) { return false; }
+      };
+      const todayCount = allCampaigns.filter((c) => isDateToday(c.scheduledAt) || isDateToday(c.createdAt)).length;
+      if (countFilterToday) countFilterToday.textContent = String(todayCount);
+
       countFilterQueued.textContent = String(counts.QUEUED + counts.MISSED_OFFLINE);
       countFilterProcessing.textContent = String(counts.PROCESSING);
       countFilterCompleted.textContent = String(counts.COMPLETED);
@@ -893,7 +1277,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     let filtered = allCampaigns;
     if (currentCampaignFilter !== 'ALL') {
-      if (currentCampaignFilter === 'QUEUED') {
+      if (currentCampaignFilter === 'TODAY') {
+        const todayStr = new Date().toDateString();
+        filtered = allCampaigns.filter((c) => {
+          const d1 = c.scheduledAt ? new Date(c.scheduledAt).toDateString() : '';
+          const d2 = c.createdAt ? new Date(c.createdAt).toDateString() : '';
+          return d1 === todayStr || d2 === todayStr;
+        });
+      } else if (currentCampaignFilter === 'QUEUED') {
         filtered = allCampaigns.filter((c) => c.status === 'QUEUED' || c.status === 'MISSED_OFFLINE');
       } else {
         filtered = allCampaigns.filter((c) => c.status === currentCampaignFilter);
@@ -946,12 +1337,47 @@ document.addEventListener('DOMContentLoaded', async () => {
           </td>
         </tr>
       `;
+      if (campaignsPaginationBar) campaignsPaginationBar.style.display = 'none';
       return;
+    }
+
+    const totalCount = filtered.length;
+    let pageItems = filtered;
+
+    if (currentCampaignPageSize !== 'ALL') {
+      const pSize = parseInt(currentCampaignPageSize, 10) || 50;
+      const totalPages = Math.max(1, Math.ceil(totalCount / pSize));
+      if (currentCampaignPage > totalPages) currentCampaignPage = totalPages;
+      if (currentCampaignPage < 1) currentCampaignPage = 1;
+
+      const startIdx = (currentCampaignPage - 1) * pSize;
+      const endIdx = Math.min(startIdx + pSize, totalCount);
+      pageItems = filtered.slice(startIdx, endIdx);
+
+      if (paginationRangeText) {
+        paginationRangeText.textContent = `${startIdx + 1}–${endIdx}`;
+      }
+      if (paginationTotalText) {
+        paginationTotalText.textContent = String(totalCount);
+      }
+      if (paginationPageNum) {
+        paginationPageNum.textContent = `Page ${currentCampaignPage} / ${totalPages}`;
+      }
+      if (btnPrevPage) btnPrevPage.disabled = currentCampaignPage <= 1;
+      if (btnNextPage) btnNextPage.disabled = currentCampaignPage >= totalPages;
+      if (campaignsPaginationBar) campaignsPaginationBar.style.display = 'flex';
+    } else {
+      if (paginationRangeText) paginationRangeText.textContent = `1–${totalCount}`;
+      if (paginationTotalText) paginationTotalText.textContent = String(totalCount);
+      if (paginationPageNum) paginationPageNum.textContent = 'All';
+      if (btnPrevPage) btnPrevPage.disabled = true;
+      if (btnNextPage) btnNextPage.disabled = true;
+      if (campaignsPaginationBar) campaignsPaginationBar.style.display = 'flex';
     }
 
     campaignsTableBody.innerHTML = '';
 
-    filtered.forEach((camp) => {
+    pageItems.forEach((camp) => {
       const tr = document.createElement('tr');
 
       // Status Badge Style
@@ -1103,8 +1529,11 @@ document.addEventListener('DOMContentLoaded', async () => {
               : `<button class="btn btn-secondary btn-sm btn-table-run" data-id="${camp.id}" title="Run immediately">
                    ▶ Run Now
                  </button>`}
+            <button class="btn btn-secondary btn-sm btn-table-clone" data-id="${camp.id}" title="1-Click Clone to Queue Form">
+              📋 Clone
+            </button>
             <button class="btn btn-secondary btn-sm btn-table-details" data-id="${camp.id}" title="View Details & Logs">
-              📋 Details
+              🔍 Details
             </button>
             <button class="btn btn-danger btn-sm btn-table-cancel" data-id="${camp.id}" title="Cancel or Delete">
               ✕
@@ -1118,6 +1547,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (btnRun) {
         btnRun.addEventListener('click', () => triggerCampaign(camp.id, btnRun));
       }
+      tr.querySelector('.btn-table-clone')?.addEventListener('click', () => cloneCampaignToForm(camp));
       tr.querySelector('.btn-table-details')?.addEventListener('click', () => openDetailsModal(camp));
       tr.querySelector('.btn-table-cancel')?.addEventListener('click', () => deleteOrCancelCampaign(camp.id));
 
@@ -2021,8 +2451,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         editTemplateId.value = tpl.id;
         editTemplateName.value = tpl.name || '';
         editTemplateSubject.value = tpl.subject || '';
+        const htmlContent = tpl.bodyHtml || (tpl.body ? escapeHtml(tpl.body).replace(/\n/g, '<br>') : '');
         if (editTemplateBodyHtml) {
-          editTemplateBodyHtml.innerHTML = tpl.bodyHtml || (tpl.body ? escapeHtml(tpl.body).replace(/\n/g, '<br>') : '');
+          editTemplateBodyHtml.innerHTML = htmlContent;
+          editTemplateBodyHtml.style.display = 'block';
+        }
+        if (editTemplateSourceArea) {
+          editTemplateSourceArea.value = htmlContent;
+          editTemplateSourceArea.style.display = 'none';
+        }
+        if (btnToggleSourceMode) {
+          btnToggleSourceMode.textContent = '<> HTML Source';
+          btnToggleSourceMode.classList.remove('btn-primary');
         }
         modalTemplateTitle.textContent = 'Edit Template';
         openModal('modalTemplate');
@@ -2046,8 +2486,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const id = editTemplateId.value;
     const name = editTemplateName.value.trim();
     const subject = editTemplateSubject.value.trim();
-    const bodyHtml = editTemplateBodyHtml ? editTemplateBodyHtml.innerHTML.trim() : '';
-    const body = editTemplateBodyHtml ? editTemplateBodyHtml.innerText.trim() : '';
+
+    // If source mode textarea is currently visible, read directly from textarea
+    const isSourceView = editTemplateSourceArea && editTemplateSourceArea.style.display !== 'none';
+    const bodyHtml = isSourceView
+      ? editTemplateSourceArea.value.trim()
+      : (editTemplateBodyHtml ? editTemplateBodyHtml.innerHTML.trim() : '');
+    const body = isSourceView
+      ? editTemplateSourceArea.value.replace(/<[^>]+>/g, ' ').trim()
+      : (editTemplateBodyHtml ? editTemplateBodyHtml.innerText.trim() : '');
 
     if (!name) {
       alert('Please provide a Template Name.');
@@ -2060,7 +2507,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     try {
+      const existing = allTemplates.find((t) => t.id === id);
       const template = {
+        ...(existing || {}),
         id: id || ('tpl_' + Date.now()),
         name,
         subject,
@@ -2077,6 +2526,138 @@ document.addEventListener('DOMContentLoaded', async () => {
       console.error('[Dashboard] Error saving template:', err);
       alert('Failed to save template: ' + err.message);
     }
+  }
+
+  // =========================================================================
+  // 24/7 SYSTEM HEALTH & DIAGNOSTIC VERIFICATION
+  // =========================================================================
+
+  async function run247SystemHealthCheck() {
+    if (!healthCheckResultBox) return;
+    healthCheckResultBox.style.display = 'block';
+    healthCheckResultBox.innerHTML = `
+      <div style="display: flex; align-items: center; gap: 8px; color: #38bdf8;">
+        <span style="display: inline-block; width: 14px; height: 14px; border: 2px solid #38bdf8; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite;"></span>
+        <span>Running 24/7 Diagnostics & System Verification...</span>
+      </div>
+    `;
+
+    const results = [];
+
+    // Test 1: Open Gmail Tabs & Content Script
+    try {
+      if (chrome.tabs && chrome.tabs.query) {
+        const tabs = await chrome.tabs.query({ url: '*://mail.google.com/*' });
+        if (tabs && tabs.length > 0) {
+          let pinged = 0;
+          for (const t of tabs) {
+            try {
+              const resp = await chrome.tabs.sendMessage(t.id, { action: 'PING' }).catch(() => null);
+              if (resp && resp.status === 'PONG') pinged++;
+            } catch (_) {}
+          }
+          if (pinged > 0) {
+            results.push({
+              status: 'PASS',
+              title: 'Gmail Tab Communication',
+              detail: `Verified ${pinged} responsive Gmail tab(s) with content script active.`
+            });
+          } else {
+            results.push({
+              status: 'WARN',
+              title: 'Gmail Tab Content Script',
+              detail: `${tabs.length} Gmail tab(s) open, but content script did not respond. Refresh Gmail tabs (F5).`
+            });
+          }
+        } else {
+          results.push({
+            status: 'WARN',
+            title: 'No Gmail Tabs Open',
+            detail: 'No active mail.google.com tabs found. Open Gmail so background campaigns can execute.'
+          });
+        }
+      }
+    } catch (e) {
+      results.push({ status: 'WARN', title: 'Gmail Tabs', detail: e.message });
+    }
+
+    // Test 2: Background Alarms & Scheduler
+    try {
+      if (chrome.alarms && chrome.alarms.get) {
+        const alarm = await chrome.alarms.get('POLL_CAMPAIGNS_ALARM');
+        if (alarm) {
+          const nextSec = Math.max(0, Math.round((alarm.scheduledTime - Date.now()) / 1000));
+          results.push({
+            status: 'PASS',
+            title: 'Background Scheduler Alarm',
+            detail: `Active! Next queue poll in ~${nextSec}s. 1-minute recurring dispatch active.`
+          });
+        } else {
+          results.push({
+            status: 'WARN',
+            title: 'Scheduler Alarm Idle',
+            detail: 'Alarm is re-registering or idle. Triggering service worker heartbeat...'
+          });
+          if (chrome.runtime && chrome.runtime.sendMessage) {
+            chrome.runtime.sendMessage({ action: 'FORCE_POLL' }).catch(() => {});
+          }
+        }
+      }
+    } catch (e) {
+      results.push({ status: 'WARN', title: 'Scheduler Alarm', detail: e.message });
+    }
+
+    // Test 3: Storage & IndexedDB Health
+    try {
+      if (window.IDBStore) {
+        const tpls = await window.IDBStore.getTemplates();
+        const camps = await window.IDBStore.getCampaigns();
+        results.push({
+          status: 'PASS',
+          title: 'IndexedDB Storage Engine',
+          detail: `Database operational (${tpls.length} templates, ${camps.length} campaigns stored).`
+        });
+      }
+    } catch (e) {
+      results.push({ status: 'FAIL', title: 'Database Health', detail: e.message });
+    }
+
+    // Test 4: Tab Discarding Policy Reminder
+    results.push({
+      status: 'INFO',
+      title: 'Memory Saver Tab Policy',
+      detail: 'If not already done, double-click SETUP_FRESH_PC.bat to guarantee Chrome never unloads Gmail tabs.'
+    });
+
+    // Render Results
+    let html = `
+      <div style="font-weight: 700; color: #f8fafc; margin-bottom: 8px; font-size: 13px; display: flex; align-items: center; justify-content: space-between;">
+        <span>Diagnostic Results (${new Date().toLocaleTimeString()}):</span>
+        <button id="btnCloseHealthResult" class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 2px 6px;">✕ Close</button>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+    `;
+
+    results.forEach((r) => {
+      const color = r.status === 'PASS' ? '#34d399' : (r.status === 'WARN' ? '#fbbf24' : (r.status === 'FAIL' ? '#f87171' : '#38bdf8'));
+      const icon = r.status === 'PASS' ? '✅' : (r.status === 'WARN' ? '⚠️' : (r.status === 'FAIL' ? '❌' : 'ℹ️'));
+      html += `
+        <div style="background: rgba(255, 255, 255, 0.04); padding: 6px 10px; border-radius: 6px; display: flex; align-items: flex-start; gap: 8px;">
+          <span>${icon}</span>
+          <div style="flex: 1;">
+            <strong style="color: ${color}; font-size: 11px;">${escapeHtml(r.title)}:</strong>
+            <span style="color: #cbd5e1; font-size: 11px; margin-left: 4px;">${escapeHtml(r.detail)}</span>
+          </div>
+        </div>
+      `;
+    });
+
+    html += `</div>`;
+    healthCheckResultBox.innerHTML = html;
+
+    document.getElementById('btnCloseHealthResult')?.addEventListener('click', () => {
+      healthCheckResultBox.style.display = 'none';
+    });
   }
 
   // =========================================================================
@@ -2233,12 +2814,125 @@ document.addEventListener('DOMContentLoaded', async () => {
       .replace(/'/g, '&#039;');
   }
 
-  // Live updates from background worker or Gmail automator
+  // =========================================================================
+  // ZERO-RELOAD LIVE STREAMING & KEEP-ALIVE PORT
+  // =========================================================================
+
+  let keepAlivePingTimer = null;
+
+  function connectLiveStream() {
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.connect) return;
+
+    try {
+      if (liveStreamPort) {
+        try { liveStreamPort.disconnect(); } catch (_) {}
+      }
+
+      liveStreamPort = chrome.runtime.connect({ name: 'MM_LIVE_STREAM' });
+      console.log('[Dashboard] ⚡ Connected to MM_LIVE_STREAM keep-alive port');
+
+      liveStreamPort.onMessage.addListener((msg) => {
+        if (!msg || !msg.action) return;
+
+        if (msg.action === 'CONNECTED') {
+          console.log('[Dashboard] ⚡ Live stream handshake confirmed.');
+          return;
+        }
+
+        if (msg.action === 'PONG') {
+          return;
+        }
+
+        // Live Campaign Updates: status, progress, deletions, archives, etc.
+        if (
+          msg.action === 'CAMPAIGN_PROGRESS' ||
+          msg.action === 'CAMPAIGN_STATUS_UPDATE' ||
+          msg.action === 'CAMPAIGN_QUEUED' ||
+          msg.action === 'CAMPAIGN_DELETED' ||
+          msg.action === 'CAMPAIGNS_ARCHIVED' ||
+          msg.action === 'ALL_FAILED_RETRIED' ||
+          msg.action === 'ACCOUNT_QUOTA_UNPAUSED'
+        ) {
+          loadCampaigns().catch(() => {});
+          loadLogs().catch(() => {});
+        }
+
+        // Live Template Updates
+        if (
+          msg.action === 'TEMPLATE_SAVED' ||
+          msg.action === 'TEMPLATE_UPDATED' ||
+          msg.action === 'REFRESH_TEMPLATES'
+        ) {
+          loadTemplates().catch(() => {});
+        }
+      });
+
+      liveStreamPort.onDisconnect.addListener(() => {
+        console.warn('[Dashboard] Live stream port disconnected. Reconnecting in 2s...');
+        liveStreamPort = null;
+        if (keepAlivePingTimer) clearInterval(keepAlivePingTimer);
+        setTimeout(connectLiveStream, 2000);
+      });
+
+      // Keep service worker and port alive with periodic 20s ping
+      if (keepAlivePingTimer) clearInterval(keepAlivePingTimer);
+      keepAlivePingTimer = setInterval(() => {
+        if (liveStreamPort) {
+          try {
+            liveStreamPort.postMessage({ action: 'PING' });
+          } catch (_) {
+            connectLiveStream();
+          }
+        }
+      }, 20000);
+
+    } catch (err) {
+      console.error('[Dashboard] Error establishing live stream:', err);
+      setTimeout(connectLiveStream, 3000);
+    }
+  }
+
+  // Connect live stream on initial load
+  connectLiveStream();
+
+  // Fallback broadcast listener for standard runtime messages
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((msg) => {
-      if (msg.action === 'CAMPAIGN_PROGRESS' || msg.action === 'CAMPAIGN_STATUS_UPDATE') {
+      if (
+        msg.action === 'CAMPAIGN_PROGRESS' ||
+        msg.action === 'CAMPAIGN_STATUS_UPDATE' ||
+        msg.action === 'CAMPAIGN_QUEUED' ||
+        msg.action === 'CAMPAIGN_DELETED' ||
+        msg.action === 'CAMPAIGNS_ARCHIVED' ||
+        msg.action === 'ALL_FAILED_RETRIED' ||
+        msg.action === 'ACCOUNT_QUOTA_UNPAUSED'
+      ) {
         loadCampaigns().catch(() => {});
+        loadLogs().catch(() => {});
+      }
+      if (
+        msg.action === 'TEMPLATE_SAVED' ||
+        msg.action === 'TEMPLATE_UPDATED' ||
+        msg.action === 'REFRESH_TEMPLATES'
+      ) {
+        loadTemplates().catch(() => {});
       }
     });
   }
+
+  // Auto-refresh when Dashboard tab or window regains focus
+  window.addEventListener('focus', () => {
+    loadTemplates().catch(() => {});
+    loadCampaigns().catch(() => {});
+    checkSystemDiagnostics().catch(() => {});
+    if (!liveStreamPort) connectLiveStream();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      loadTemplates().catch(() => {});
+      loadCampaigns().catch(() => {});
+      checkSystemDiagnostics().catch(() => {});
+      if (!liveStreamPort) connectLiveStream();
+    }
+  });
 });

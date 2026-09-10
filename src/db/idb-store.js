@@ -17,6 +17,14 @@
 
   const DEFAULT_TEMPLATES = [
     {
+      id: 'template-ijsr-submission',
+      name: 'IJSR Research Paper Submission',
+      subject: 'Submit your Valuable Research for October issue',
+      body: 'If your paper is ready, you can begin the submission process below.\n\nSubmit your Valuable Research for October issue:\nhttps://{{senderDomain}}/international-journal-of-scientific-research-(IJSR)/page/p/upload-your-article\n\nTo Opt Out:\nhttps://{{senderDomain}}/international-journal-of-scientific-research-(IJSR)/page/p/OptOut',
+      bodyHtml: '<p style="margin: 0 0 12pt 0; font-size: 12pt; line-height: 1.15; font-family: Arial, sans-serif;">If your paper is ready, you can begin the submission process below.</p><p style="margin: 0 0 12pt 0; font-size: 12pt; line-height: 1.15; font-family: Arial, sans-serif;"><b><a href="https://{{senderDomain}}/international-journal-of-scientific-research-(IJSR)/page/p/upload-your-article" style="color: #0563c1; text-decoration: underline;"><span style="color: #3300ff;">Submit your Valuable Research for October issue</span></a></b></p><p style="margin: 0; font-size: 12pt; line-height: 1.15; font-family: Arial, sans-serif;"><a href="https://{{senderDomain}}/international-journal-of-scientific-research-(IJSR)/page/p/OptOut" style="color: #0563c1; text-decoration: underline;"><span style="color: #3300ff;">To Opt Out</span></a></p>',
+      createdAt: new Date().toISOString()
+    },
+    {
       id: 'template-starter',
       name: 'Welcome & Introduction',
       subject: 'Hello {{First Name}}, quick update on {{Project}}',
@@ -129,15 +137,15 @@
       return new Promise((resolve, reject) => {
         const tx = db.transaction('templates', 'readwrite');
         const store = tx.objectStore('templates');
-        const countReq = store.count();
 
-        countReq.onsuccess = () => {
-          if (countReq.result === 0) {
-            for (const tpl of DEFAULT_TEMPLATES) {
+        for (const tpl of DEFAULT_TEMPLATES) {
+          const req = store.get(tpl.id);
+          req.onsuccess = () => {
+            if (!req.result) {
               store.put(tpl);
             }
-          }
-        };
+          };
+        }
 
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);

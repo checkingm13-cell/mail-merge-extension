@@ -15,7 +15,8 @@
   ],
   "host_permissions": [
     "https://mail.google.com/*",
-    "https://docs.google.com/*"
+    "https://docs.google.com/*",
+    "https://drive.google.com/*"
   ],
   "icons": {
     "16": "icons/icon-16.png",

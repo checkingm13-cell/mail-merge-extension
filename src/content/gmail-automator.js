@@ -1250,8 +1250,10 @@
             (subjectMatches && continueBtn);
         }
 
-        if (subjectMatches && (sheetMatches || continueBtn) && draftIdMatches) {
+        const isExactDraftId = actualDraftId && draftId && actualDraftId === draftId;
+        if (isExactDraftId || (subjectMatches && (sheetMatches || continueBtn) && draftIdMatches)) {
           let score = 0;
+          if (isExactDraftId) score += 40;
           if (actualDraftId && draftId && actualDraftId === draftId) score += 30;
           if (window.location.hash && draftId && window.location.hash.includes(draftId)) score += 25;
           if (actualSubject && expectedSubject && actualSubject === expectedSubject) score += 20;
@@ -1660,11 +1662,32 @@
           if (campaign) campaign.subject = verifySubject;
         }
 
-        // Verify Mail Merge session
-        const continueBtnCheck = Array.from(composeDialog.querySelectorAll('button, div[role="button"]'))
-          .some((b) => /^Continue$/i.test((b.textContent || '').trim()));
-        const readyModalCheck = Array.from(document.querySelectorAll('div[role="dialog"]'))
-          .some((d) => (d.textContent || '').includes('Ready to send'));
+        // Verify Mail Merge session: Give Gmail up to 10 seconds to hydrate Google Drive sheet connection
+        await reportProgress('VERIFY_MERGE', 'Waiting for Google Drive sheet connection to load...', 45);
+        let continueBtnCheck = false;
+        let readyModalCheck = false;
+
+        const hydrationStart = Date.now();
+        while (Date.now() - hydrationStart < 10000) {
+          continueBtnCheck = Array.from(composeDialog.querySelectorAll('button, div[role="button"]'))
+            .some((b) => /^Continue$/i.test((b.textContent || '').trim()));
+          readyModalCheck = Array.from(document.querySelectorAll('div[role="dialog"]'))
+            .some((d) => (d.textContent || '').includes('Ready to send'));
+
+          if (continueBtnCheck || readyModalCheck) break;
+          await sleep(500);
+        }
+
+        // Second chance: if sheet chip is detected, give extra time for Continue button to activate
+        if (!continueBtnCheck && !readyModalCheck) {
+          const sheetChip = composeDialog.querySelector('a[href*="spreadsheets/d/"], [data-url*="spreadsheets/d/"], div[role="button"][aria-label*="sheet" i], div.vR, div.afV');
+          if (sheetChip) {
+            console.log('[GmailAutomator] Sheet chip detected. Waiting extra 3s for Gmail to activate Continue button...');
+            await sleep(3000);
+            continueBtnCheck = Array.from(composeDialog.querySelectorAll('button, div[role="button"]'))
+              .some((b) => /^Continue$/i.test((b.textContent || '').trim()));
+          }
+        }
 
         if (!continueBtnCheck && !readyModalCheck) {
           throw new Error(`Mail Merge Inactive: Draft "${verifySubject || subject}" is a standard draft without an active Mail Merge sheet attached (no "Continue" button).`);

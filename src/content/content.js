@@ -663,11 +663,21 @@
 
     overlay.innerHTML =
       '<div style="background: #ffffff; border-radius: 12px; width: 390px; box-shadow: 0 8px 28px rgba(0,0,0,0.28); padding: 20px; box-sizing: border-box; position: relative;">' +
-        '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">' +
+        '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">' +
           '<h3 style="margin: 0; font-size: 16px; font-weight: 600; color: #202124; display: flex; align-items: center; gap: 8px;">' +
             '<span style="color: #7e22ce;">📅</span> Schedule Mail Merge' +
           '</h3>' +
           '<span id="mmPopoverClose" style="cursor: pointer; font-size: 18px; color: #5f6368; padding: 2px 6px; line-height: 1;">✕</span>' +
+        '</div>' +
+
+        // Child-Simple Readiness Status Badges
+        '<div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">' +
+          '<span id="mmBadgeSheet" style="font-size: 11px; font-weight: 600; padding: 4px 8px; border-radius: 6px; ' + (meta.sheetTitle || meta.recipientCount ? 'background: #dcfce7; color: #15803d; border: 1px solid #86efac;' : 'background: #fef3c7; color: #92400e; border: 1px solid #fcd34d;') + '">' +
+            (meta.sheetTitle || meta.recipientCount ? '✅ Sheet Connected' + (meta.recipientCount ? ' (' + meta.recipientCount + ')' : '') : '⚠️ Connect Sheet First') +
+          '</span>' +
+          '<span id="mmBadgeTime" style="font-size: 11px; font-weight: 600; padding: 4px 8px; border-radius: 6px; background: #e0f2fe; color: #0284c7; border: 1px solid #bae6fd;">' +
+            '⏰ Time Selected' +
+          '</span>' +
         '</div>' +
 
         // Detected Draft & Sheet Metadata Preview
@@ -747,6 +757,39 @@
       if (input) input.focus();
     }, 100);
 
+    const timeInputEl = overlay.querySelector('#mmDateTimeInput');
+    const badgeTimeEl = overlay.querySelector('#mmBadgeTime');
+    const updateTimeBadge = () => {
+      if (!badgeTimeEl || !timeInputEl) return;
+      const val = timeInputEl.value;
+      if (!val) {
+        badgeTimeEl.textContent = '⚠️ Choose Time';
+        badgeTimeEl.style.background = '#fef3c7';
+        badgeTimeEl.style.color = '#92400e';
+        badgeTimeEl.style.border = '1px solid #fcd34d';
+        return;
+      }
+      const targetTime = new Date(val.replace(' ', 'T')).getTime();
+      if (isNaN(targetTime)) return;
+      const diffMin = Math.round((targetTime - Date.now()) / 60000);
+      if (diffMin <= 1) {
+        badgeTimeEl.textContent = '⚡ Immediate Send';
+        badgeTimeEl.style.background = '#dcfce7';
+        badgeTimeEl.style.color = '#15803d';
+        badgeTimeEl.style.border = '1px solid #86efac';
+      } else {
+        badgeTimeEl.textContent = `⏰ In ~${diffMin} mins`;
+        badgeTimeEl.style.background = '#e0f2fe';
+        badgeTimeEl.style.color = '#0284c7';
+        badgeTimeEl.style.border = '1px solid #bae6fd';
+      }
+    };
+    if (timeInputEl) {
+      timeInputEl.addEventListener('input', updateTimeBadge);
+      timeInputEl.addEventListener('change', updateTimeBadge);
+      updateTimeBadge();
+    }
+
     // Quick time button handlers
     overlay.querySelectorAll('.mm-quick-time').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -764,7 +807,10 @@
           dt.setMinutes(dt.getMinutes() + 30);
         }
         dt.setMinutes(dt.getMinutes() - dt.getTimezoneOffset());
-        overlay.querySelector('#mmDateTimeInput').value = dt.toISOString().slice(0, 16);
+        if (timeInputEl) {
+          timeInputEl.value = dt.toISOString().slice(0, 16);
+          updateTimeBadge();
+        }
       });
     });
 
@@ -801,11 +847,16 @@
           const chosen = tpls.find((t) => t.id === tplId);
           if (chosen) {
             selectedTemplate = chosen;
+
+            const resolvedSubject = resolveDynamicTemplate(chosen.subject || '', composeDialog);
+            const resolvedBodyHtml = chosen.bodyHtml ? resolveDynamicTemplate(chosen.bodyHtml, composeDialog) : null;
+            const resolvedBodyText = resolveDynamicTemplate(chosen.body || '', composeDialog);
+
             // Apply subject to compose dialog
             if (chosen.subject !== undefined && composeDialog) {
               const subInput = composeDialog.querySelector('input[name="subjectbox"], input[name="subject"]');
               if (subInput) {
-                subInput.value = chosen.subject;
+                subInput.value = resolvedSubject;
                 subInput.dispatchEvent(new Event('input', { bubbles: true }));
                 subInput.dispatchEvent(new Event('change', { bubbles: true }));
               }
@@ -814,10 +865,10 @@
             if ((chosen.bodyHtml !== undefined || chosen.body !== undefined) && composeDialog) {
               const bodyEl = composeDialog.querySelector('div[aria-label="Message Body"], div[role="textbox"], div.Am');
               if (bodyEl) {
-                if (chosen.bodyHtml) {
-                  bodyEl.innerHTML = chosen.bodyHtml;
+                if (resolvedBodyHtml) {
+                  bodyEl.innerHTML = resolvedBodyHtml;
                 } else {
-                  bodyEl.innerText = chosen.body || '';
+                  bodyEl.innerText = resolvedBodyText || '';
                 }
                 bodyEl.dispatchEvent(new Event('input', { bubbles: true }));
                 bodyEl.dispatchEvent(new Event('change', { bubbles: true }));
@@ -826,9 +877,9 @@
             // Update preview in popup if present
             const subPreview = overlay.querySelector('.mm-subject-preview');
             if (subPreview && chosen.subject) {
-              subPreview.textContent = chosen.subject;
+              subPreview.textContent = resolvedSubject;
             }
-            showToast('⚡ Template "' + (chosen.name || 'Template') + '" loaded with formatting & links!');
+            showToast('⚡ Template "' + (chosen.name || 'Template') + '" loaded with dynamic domain links!');
           }
         } catch (err) {
           console.error('[MailMerge ContentScript] Error loading template into compose:', err);
@@ -892,6 +943,11 @@
             await root.IDBStore.saveTemplate(newTpl);
             closePopover();
             showToast('💾 Template "' + chosenName + '" saved with all formatting & hyperlinks!');
+            try {
+              if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+                chrome.runtime.sendMessage({ action: 'TEMPLATE_SAVED', template: newTpl });
+              }
+            } catch (_) {}
           }
         } catch (saveErr) {
           alert('Failed to save template: ' + saveErr.message);
@@ -1047,6 +1103,11 @@
             await root.IDBStore.saveTemplate(newTpl);
             templateSaved = true;
             console.log('[MailMerge ContentScript] Saved reusable template with rich formatting to Dashboard:', newTpl.name);
+            try {
+              if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+                chrome.runtime.sendMessage({ action: 'TEMPLATE_SAVED', template: newTpl });
+              }
+            } catch (_) {}
           } catch (tplErr) {
             console.warn('[MailMerge ContentScript] Error saving template:', tplErr.message);
           }
@@ -1061,6 +1122,13 @@
               campaign: campaign,
               scheduledTime: scheduledTime
             });
+            try {
+              chrome.runtime.sendMessage({
+                action: 'CAMPAIGN_QUEUED',
+                campaignId: campaign.id,
+                campaign: campaign
+              }).catch(() => {});
+            } catch (_) {}
           } catch (commErr) {
             console.warn('[MailMerge ContentScript] Background registration note:', commErr?.message);
             if (commErr && commErr.message && commErr.message.includes('Extension context invalidated')) {
@@ -1071,8 +1139,8 @@
 
         closePopover();
 
-        // Strictly close ONLY this specific compose dialog (preserves other open windows)
-        closeSpecificCompose(composeDialog);
+        // Strictly close ONLY this specific compose dialog after verifying sync
+        await closeSpecificCompose(composeDialog);
 
         // Show toast confirmation
         showToast('✅ Scheduled for ' + new Date(scheduledTime).toLocaleString() + (meta.recipientCount ? ' (' + meta.recipientCount + ' recipients)' : '') + (templateSaved ? ' • 💾 Template saved to Dashboard!' : ''));
@@ -1106,6 +1174,87 @@
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
+  }
+
+  // Extracts sender email and sender domain from Compose From field or active Google profile
+  function getSenderEmailAndDomain(composeDialog) {
+    let senderEmail = '';
+
+    // 1. Check Compose window's 'From:' selector (handles aliases / Send-as)
+    const fromInput = composeDialog?.querySelector('input[name="from"]');
+    if (fromInput && fromInput.value && fromInput.value.includes('@')) {
+      senderEmail = fromInput.value.trim();
+    }
+
+    // 2. Check top-right Google Account avatar
+    if (!senderEmail) {
+      const avatarEl = document.querySelector('header a[aria-label*="@"], div[aria-label*="@"], a[aria-label*="Google Account"]');
+      if (avatarEl) {
+        const match = /[\w.-]+@[\w.-]+\.[a-zA-Z0-9_-]+(\.[a-zA-Z]{2,})+/.exec(avatarEl.getAttribute('aria-label') || '');
+        if (match) senderEmail = match[0];
+      }
+    }
+
+    // 3. Check SignOutOptions / Google profile buttons across all languages
+    if (!senderEmail) {
+      const profileLinks = document.querySelectorAll('a[href*="SignOutOptions"], a[href*="accounts.google.com"], [data-identifier]');
+      for (const el of profileLinks) {
+        const text = el.getAttribute('aria-label') || el.getAttribute('data-identifier') || el.title || '';
+        const match = /[\w.-]+@[\w.-]+\.[a-zA-Z0-9_-]+(\.[a-zA-Z]{2,})+/.exec(text);
+        if (match) {
+          senderEmail = match[0];
+          break;
+        }
+      }
+    }
+
+    // 4. Fallback: Check Gmail document title (e.g. "Inbox (3) - user@domain.com - Gmail")
+    if (!senderEmail) {
+      const titleMatch = /[\w.-]+@[\w.-]+\.[a-zA-Z0-9_-]+(\.[a-zA-Z]{2,})+/.exec(document.title || '');
+      if (titleMatch) senderEmail = titleMatch[0];
+    }
+
+    let senderDomain = '';
+    if (senderEmail && senderEmail.includes('@')) {
+      senderDomain = senderEmail.split('@')[1].trim().toLowerCase();
+    }
+
+    return { senderEmail, senderDomain };
+  }
+
+  // Replaces dynamic variables {{senderDomain}}, {{senderEmail}} and resolves relative href="/..." links to https://${senderDomain}/...
+  function resolveDynamicTemplate(rawContent, composeDialog) {
+    if (!rawContent || typeof rawContent !== 'string') return rawContent;
+
+    const { senderEmail, senderDomain } = getSenderEmailAndDomain(composeDialog);
+    let resolved = rawContent;
+
+    // 1. Replace domain placeholders: {{senderDomain}}, {senderdomain}, {{sender_domain}}
+    if (senderDomain) {
+      resolved = resolved
+        .replace(/\{\{\s*senderDomain\s*\}\}/gi, senderDomain)
+        .replace(/\{\s*senderDomain\s*\}/gi, senderDomain)
+        .replace(/\{\{\s*sender_domain\s*\}\}/gi, senderDomain)
+        .replace(/\{\s*sender_domain\s*\}/gi, senderDomain);
+    }
+
+    // 2. Replace email placeholders: {{senderEmail}}, {senderemail}, {{sender_email}}
+    if (senderEmail) {
+      resolved = resolved
+        .replace(/\{\{\s*senderEmail\s*\}\}/gi, senderEmail)
+        .replace(/\{\s*senderEmail\s*\}/gi, senderEmail)
+        .replace(/\{\{\s*sender_email\s*\}\}/gi, senderEmail)
+        .replace(/\{\s*sender_email\s*\}/gi, senderEmail);
+    }
+
+    // 3. Auto-convert relative links: href="/path..." -> href="https://${senderDomain}/path..."
+    if (senderDomain) {
+      resolved = resolved.replace(/href=(["'])\/([^"'>\s]+)(["'])/gi, (match, p1, p2, p3) => {
+        return `href=${p1}https://${senderDomain}/${p2}${p3}`;
+      });
+    }
+
+    return resolved;
   }
 
   function getComposeDialog() {
@@ -1221,27 +1370,34 @@
     };
   }
 
-  // Ponytail: ensure draft is fully saved to Google servers before scheduling
+  // Ponytail: ensure draft and attached Google Sheet are fully committed to Google servers before scheduling
   async function ensureDraftSaved(composeDialog) {
     let draftId = getDraftId(composeDialog);
-    if (draftId && draftId !== 'unknown') return draftId;
 
     const subjectInput = composeDialog?.querySelector('input[name="subjectbox"]');
     if (subjectInput) {
       subjectInput.dispatchEvent(new Event('blur', { bubbles: true }));
     }
 
+    // Wait until draftId is acquired AND Gmail finishes "Saving..." state
     const startTime = Date.now();
-    while (Date.now() - startTime < 3500) {
+    while (Date.now() - startTime < 4500) {
       await new Promise((r) => setTimeout(r, 400));
       draftId = getDraftId(composeDialog);
-      if (draftId && draftId !== 'unknown') return draftId;
+      const text = (composeDialog?.textContent || '');
+      const isSaving = /saving\.\.\./i.test(text);
+      if (draftId && draftId !== 'unknown' && !isSaving) {
+        break;
+      }
     }
+
+    // Wait an extra 1.2s so Google Drive sheet association commits on the server
+    await new Promise((r) => setTimeout(r, 1200));
     return draftId || 'unknown';
   }
 
-  // Strictly close ONLY the clicked compose dialog (preserves other open compose windows)
-  function closeSpecificCompose(composeDialog) {
+  // Strictly close ONLY the clicked compose dialog after verifying Gmail has fully saved the draft & sheet
+  async function closeSpecificCompose(composeDialog) {
     if (!composeDialog) return;
     const modals = document.querySelectorAll('div[role="dialog"]');
     for (const modal of modals) {
@@ -1252,17 +1408,26 @@
       }
     }
 
-    setTimeout(() => {
-      const closeBtn =
-        composeDialog.querySelector('button[aria-label*="Close" i]') ||
-        composeDialog.querySelector('button[aria-label*="Save & close" i]') ||
-        composeDialog.querySelector('img[aria-label*="Close" i]') ||
-        composeDialog.querySelector('img[aria-label*="Save & close" i]') ||
-        composeDialog.querySelector('img.Ha');
-      if (closeBtn) {
-        closeBtn.click();
-      }
-    }, 300);
+    // Ensure Gmail isn't actively "Saving..."
+    const startWait = Date.now();
+    while (Date.now() - startWait < 3000) {
+      const text = (composeDialog.textContent || '');
+      if (!/saving\.\.\./i.test(text)) break;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    // Safety buffer before closing to guarantee Google Drive attachment is locked in
+    await new Promise((r) => setTimeout(r, 1200));
+
+    const closeBtn =
+      composeDialog.querySelector('button[aria-label*="Close" i]') ||
+      composeDialog.querySelector('button[aria-label*="Save & close" i]') ||
+      composeDialog.querySelector('img[aria-label*="Close" i]') ||
+      composeDialog.querySelector('img[aria-label*="Save & close" i]') ||
+      composeDialog.querySelector('img.Ha');
+    if (closeBtn) {
+      closeBtn.click();
+    }
   }
 
   function showToast(message) {

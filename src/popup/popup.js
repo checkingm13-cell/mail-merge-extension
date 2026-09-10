@@ -34,6 +34,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   function setupEventListeners() {
     schedulerToggle.addEventListener('change', handleSchedulerToggle);
     btnRefresh.addEventListener('click', handleManualRefresh);
+
+    const btnRefreshTabsHeader = document.getElementById('btnRefreshTabsHeader');
+    if (btnRefreshTabsHeader) {
+      btnRefreshTabsHeader.addEventListener('click', async () => {
+        btnRefreshTabsHeader.disabled = true;
+        btnRefreshTabsHeader.textContent = '...';
+        const resp = await chrome.runtime.sendMessage({ action: 'RELOAD_GMAIL_TABS' }).catch(() => null);
+        showToast(resp?.count ? `Refreshed ${resp.count} Gmail tab(s)` : 'Gmail tabs refreshed');
+        setTimeout(() => {
+          btnRefreshTabsHeader.disabled = false;
+          btnRefreshTabsHeader.textContent = '🔄 Tabs';
+        }, 1500);
+      });
+    }
+
     if (btnOpenDashboard) {
       btnOpenDashboard.addEventListener('click', openFullDashboard);
     }
@@ -713,10 +728,63 @@ document.addEventListener('DOMContentLoaded', async () => {
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;');
   }
-  // Live updates from background worker or Gmail automator
+  // =========================================================================
+  // ZERO-RELOAD LIVE STREAMING & KEEP-ALIVE PORT
+  // =========================================================================
+
+  let liveStreamPort = null;
+  let keepAlivePingTimer = null;
+
+  function connectPopupLiveStream() {
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.connect) return;
+    try {
+      if (liveStreamPort) {
+        try { liveStreamPort.disconnect(); } catch (_) {}
+      }
+      liveStreamPort = chrome.runtime.connect({ name: 'MM_LIVE_STREAM' });
+      liveStreamPort.onMessage.addListener((msg) => {
+        if (!msg || !msg.action) return;
+        if (
+          msg.action === 'CAMPAIGN_PROGRESS' ||
+          msg.action === 'CAMPAIGN_STATUS_UPDATE' ||
+          msg.action === 'CAMPAIGN_QUEUED' ||
+          msg.action === 'CAMPAIGN_DELETED' ||
+          msg.action === 'CAMPAIGNS_ARCHIVED' ||
+          msg.action === 'ALL_FAILED_RETRIED' ||
+          msg.action === 'ACCOUNT_QUOTA_UNPAUSED'
+        ) {
+          loadCampaigns().catch(() => {});
+        }
+      });
+      liveStreamPort.onDisconnect.addListener(() => {
+        liveStreamPort = null;
+        if (keepAlivePingTimer) clearInterval(keepAlivePingTimer);
+      });
+      if (keepAlivePingTimer) clearInterval(keepAlivePingTimer);
+      keepAlivePingTimer = setInterval(() => {
+        if (liveStreamPort) {
+          try {
+            liveStreamPort.postMessage({ action: 'PING' });
+          } catch (_) {}
+        }
+      }, 20000);
+    } catch (_) {}
+  }
+
+  connectPopupLiveStream();
+
+  // Fallback broadcast listener for standard runtime messages
   if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((msg) => {
-      if (msg.action === 'CAMPAIGN_PROGRESS' || msg.action === 'CAMPAIGN_STATUS_UPDATE') {
+      if (
+        msg.action === 'CAMPAIGN_PROGRESS' ||
+        msg.action === 'CAMPAIGN_STATUS_UPDATE' ||
+        msg.action === 'CAMPAIGN_QUEUED' ||
+        msg.action === 'CAMPAIGN_DELETED' ||
+        msg.action === 'CAMPAIGNS_ARCHIVED' ||
+        msg.action === 'ALL_FAILED_RETRIED' ||
+        msg.action === 'ACCOUNT_QUOTA_UNPAUSED'
+      ) {
         loadCampaigns().catch(() => {});
       }
     });

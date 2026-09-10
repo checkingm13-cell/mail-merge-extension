@@ -79,6 +79,14 @@
         <span>📊 Logs & Diagnostics</span>
         <span class="tab-badge" id="tabBadgeLogs">0</span>
       </button>
+      <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
+        <button class="btn btn-secondary btn-sm" id="btnOpenOperatorGuide" style="display: inline-flex; align-items: center; gap: 6px; border-color: rgba(167, 139, 250, 0.5); color: #c084fc; font-size: 11px; padding: 6px 12px; font-weight: 600;">
+          <span>📖 Operator Guide</span>
+        </button>
+        <button class="btn btn-secondary btn-sm" id="btnQuick247Guide" style="display: inline-flex; align-items: center; gap: 6px; border-color: rgba(56, 189, 248, 0.4); color: #38bdf8; font-size: 11px; padding: 6px 12px;">
+          <span>🛡️ 24/7 Diagnostics</span>
+        </button>
+      </div>
     </nav>
 
     <!-- Main Content Panes -->
@@ -100,6 +108,7 @@
             <div class="filter-bar" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
               <span style="font-size: 11px; color: var(--text-muted); margin-right: 2px;">Status:</span>
               <button class="filter-pill active" data-status="ALL">All (<span id="countAll">0</span>)</button>
+              <button class="filter-pill" data-status="TODAY">📅 Today (<span id="countFilterToday">0</span>)</button>
               <button class="filter-pill" data-status="QUEUED">Queued (<span id="countFilterQueued">0</span>)</button>
               <button class="filter-pill" data-status="PROCESSING">Processing (<span id="countFilterProcessing">0</span>)</button>
               <button class="filter-pill" data-status="COMPLETED">Completed (<span id="countFilterCompleted">0</span>)</button>
@@ -108,6 +117,16 @@
               <button id="btnRemoveAllFailedFilter" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4); margin-left: 4px;" title="Permanently delete all failed campaigns from IndexedDB database">
                 <span>🗑️ Delete All Failed</span>
               </button>
+
+              <div style="display: inline-flex; align-items: center; gap: 6px; margin-left: 6px;">
+                <span style="font-size: 11px; color: var(--text-muted);">Show:</span>
+                <select id="campaignPageSizeSelect" style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(71, 85, 105, 0.6); border-radius: 6px; padding: 4px 8px; font-size: 11px; color: var(--text-primary); outline: none; cursor: pointer;">
+                  <option value="50">50 per page</option>
+                  <option value="100">100 per page</option>
+                  <option value="250">250 per page</option>
+                  <option value="ALL">All Campaigns</option>
+                </select>
+              </div>
 
               <div style="display: inline-flex; align-items: center; gap: 6px; margin-left: 6px;">
                 <span style="font-size: 11px; color: var(--text-muted);">Sort:</span>
@@ -123,6 +142,9 @@
               <input type="text" id="campaignSearchInput" placeholder="🔍 Search campaigns..." style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(71, 85, 105, 0.6); border-radius: 6px; padding: 4px 10px; font-size: 11px; color: var(--text-primary); outline: none; min-width: 170px; margin-left: 4px;" />
             </div>
             <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+              <button id="btnArchiveCompleted" class="btn btn-secondary btn-sm" title="Move completed campaigns into Archive to keep today's active table clean">
+                <span>🧹 Archive Completed</span>
+              </button>
               <button id="btnTopRemoveAllFailed" class="btn btn-secondary btn-sm" style="display: none; color: #fca5a5; border-color: rgba(239, 68, 68, 0.4);" title="Permanently delete all failed campaigns from IndexedDB database">
                 <span>🗑️ Delete All Failed (<span id="countTopFailed">0</span>)</span>
               </button>
@@ -133,6 +155,24 @@
                 <span>➕ New Campaign</span>
               </button>
             </div>
+          </div>
+
+          <!-- Child-Simple Operator 3-Step Daily Routine Banner -->
+          <div id="operatorQuickCard" style="background: linear-gradient(135deg, rgba(16, 185, 129, 0.08) 0%, rgba(15, 23, 42, 0.6) 100%); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 8px; padding: 12px 18px; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap;">
+            <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+              <span style="font-size: 24px;">💡</span>
+              <div>
+                <div style="font-weight: 700; font-size: 13px; color: #6ee7b7; display: flex; align-items: center; gap: 8px;">
+                  <span>Daily 250-Campaign Routine (3 Simple Steps):</span>
+                </div>
+                <div style="font-size: 12px; color: #cbd5e1; margin-top: 3px; display: flex; gap: 14px; flex-wrap: wrap;">
+                  <span><strong>1. Open Gmail:</strong> Click Compose &amp; attach Google Sheet.</span>
+                  <span><strong>2. Schedule:</strong> Pick template &amp; send time (Click blue Schedule).</span>
+                  <span><strong>3. Keep PC Running:</strong> Keep charger plugged in. Extension auto-dispatches!</span>
+                </div>
+              </div>
+            </div>
+            <button id="btnDismissQuickCard" style="background: transparent; border: none; color: #94a3b8; font-size: 18px; cursor: pointer; padding: 4px;" title="Dismiss tip">&times;</button>
           </div>
 
           <!-- Real-Time Hybrid Parallel Queue Status Card (Account-Locked Concurrency Pool) -->
@@ -202,6 +242,18 @@
                 </tr>
               </tbody>
             </table>
+          </div>
+
+          <!-- Campaigns Pagination Bar (High-Volume 250/day Engine) -->
+          <div id="campaignsPaginationBar" style="display: flex; justify-content: space-between; align-items: center; padding: 12px 6px; font-size: 12px; color: var(--text-muted); border-top: 1px solid rgba(71, 85, 105, 0.3); margin-top: 8px;">
+            <div>
+              Showing <span id="paginationRangeText" style="color: var(--text-primary); font-weight: 600;">0–0</span> of <span id="paginationTotalText" style="color: var(--text-primary); font-weight: 600;">0</span> campaigns
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <button id="btnPrevPage" class="btn btn-secondary btn-sm" style="padding: 4px 12px; font-size: 11px;">◀ Prev</button>
+              <span id="paginationPageNum" style="color: var(--text-primary); font-weight: 600; padding: 0 6px;">Page 1 / 1</span>
+              <button id="btnNextPage" class="btn btn-secondary btn-sm" style="padding: 4px 12px; font-size: 11px;">Next ▶</button>
+            </div>
           </div>
         </div>
       </section>
@@ -366,9 +418,14 @@
               <h2 class="panel-title">Saved Email Templates</h2>
               <p class="panel-subtitle">Create, edit, and quickly launch reusable mail merge templates</p>
             </div>
-            <button id="btnOpenCreateTemplate" class="btn btn-primary btn-sm">
-              <span>➕ Create Template</span>
-            </button>
+            <div style="display: flex; gap: 8px;">
+              <button id="btnRefreshTemplates" class="btn btn-secondary btn-sm" title="Refresh templates from database">
+                <span>🔄 Refresh</span>
+              </button>
+              <button id="btnOpenCreateTemplate" class="btn btn-primary btn-sm">
+                <span>➕ Create Template</span>
+              </button>
+            </div>
           </div>
 
           <div class="templates-grid" id="templatesGrid">
@@ -398,9 +455,12 @@
               <span style="color: var(--text-secondary);">Content Script:</span>
               <span id="diagContentScriptState">Checking...</span>
             </div>
-            <div style="margin-top: 10px;">
-              <button id="btnLaunchGmailTab" class="btn btn-secondary btn-sm" style="width: 100%;">
-                Open / Focus Gmail Tab
+            <div style="margin-top: 10px; display: flex; gap: 6px;">
+              <button id="btnLaunchGmailTab" class="btn btn-secondary btn-sm" style="flex: 1;">
+                Open Gmail Tab
+              </button>
+              <button id="btnReloadGmailTabsDashboard" class="btn btn-secondary btn-sm" style="flex: 1;" title="Hard Refresh all open Gmail tabs">
+                🔄 Refresh Tabs
               </button>
             </div>
           </div>
@@ -446,6 +506,109 @@
             <div class="diag-row">
               <span style="color: var(--text-secondary);">Execution Logs:</span>
               <span id="diagStatLogs" style="font-weight: 600;">0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 24/7 Production Health & Error Troubleshooting Guide -->
+        <div class="panel-card" id="card247HealthGuide" style="border: 1px solid rgba(56, 189, 248, 0.35); background: linear-gradient(180deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.6) 100%);">
+          <div class="panel-header" style="border-bottom: 1px solid rgba(255, 255, 255, 0.08); padding-bottom: 12px; margin-bottom: 14px;">
+            <div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <h2 class="panel-title" style="color: #38bdf8; font-size: 15px;">🛡️ 24/7 Production Health &amp; Error Troubleshooting Guide</h2>
+                <span class="badge badge-completed" style="font-size: 10px;">Self-Healing Active</span>
+              </div>
+              <p class="panel-subtitle">Zero-downtime reliability guidelines, common Google failure modes, and automated recovery actions</p>
+            </div>
+            <button id="btnRun247HealthCheck" class="btn btn-primary btn-sm" style="background: #0284c7;">
+              <span>🧪 Run 24/7 System Health Check</span>
+            </button>
+          </div>
+
+          <!-- Live Health Check Output Container -->
+          <div id="healthCheckResultBox" style="display: none; margin-bottom: 16px; padding: 12px; border-radius: 8px; font-size: 12px; border: 1px solid var(--border-color); background: rgba(0, 0, 0, 0.3);"></div>
+
+          <!-- 6 Critical Failure Modes Grid -->
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px;">
+            <!-- Mode 1: Sheet Disconnect -->
+            <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                <strong style="color: #fca5a5; font-size: 12px;">1. Sheet Disconnect / "No Recipients"</strong>
+                <span class="badge badge-completed" style="font-size: 9px;">AUTO-HEALED</span>
+              </div>
+              <p style="font-size: 11px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 6px;">
+                <strong>Cause:</strong> Closing compose too fast or Drive session timeout.<br>
+                <strong>Safeguard:</strong> Extension now enforces a 1.2s "Saved" state commit buffer on schedule, and waits up to 10s for Google Drive sheet hydration on open.
+              </p>
+              <div style="font-size: 11px; color: #38bdf8;">💡 <em>Manual Fix:</em> Click <strong>"↻ Retry Now"</strong> while draft is open with sheet attached.</div>
+            </div>
+
+            <!-- Mode 2: 1500 Daily Multi-Send Limit -->
+            <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                <strong style="color: #fcd34d; font-size: 12px;">2. Workspace Daily Limit (1,500/day)</strong>
+                <span class="badge badge-queued" style="font-size: 9px;">QUOTA GUARD</span>
+              </div>
+              <p style="font-size: 11px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 6px;">
+                <strong>Cause:</strong> Google Workspace limits multi-send to 1,500 recipients per 24 hours per account.<br>
+                <strong>Safeguard:</strong> Extension's Quota Guard auto-pauses campaigns if limit is reached to prevent Google account strikes.
+              </p>
+              <div style="font-size: 11px; color: #38bdf8;">💡 <em>Action:</em> Stagger campaigns across multiple Google accounts (/u/0/, /u/1/).</div>
+            </div>
+
+            <!-- Mode 3: Chrome Tab Sleeping / Memory Saver -->
+            <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                <strong style="color: #6ee7b7; font-size: 12px;">3. Tab Sleep / Discarding</strong>
+                <span class="badge badge-completed" style="font-size: 9px;">1-CLICK POLICY</span>
+              </div>
+              <p style="font-size: 11px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 6px;">
+                <strong>Cause:</strong> Chrome Memory Saver sleeps background tabs after 30-60 mins, freezing timers.<br>
+                <strong>Safeguard:</strong> Run <code>SETUP_FRESH_PC.bat</code> on any PC to permanently exempt Gmail, Docs, and Drive from tab discard.
+              </p>
+              <div style="font-size: 11px; color: #38bdf8; margin-bottom: 6px;">💡 <em>Action:</em> Included in extension folder, or click below:</div>
+              <button type="button" id="btnDownloadSetupBat" class="btn btn-secondary btn-sm" style="font-size: 10px; padding: 4px 8px; color: #6ee7b7; border-color: rgba(110, 231, 183, 0.4); width: 100%;">
+                ⬇️ Download SETUP_FRESH_PC.bat
+              </button>
+            </div>
+
+            <!-- Mode 4: Google Drive Rate Limit (429) -->
+            <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                <strong style="color: #93c5fd; font-size: 12px;">4. Drive Rate Limit ("Can't open sheet")</strong>
+                <span class="badge badge-completed" style="font-size: 9px;">AUTO-RETRY</span>
+              </div>
+              <p style="font-size: 11px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 6px;">
+                <strong>Cause:</strong> Rapid spreadsheet API access triggers Google temporary rate throttle.<br>
+                <strong>Safeguard:</strong> Automator detects this dialog, captures visual forensic proof, closes error modal, and auto-retries after 2 minutes.
+              </p>
+              <div style="font-size: 11px; color: #38bdf8;">💡 <em>Action:</em> No manual action needed; auto-recovers after cooldown.</div>
+            </div>
+
+            <!-- Mode 5: Dynamic Links & Phishing -->
+            <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                <strong style="color: #c084fc; font-size: 12px;">5. Dynamic Links &amp; Deliverability</strong>
+                <span class="badge badge-completed" style="font-size: 9px;">RESOLVED</span>
+              </div>
+              <p style="font-size: 11px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 6px;">
+                <strong>Cause:</strong> Relative links or domain masking triggers spam warnings.<br>
+                <strong>Safeguard:</strong> Use <code>{{senderDomain}}</code> in templates. The extension dynamically converts all links into authentic domain links.
+              </p>
+              <div style="font-size: 11px; color: #38bdf8;">💡 <em>Action:</em> Let Gmail handle unsubscribe natively; use real domain links.</div>
+            </div>
+
+            <!-- Mode 6: Extension Context Invalidated -->
+            <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                <strong style="color: #f472b6; font-size: 12px;">6. Session / Context Invalidated</strong>
+                <span class="badge badge-completed" style="font-size: 9px;">15M KEEP-ALIVE</span>
+              </div>
+              <p style="font-size: 11px; color: var(--text-secondary); line-height: 1.5; margin-bottom: 6px;">
+                <strong>Cause:</strong> Chrome extension reloaded or updated while Gmail tab was open.<br>
+                <strong>Safeguard:</strong> Gentle 15-minute background session ping keeps tabs fresh.
+              </p>
+              <div style="font-size: 11px; color: #38bdf8;">💡 <em>Action:</em> Press F5 to refresh any open Gmail tab after reloading extension.</div>
             </div>
           </div>
         </div>
@@ -560,9 +723,173 @@
     </div>
   </div>
 
+  <!-- Template Editor Modal (Dual Mode: Visual WYSIWYG + HTML Source with Dynamic Link Helpers) -->
+  <div class="modal-overlay" id="modalTemplate">
+    <div class="modal-card" style="max-width: 820px; width: 95%;">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modalTemplateTitle">Create Template</h3>
+        <button class="modal-close" data-close-modal="modalTemplate">&times;</button>
+      </div>
+      <div class="modal-body" style="max-height: 80vh; overflow-y: auto;">
+        <input type="hidden" id="editTemplateId" value="" />
 
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="form-label" for="editTemplateName">Template Name *</label>
+          <input type="text" id="editTemplateName" class="form-input" placeholder="e.g., IJSR Research Paper Submission" required />
+        </div>
 
-  <!-- Overnight Screen Forensics Lightbox Modal -->
+        <div class="form-group" style="margin-bottom: 12px;">
+          <label class="form-label" for="editTemplateSubject">Email Subject *</label>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="editTemplateSubject" class="form-input" style="flex: 1;" placeholder="e.g., Submit your Valuable Research for October issue" />
+            <button type="button" class="btn btn-secondary btn-sm" id="btnInsertSubjectTag" title="Insert First Name tag into Subject">
+              + {{First Name}}
+            </button>
+          </div>
+        </div>
+
+        <!-- Dynamic Variable Helpers & Dual-Mode Toolbar -->
+        <div style="background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px 8px 0 0; padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: space-between;">
+          <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center;">
+            <span style="font-size: 11px; font-weight: 600; color: var(--text-secondary); margin-right: 4px;">Dynamic Placeholders:</span>
+            <button type="button" class="btn btn-secondary btn-sm btn-insert-body-tag" data-tag="{{senderDomain}}" title="Auto-detects active sender domain at send time" style="font-size: 11px; padding: 3px 8px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);">
+              + {{senderDomain}}
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm btn-insert-body-tag" data-tag="{{senderEmail}}" title="Auto-detects active sender email address" style="font-size: 11px; padding: 3px 8px; color: #38bdf8; border-color: rgba(56, 189, 248, 0.4);">
+              + {{senderEmail}}
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm btn-insert-body-tag" data-tag="{{First Name}}" style="font-size: 11px; padding: 3px 8px;">
+              + {{First Name}}
+            </button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btnInsertLinkHelper" style="font-size: 11px; padding: 3px 8px; color: #a78bfa; border-color: rgba(167, 139, 250, 0.4);">
+              🔗 Insert Dynamic Link
+            </button>
+          </div>
+
+          <div style="display: flex; gap: 6px; align-items: center;">
+            <button type="button" id="btnToggleSourceMode" class="btn btn-secondary btn-sm" style="font-size: 11px; padding: 3px 8px;">
+              &lt;&gt; HTML Source
+            </button>
+          </div>
+        </div>
+
+        <!-- Visual Editor (contenteditable) -->
+        <div id="editTemplateBodyHtml" contenteditable="true" style="min-height: 180px; max-height: 320px; overflow-y: auto; background: var(--bg-card); border: 1px solid var(--border-color); border-top: none; border-radius: 0 0 8px 8px; padding: 12px; font-family: Roboto, Arial, sans-serif; font-size: 13px; line-height: 1.6; color: var(--text-white); outline: none;"></div>
+
+        <!-- HTML Source Textarea (Hidden by default, toggled via btnToggleSourceMode) -->
+        <textarea id="editTemplateSourceArea" style="display: none; width: 100%; min-height: 180px; max-height: 320px; background: #0f172a; border: 1px solid var(--border-color); border-top: none; border-radius: 0 0 8px 8px; padding: 12px; font-family: var(--font-mono); font-size: 12px; line-height: 1.5; color: #38bdf8; outline: none; resize: vertical; box-sizing: border-box;"></textarea>
+
+        <p style="font-size: 11px; color: var(--text-muted); margin-top: 8px;">
+          💡 <strong>Tip:</strong> Any relative links (e.g. <code>href="/upload-your-article"</code>) and <code>https://{{senderDomain}}/...</code> automatically adapt to whatever sender email account you are active in when scheduling.
+        </p>
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+        <button type="button" class="btn btn-secondary btn-sm" data-close-modal="modalTemplate">Cancel</button>
+        <button type="button" id="btnSaveTemplate" class="btn btn-primary btn-sm">💾 Save Template</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Non-Technical Operator Guide Modal -->
+  <div class="modal-overlay" id="modalOperatorGuide">
+    <div class="modal-card" style="max-width: 860px; width: 95%;">
+      <div class="modal-header">
+        <h3 class="modal-title">📖 Simple Operator Guide: Running 24/7 Campaigns &amp; Fixing Errors</h3>
+        <button class="modal-close" data-close-modal="modalOperatorGuide">&times;</button>
+      </div>
+      <div class="modal-body" style="max-height: 80vh; overflow-y: auto; font-size: 13px; line-height: 1.6; color: #e2e8f0;">
+        
+        <!-- Section 1: 3-Step Daily Routine -->
+        <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 8px; padding: 14px; margin-bottom: 16px;">
+          <h4 style="color: #38bdf8; font-size: 14px; margin-top: 0; margin-bottom: 8px;">🚀 Step-by-Step: How to Run Campaigns Every Day</h4>
+          <ol style="margin: 0; padding-left: 20px;">
+            <li style="margin-bottom: 6px;"><strong>Keep 1 Gmail tab open:</strong> Make sure your Gmail tab is open in Chrome. Do not close Chrome or your laptop lid.</li>
+            <li style="margin-bottom: 6px;"><strong>Compose &amp; Connect Sheet:</strong> Click Compose in Gmail ➡️ Connect your Google Sheet via Mail Merge ➡️ Click the blue <strong>"Schedule"</strong> button.</li>
+            <li style="margin-bottom: 6px;"><strong>Pick Template &amp; Time:</strong> Select your template (e.g. <em>IJSR Research Paper Submission</em>) ➡️ choose your send date/time ➡️ click <strong>"Schedule &amp; Save Draft"</strong>.</li>
+            <li><strong>Let it run automatically:</strong> That's it! The extension will wake up, check your audience, and send all emails at the exact scheduled time.</li>
+          </ol>
+        </div>
+
+        <!-- Section 2: Why SETUP_FRESH_PC.bat is Essential -->
+        <div style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 14px; margin-bottom: 16px;">
+          <h4 style="color: #fbbf24; font-size: 14px; margin-top: 0; margin-bottom: 6px;">⚠️ What Happens If You Do NOT Run <code>SETUP_FRESH_PC.bat</code>?</h4>
+            <p style="margin-top: 0; margin-bottom: 8px; color: #fef3c7;">
+              Chrome has a battery-saver feature called <strong>"Memory Saver"</strong> that puts background Gmail tabs to <em>sleep</em> after 30–60 minutes, and Windows automatically puts laptops/PCs to <em>sleep</em> after 15–30 minutes or when the lid is closed.
+            </p>
+            <ul style="margin: 0; padding-left: 20px; color: #cbd5e1; margin-bottom: 10px;">
+              <li><strong>The consequence:</strong> When the schedule triggers at 2:00 AM, Gmail and Windows are asleep, so the draft disconnects or throws a <em>"No recipients"</em> error.</li>
+              <li><strong>The 1-Click Fix:</strong> Right-click <code>SETUP_FRESH_PC.bat</code> and choose <strong>"Run as administrator"</strong> once on that PC. It automatically configures Chrome to <strong>never sleep Gmail, Docs, or Drive</strong>, disables background timer throttling, keeps Chrome active in background, and configures Windows power so the PC never sleeps while plugged in.</li>
+            </ul>
+            <button type="button" id="btnGuideDownloadBat" class="btn btn-secondary btn-sm" style="color: #6ee7b7; border-color: rgba(110, 231, 183, 0.4); font-size: 11px;">
+              ⬇️ Click to Download SETUP_FRESH_PC.bat to This PC
+            </button>
+        </div>
+
+        <!-- Section 3: Which Errors Can You Re-Run? (Easy Table) -->
+        <h4 style="color: #f8fafc; font-size: 14px; margin-top: 20px; margin-bottom: 10px;">🎯 Error Guide: Which Errors Can Be Re-Run vs. Which Cannot?</h4>
+        <div class="table-responsive" style="margin-bottom: 16px;">
+          <table class="data-table" style="font-size: 12px;">
+            <thead>
+              <tr>
+                <th style="width: 28%;">Error You See</th>
+                <th style="width: 22%;">Can You Re-Run?</th>
+                <th>What Happened &amp; How to Fix It</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style="color: #fca5a5; font-weight: 600;">📄 Sheet Disconnected / "No Recipients"</td>
+                <td><span class="badge badge-completed" style="font-size: 10px;">✅ YES (1-Click)</span></td>
+                <td>Draft was closed before Google Drive finished saving rows. Open the draft in Gmail, re-attach the Google Sheet, then click <strong>"↻ Retry Now"</strong> in the Dashboard.</td>
+              </tr>
+              <tr>
+                <td style="color: #93c5fd; font-weight: 600;">🌐 Internet / Wi-Fi Disconnected</td>
+                <td><span class="badge badge-completed" style="font-size: 10px;">✅ YES (1-Click)</span></td>
+                <td>Wi-Fi dropped during send. Reconnect your internet and click <strong>"↻ Retry Now"</strong>.</td>
+              </tr>
+              <tr>
+                <td style="color: #fbbf24; font-weight: 600;">🔄 Drive Rate Limit ("Can't open sheet")</td>
+                <td><span class="badge badge-completed" style="font-size: 10px;">✅ YES (Auto)</span></td>
+                <td>Google temporarily throttled sheet access. The extension auto-retries in 2 minutes, or click <strong>"↻ Retry Now"</strong>.</td>
+              </tr>
+              <tr>
+                <td style="color: #c084fc; font-weight: 600;">🔑 Login Expired ("Verify it's you")</td>
+                <td><span class="badge badge-completed" style="font-size: 10px;">✅ YES</span></td>
+                <td>Google session timed out. Open Gmail, type your password to sign back in, then click <strong>"↻ Retry Now"</strong>.</td>
+              </tr>
+              <tr>
+                <td style="color: #f87171; font-weight: 600;">🗂️ Draft Missing / Subject Mismatch</td>
+                <td><span class="badge badge-failed" style="font-size: 10px;">❌ NO AUTO-RETRY</span></td>
+                <td>The email draft was manually deleted or sent from Drafts. You must create a new draft from your template and schedule it.</td>
+              </tr>
+              <tr>
+                <td style="color: #f59e0b; font-weight: 600;">⏳ Daily Limit Reached (1,500/day)</td>
+                <td><span class="badge badge-queued" style="font-size: 10px;">⏳ WAIT 12-24H</span></td>
+                <td>Google's Workspace limit (1,500 emails in 24 hours) is full. The extension pauses sending until Google resets the limit tomorrow, or you can switch to another sender account.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Section 4: Editing Links & Templates with Full Freedom -->
+        <div style="background: rgba(167, 139, 250, 0.08); border: 1px solid rgba(167, 139, 250, 0.3); border-radius: 8px; padding: 14px;">
+          <h4 style="color: #c084fc; font-size: 14px; margin-top: 0; margin-bottom: 6px;">📝 How to Customize Links and Slugs Without Breaking Anything</h4>
+          <p style="margin: 0 0 6px 0; font-size: 12px; color: #cbd5e1;">
+            You have full freedom to change any link in the <strong>Templates Manager</strong> tab:
+          </p>
+          <ul style="margin: 0; padding-left: 20px; font-size: 12px; color: #cbd5e1;">
+            <li>Use <code>{{senderDomain}}</code> in your links (e.g. <code>https://{{senderDomain}}/upload-article</code>). The extension automatically replaces it with your active sender domain.</li>
+            <li>Click <strong>"&lt;&gt; HTML Source"</strong> in the template editor if you want to paste full HTML code from your journal website.</li>
+          </ul>
+        </div>
+
+      </div>
+      <div class="modal-footer" style="display: flex; justify-content: flex-end;">
+        <button type="button" class="btn btn-secondary btn-sm" data-close-modal="modalOperatorGuide">Got It / Close</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal-overlay" id="modalForensicsViewer">
     <div class="modal-card" style="max-width: 900px; width: 95%;">
       <div class="modal-header">
