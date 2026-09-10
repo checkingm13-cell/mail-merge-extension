@@ -141,3 +141,72 @@ Before you clock out or leave your laptop for unattended overnight sending:
 - [ ] **Leaving the PC:** You can lock Windows (`Win + L`), close the laptop lid, or turn off the physical monitor.
 
 **You are all set for smooth, automatic 24/7 mail merge operations!**
+
+---
+
+## 💎 8. Google Workspace Paid Subscription (₹1,200/mo Edition) Knowledge Vault
+
+> **Important Fact:**  
+> A monthly subscription of **₹1,200/user/month** corresponds to **Google Workspace Business Standard**. While this gives you the maximum sending power Google offers, **Google Workspace does NOT offer unlimited mail merge to any user at any price tier.** Understanding these rules prevents unexpected campaign halts.
+
+### A. The "1,500 vs 2,000" Partition Rule
+| Category | Official Daily Limit | Details |
+| :--- | :---: | :--- |
+| **Mail Merge (Multi-Send)** | **1,500 emails / 24 hrs** | Hard ceiling for mail merge / automated campaign dispatches across all paid Workspace editions. |
+| **Standard 1-to-1 Emails** | **500 emails / 24 hrs** | Reserved strictly for interactive human emails (replies, personal threads) so your inbox never gets locked. |
+| **Total Daily Workspace Quota** | **2,000 emails / 24 hrs** | Combined total of Mail Merge (1,500 max) + Standard interactive sends (500). |
+| **Account Spend Threshold** | **$100 USD Cumulative** | If a new Workspace account hasn't reached $100 cumulative billing (~₹8,300+ INR total domain history), Google caps mail merge at 500 emails/day. |
+
+---
+
+### B. Why Did You Hit the Limit with "Only 25 Emails Per Sheet"?
+
+1. **The "Ghost Rows" Phenomenon (99 Recipients Sent Instead of 25):**
+   - In Google Sheets, if rows below row 26 were previously used and cleared with `Backspace` or have borders/spaces, Google Sheets marks them as active data.
+   - When connecting the sheet to Gmail Mail Merge, Google reads all 99 rows!
+   - **The Proof:** Google's bounce email explicitly stated: *"Message could not be delivered to these 99 recipients using multi-send mode."*
+   - **The Fix:** In Google Sheets, highlight row 26 downwards ➡️ Right-click ➡️ **"Delete rows 26 - 1000"**.
+   - **The Pre-Flight Check:** In the extension's Schedule Popover, check the green badge: `[✅ Sheet Connected (25 recipients)]`. If it says `99 recipients`, stop and clean the sheet.
+
+2. **The 24-Hour Rolling Window Math (Not Midnight Reset):**
+   - Google limits do **not reset at 12:00 AM midnight**. They reset on a rolling 1,440-minute window from the exact minute each email was sent.
+   - If running **17 campaigns per hour** at 25 emails each:
+     $$\text{17 campaigns} \times 25\text{ emails} = 425\text{ emails/hour}$$
+     - Hour 1: 425 emails
+     - Hour 2: 850 emails
+     - Hour 3: 1,275 emails
+     - **Hour 3.5: 1,500 limit reached!**
+   - The sending engine will automatically freeze until 24 hours have elapsed since the first batch.
+
+3. **Hourly Velocity / Burst Throttling:**
+   - Even if you are under 1,500 total, blasting 15–17 campaigns in a single 60-minute window trips Google's automated anti-abuse / bot detection.
+   - **Best Practice:** Pace campaigns to **4 to 6 campaigns per hour**.
+
+4. **The CC / BCC Quota Multiplier:**
+   - Every email added to CC or BCC is sent to every recipient row.
+   - If a 25-email sheet has **1 address in CC**, Google deducts **50 emails** from your 1,500 daily quota ($25 \times 2 = 50$).
+
+---
+
+### C. How to Scale Beyond 1,500 Emails/Day (Multi-Account Rotation)
+
+Because your ₹1,200/month subscription is **per user account**, you can scale volume cleanly across multiple accounts under your domain:
+
+| Workspace Setup | Max Daily Mail Merge Capacity | Recommended Distribution |
+| :--- | :---: | :--- |
+| **1 Account** (`editor@...`) | **1,500 emails / day** | ~60 campaigns of 25 emails spread over 12 hours |
+| **2 Accounts** (`/u/0/` + `/u/1/`) | **3,000 emails / day** | Account 1: Morning (1,500) • Account 2: Afternoon (1,500) |
+| **3 Accounts** (`/u/0/` + `/u/1/` + `/u/2/`) | **4,500 emails / day** | 1,500 emails per account, zero quota locks |
+
+---
+
+### D. Viewing Internal Error Codes in Google Admin Console
+If any campaign is deferred, a Google Workspace Admin can view the exact technical reason:
+1. Open [Google Admin Console](https://admin.google.com).
+2. Navigate to **Reporting** ➡️ **Audit and investigation** ➡️ **Gmail log search**.
+3. Search by sender address and the dispatch timestamp.
+4. Google will output the exact internal verdict:
+   - `QUOTA_EXCEEDED_ROLLING_24H` — 1,500 rolling quota exhausted.
+   - `RATE_LIMIT_EXCEEDED` — Dispatched too fast in 1 hour.
+   - `SUSPECTED_SPAM_THROTTLE` — Spam complaint or dead recipient bounce threshold reached.
+
