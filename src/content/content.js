@@ -1186,11 +1186,13 @@
       senderEmail = fromInput.value.trim();
     }
 
+    const emailPattern = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+
     // 2. Check top-right Google Account avatar
     if (!senderEmail) {
       const avatarEl = document.querySelector('header a[aria-label*="@"], div[aria-label*="@"], a[aria-label*="Google Account"]');
       if (avatarEl) {
-        const match = /[\w.-]+@[\w.-]+\.[a-zA-Z0-9_-]+(\.[a-zA-Z]{2,})+/.exec(avatarEl.getAttribute('aria-label') || '');
+        const match = emailPattern.exec(avatarEl.getAttribute('aria-label') || '');
         if (match) senderEmail = match[0];
       }
     }
@@ -1200,7 +1202,7 @@
       const profileLinks = document.querySelectorAll('a[href*="SignOutOptions"], a[href*="accounts.google.com"], [data-identifier]');
       for (const el of profileLinks) {
         const text = el.getAttribute('aria-label') || el.getAttribute('data-identifier') || el.title || '';
-        const match = /[\w.-]+@[\w.-]+\.[a-zA-Z0-9_-]+(\.[a-zA-Z]{2,})+/.exec(text);
+        const match = emailPattern.exec(text);
         if (match) {
           senderEmail = match[0];
           break;
@@ -1210,7 +1212,7 @@
 
     // 4. Fallback: Check Gmail document title (e.g. "Inbox (3) - user@domain.com - Gmail")
     if (!senderEmail) {
-      const titleMatch = /[\w.-]+@[\w.-]+\.[a-zA-Z0-9_-]+(\.[a-zA-Z]{2,})+/.exec(document.title || '');
+      const titleMatch = emailPattern.exec(document.title || '');
       if (titleMatch) senderEmail = titleMatch[0];
     }
 

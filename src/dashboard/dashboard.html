@@ -518,41 +518,6 @@
     </div>
   </div>
 
-  <!-- Template Editor Modal -->
-  <div class="modal-overlay" id="modalTemplate">
-    <div class="modal-card" style="max-width: 620px;">
-      <div class="modal-header">
-        <h3 class="modal-title" id="modalTemplateTitle">Create Template</h3>
-        <button class="modal-close" data-close-modal="modalTemplate">&times;</button>
-      </div>
-      <div class="modal-body">
-        <form id="templateEditorForm">
-          <input type="hidden" id="editTemplateId">
-          <div class="form-group">
-            <label class="form-label" for="editTemplateName">Template Name</label>
-            <input type="text" id="editTemplateName" class="form-input" placeholder="e.g. Academic CFP Invitation" required>
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="editTemplateSubject">Subject <span style="font-size: 11px; color: var(--text-muted); font-weight: normal;">(Optional if body is filled)</span></label>
-            <input type="text" id="editTemplateSubject" class="form-input" placeholder="Subject with {{variables}}">
-          </div>
-          <div class="form-group">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-              <label class="form-label" style="margin: 0;">Email Body <span style="font-size: 11px; color: var(--text-muted); font-weight: normal;">(Optional if subject is filled)</span></label>
-              <span style="font-size: 11px; color: var(--text-muted);">✨ Preserves Gmail fonts, colors & links</span>
-            </div>
-            <div class="gmail-compose-box">
-              <div id="editTemplateBodyHtml" class="gmail-body-editor" contenteditable="true" data-placeholder="Hi {{First Name}},&#10;&#10;Type or paste formatted content from Gmail here..."></div>
-            </div>
-          </div>
-        </form>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary btn-sm" data-close-modal="modalTemplate">Cancel</button>
-        <button id="btnSaveTemplate" class="btn btn-primary btn-sm">Save Template</button>
-      </div>
-    </div>
-  </div>
 
   <!-- Campaign Details & Error Logs Modal -->
   <div class="modal-overlay" id="modalCampaignDetails">

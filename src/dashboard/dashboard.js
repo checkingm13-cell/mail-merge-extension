@@ -2106,8 +2106,8 @@ pause
           </div>
         </div>
         <div class="template-card-actions">
-          <button class="btn btn-primary btn-sm btn-use-template">
-            <span>🚀 Use in Campaign</span>
+          <button class="btn btn-primary btn-sm btn-use-template" title="Open Gmail to use this template">
+            <span>✉️ Compose in Gmail</span>
           </button>
           <div style="display: flex; gap: 6px;">
             <button class="btn btn-secondary btn-sm btn-edit-template" title="Edit template">
@@ -2120,13 +2120,9 @@ pause
         </div>
       `;
 
-      card.querySelector('.btn-use-template').addEventListener('click', () => {
-        formSubject.value = tpl.subject || '';
-        formBodyTemplate.value = tpl.body || '';
-        formBodyTemplate.dataset.bodyHtml = tpl.bodyHtml || '';
-        if (dropdownTemplateSelect) dropdownTemplateSelect.value = tpl.id;
-        showToast(`Template "${tpl.name}" loaded into Queue form`);
-        switchTab('tab-queue');
+      card.querySelector('.btn-use-template').addEventListener('click', async () => {
+        showToast(`Template "${tpl.name}" selected! Opening Gmail to compose...`);
+        await openGmailTab();
       });
 
       card.querySelector('.btn-edit-template').addEventListener('click', () => {
