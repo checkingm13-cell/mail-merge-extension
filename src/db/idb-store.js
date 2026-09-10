@@ -843,6 +843,101 @@
       }
 
       return { campaignsImported: campaignsCount, templatesImported: templatesCount };
+    },
+
+    // =========================================================================
+    // SAFEGUARDS & QUOTA SETTINGS
+    // =========================================================================
+
+    /**
+     * Gets a setting by key.
+     */
+    async getSetting(key, defaultValue = null) {
+      return this._transaction('settings', 'readonly', (store) => {
+        return new Promise((resolve) => {
+          const req = store.get(key);
+          req.onsuccess = () => {
+            if (req.result && req.result.value !== undefined) {
+              resolve(req.result.value);
+            } else {
+              resolve(defaultValue);
+            }
+          };
+          req.onerror = () => resolve(defaultValue);
+        });
+      });
+    },
+
+    /**
+     * Sets a setting by key.
+     */
+    async setSetting(key, value) {
+      return this._transaction('settings', 'readwrite', (store) => {
+        return new Promise((resolve, reject) => {
+          const req = store.put({ key, value, updatedAt: new Date().toISOString() });
+          req.onsuccess = () => resolve(true);
+          req.onerror = () => reject(req.error);
+        });
+      });
+    },
+
+    /**
+     * Retrieves safeguard settings with defaults.
+     */
+    async getSafeguardSettings() {
+      const defaults = { maxRecipientsPerSheet: 25, dailyQuotaCeiling: 1450 };
+      try {
+        const stored = await this.getSetting('safeguard_settings', defaults);
+        return { ...defaults, ...stored };
+      } catch (_) {
+        return defaults;
+      }
+    },
+
+    /**
+     * Saves safeguard settings.
+     */
+    async saveSafeguardSettings(settings) {
+      return this.setSetting('safeguard_settings', settings);
+    },
+
+    /**
+     * Calculates rolling 24-hour quota usage for a specific sender account.
+     * Sums recipients from COMPLETED, PROCESSING, and QUEUED campaigns in the last 24h.
+     */
+    async getRolling24hQuota(accountEmail) {
+      const settings = await this.getSafeguardSettings();
+      const ceiling = settings.dailyQuotaCeiling || 1450;
+      if (!accountEmail) return { used: 0, ceiling, remaining: ceiling, isExceeded: false, level: 'SAFE' };
+
+      const twentyFourHoursAgo = Date.now() - (24 * 60 * 60 * 1000);
+      const allCampaigns = await this.getCampaigns();
+
+      let used = 0;
+      for (const camp of allCampaigns) {
+        const campAccount = (camp.accountEmail || camp.senderEmail || camp.senderDomain || '').toLowerCase().trim();
+        const targetAccount = accountEmail.toLowerCase().trim();
+        const isMatchingAccount = !campAccount || campAccount === targetAccount || campAccount.includes(targetAccount) || targetAccount.includes(campAccount);
+        const isActiveStatus = ['COMPLETED', 'PROCESSING', 'QUEUED'].includes(camp.status);
+        const isRecent = new Date(camp.updatedAt || camp.createdAt || 0).getTime() >= twentyFourHoursAgo;
+
+        if (isMatchingAccount && isActiveStatus && isRecent) {
+          const count = Number(camp.recipientCount || camp.sentCount || camp.meta?.recipientCount || 0);
+          used += count;
+        }
+      }
+
+      const remaining = Math.max(0, ceiling - used);
+      const isExceeded = used >= ceiling;
+      const level = isExceeded ? 'FULL' : (used > 1000 ? 'WARNING' : 'SAFE');
+
+      return {
+        used,
+        ceiling,
+        remaining,
+        isExceeded,
+        level
+      };
     }
   };
 

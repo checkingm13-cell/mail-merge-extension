@@ -60,6 +60,10 @@
         <span class="diag-label">Health Monitor:</span>
         <span class="diag-value" id="diagHealthStatus" style="color: var(--emerald);">NOMINAL (5m)</span>
       </div>
+      <div class="diag-item" style="margin-left: auto; display: flex; align-items: center; gap: 6px;">
+        <span class="diag-label">🔋 24h Quota Fuel:</span>
+        <span class="diag-value" id="diagQuotaFuel" style="color: var(--emerald); font-weight: 700;">Checking...</span>
+      </div>
     </div>
 
     <!-- Navigation Tabs -->
@@ -77,6 +81,9 @@
         <span class="tab-badge" id="tabBadgeLogs">0</span>
       </button>
       <div style="margin-left: auto; display: flex; gap: 8px; align-items: center;">
+        <button class="btn btn-secondary btn-sm" id="btnToggleSafeguardSettings" style="display: inline-flex; align-items: center; gap: 6px; border-color: rgba(251, 191, 36, 0.4); color: #fbbf24; font-size: 11px; padding: 6px 12px;" title="Configure safe batch limits and daily quota ceiling">
+          <span>⚙️ Safeguards</span>
+        </button>
         <button class="btn btn-secondary btn-sm" id="btnOpenOperatorGuide" style="display: inline-flex; align-items: center; gap: 6px; border-color: rgba(167, 139, 250, 0.5); color: #c084fc; font-size: 11px; padding: 6px 12px; font-weight: 600;">
           <span>📖 Operator Guide</span>
         </button>
@@ -91,6 +98,35 @@
 
       <!-- Quota Lock Notification Banner Container -->
       <div id="quotaWarningBannerContainer" style="display: none; margin-bottom: 14px;"></div>
+
+      <!-- Safeguard Limits Drawer (Collapsible for Zero Cognitive Load) -->
+      <div id="safeguardSettingsDrawer" style="display: none; background: rgba(30, 41, 59, 0.85); border: 1px solid rgba(251, 191, 36, 0.35); border-radius: 8px; padding: 14px 18px; margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+          <h4 style="margin: 0; font-size: 13px; font-weight: 700; color: #fbbf24; display: flex; align-items: center; gap: 8px;">
+            <span>⚙️</span> Campaign Safeguards &amp; Daily Quota Limits
+          </h4>
+          <span style="font-size: 11px; color: var(--text-muted);">Protects Google Workspace domains from bans &amp; ghost rows</span>
+        </div>
+        <div style="display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end;">
+          <div>
+            <label for="cfgMaxRecipients" style="display: block; font-size: 11px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px;">
+              Max Recipients Per Sheet (Safe Batch):
+            </label>
+            <input type="number" id="cfgMaxRecipients" value="25" min="1" max="1000" style="background: #0f172a; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 6px 10px; color: #fff; font-size: 12px; width: 140px;" />
+            <span style="display: block; font-size: 10px; color: var(--text-muted); margin-top: 2px;">Default: 25 (Flags ghost rows)</span>
+          </div>
+          <div>
+            <label for="cfgDailyQuotaCeiling" style="display: block; font-size: 11px; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px;">
+              24-Hour Quota Ceiling (Per Account):
+            </label>
+            <input type="number" id="cfgDailyQuotaCeiling" value="1450" min="100" max="2000" style="background: #0f172a; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 6px 10px; color: #fff; font-size: 12px; width: 140px;" />
+            <span style="display: block; font-size: 10px; color: var(--text-muted); margin-top: 2px;">Safe cap below Google's 1,500 limit</span>
+          </div>
+          <button id="btnSaveSafeguards" class="btn btn-primary btn-sm" style="padding: 7px 14px;">
+            <span>💾 Save Safeguards</span>
+          </button>
+        </div>
+      </div>
 
       <!-- ================================================================= -->
       <!-- TAB 1: CAMPAIGNS -->

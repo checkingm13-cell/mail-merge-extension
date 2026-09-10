@@ -498,39 +498,42 @@
         // 2. Capture DOM Autopsy
         const domAutopsy = captureFailureContext('LATE_QUOTA_REJECTION');
 
-        // 3. Retroactively update campaign in IDB
+        // 3. Retroactively update campaign in IDB (Auto-reschedule +24h to preserve campaign)
         if (root.IDBStore) {
+          const rescheduleTime = Date.now() + (24 * 60 * 60 * 1000);
           await root.IDBStore.updateCampaign(campaignId, {
-            status: 'FAILED',
+            status: 'QUEUED',
+            scheduledAt: new Date(rescheduleTime).toISOString(),
+            isQuotaPaused: true,
+            quotaPausedUntil: new Date(rescheduleTime).toISOString(),
             errorCategory: 'QUOTA_EXCEEDED',
-            errorMessage: `Late Google Server Rejection: "${alert.message.slice(0, 160)}"`,
-            canAutoRetry: false,
-            failedAt: new Date().toISOString(),
+            errorMessage: `Late Google Server Rejection: "${alert.message.slice(0, 160)}". Auto-rescheduled +24h to protect account.`,
+            canAutoRetry: true,
             domAutopsy: domAutopsy
           }).catch(() => {});
 
           await root.IDBStore.addLog(
             campaignId,
-            'ERROR',
-            `Campaign retroactively marked FAILED: Google returned asynchronous error "${alert.message}". Account sending paused for 12 hours.`
+            'WARN',
+            `Campaign auto-rescheduled +24h due to late Google multi-modal/quota limit. Will resume when rolling 24h window clears.`
           ).catch(() => {});
         }
 
         // 4. Update floating in-tab Execution HUD
         try {
-          ExecutionHUD.error(`Quota Exceeded: ${alert.message.slice(0, 60)}`, 'POST_SEND');
+          ExecutionHUD.error(`Auto-Rescheduled: Quota Limit (+24h)`, 'POST_SEND');
         } catch (_) {}
 
-        // 5. Notify service worker to pause account campaigns for 12 hours
+        // 5. Notify service worker to pause account campaigns for 12-24 hours
         if (chrome.runtime && chrome.runtime.sendMessage) {
           chrome.runtime.sendMessage({
             action: 'CAMPAIGN_STATUS_UPDATE',
             campaignId,
-            status: 'FAILED',
+            status: 'QUEUED',
             errorCategory: 'QUOTA_EXCEEDED',
             isQuotaLimit: true,
-            logMessage: `Late Google multi-modal limit exceeded: ${alert.message}`,
-            canAutoRetry: false,
+            logMessage: `Late Google multi-modal limit exceeded: ${alert.message}. Auto-rescheduled +24h.`,
+            canAutoRetry: true,
             accountEmail: campaign?.accountEmail || campaign?.senderEmail,
             domAutopsy: domAutopsy
           }).catch(() => {});

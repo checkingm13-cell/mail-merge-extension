@@ -1769,7 +1769,7 @@ async function handleRuntimeMessage(message, sender) {
         }
 
         // Release account execution lock and trigger next queued campaign
-        if (message.status === 'COMPLETED' || message.status === 'COMPLETED (DRY RUN)' || message.status === 'FAILED') {
+        if (message.status === 'COMPLETED' || message.status === 'COMPLETED (DRY RUN)' || message.status === 'FAILED' || (message.status === 'QUEUED' && message.isQuotaLimit)) {
           const currentCamp = await self.IDBStore.getCampaignById(message.campaignId);
           const acctKey = (message.accountEmail || currentCamp?.accountEmail || '').toLowerCase().trim() || String(currentCamp?.userIndex !== undefined ? currentCamp?.userIndex : '0');
           releaseAccountLock(acctKey, message.campaignId).catch(() => {});
@@ -1779,6 +1779,13 @@ async function handleRuntimeMessage(message, sender) {
           notifyDesktop(
             '✅ Mail Merge Completed',
             `Campaign sent${message.sentCount ? ' to ' + message.sentCount + ' recipients' : ''}.`
+          );
+        } else if (message.status === 'QUEUED' && message.isQuotaLimit) {
+          pauseAccountCampaignsForQuota(message.accountEmail);
+          notifyDesktop(
+            '🛡️ Google Quota Limit Reached',
+            `Campaign auto-postponed +24h. Remaining account campaigns paused to protect your Google Workspace account.`,
+            true
           );
         } else if (message.status === 'FAILED' && !willAutoRetry) {
           const isQuota = message.isQuotaLimit ||
@@ -2008,6 +2015,31 @@ async function handleRuntimeMessage(message, sender) {
         }
       }
       return { success: true, active: isNowActive };
+    }
+
+    case 'GET_SAFEGUARD_SETTINGS': {
+      if (self.IDBStore) {
+        const settings = await self.IDBStore.getSafeguardSettings();
+        return { success: true, settings };
+      }
+      return { success: false, error: 'Database not ready' };
+    }
+
+    case 'SAVE_SAFEGUARD_SETTINGS': {
+      if (self.IDBStore && message.settings) {
+        await self.IDBStore.saveSafeguardSettings(message.settings);
+        broadcastToViews('SAFEGUARD_SETTINGS_UPDATED', { settings: message.settings });
+        return { success: true };
+      }
+      return { success: false, error: 'Invalid settings' };
+    }
+
+    case 'GET_24H_QUOTA': {
+      if (self.IDBStore) {
+        const quota = await self.IDBStore.getRolling24hQuota(message.accountEmail);
+        return { success: true, quota };
+      }
+      return { success: false, error: 'Database not ready' };
     }
 
     default:

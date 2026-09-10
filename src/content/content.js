@@ -679,7 +679,7 @@
   // SCHEDULING DIALOG / POPOVER & METADATA CAPTURE
   // =========================================================================
 
-  function openScheduleDialog(anchorElement) {
+  async function openScheduleDialog(anchorElement) {
     const existing = document.getElementById('mm-schedule-popover-card');
     if (existing) existing.remove();
 
@@ -705,6 +705,76 @@
           meta.recipientsSummary = composeMeta.recipientsSummary;
         }
       }
+    }
+
+    // Detect sender account email from Gmail UI header
+    let accountEmail = '';
+    try {
+      const accountEl = document.querySelector('header a[aria-label*="@"], div[aria-label*="@"], a[aria-label*="Google Account"]');
+      if (accountEl) {
+        const emailMatch = /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/.exec(accountEl.getAttribute('aria-label') || '');
+        if (emailMatch) accountEmail = emailMatch[0];
+      }
+    } catch (_) {}
+
+    // Fetch safeguard settings & 24h quota from IndexedDB
+    let safeguardSettings = { maxRecipientsPerSheet: 25, dailyQuotaCeiling: 1450 };
+    let quotaStatus = { used: 0, ceiling: 1450, remaining: 1450, isExceeded: false, level: 'SAFE' };
+
+    try {
+      if (root.IDBStore) {
+        safeguardSettings = await root.IDBStore.getSafeguardSettings();
+        if (accountEmail) {
+          quotaStatus = await root.IDBStore.getRolling24hQuota(accountEmail);
+        }
+      }
+    } catch (err) {
+      console.warn('[MailMerge ContentScript] Safeguards retrieval fallback:', err);
+    }
+
+    const recipientCount = Number(meta.recipientCount || 0);
+    const exceedsSheetLimit = recipientCount > safeguardSettings.maxRecipientsPerSheet;
+    const exceedsQuota = (quotaStatus.used + recipientCount) > quotaStatus.ceiling;
+    const hasNoSubject = !subject || subject === '(No Subject)' || /^(compose:?\s*)?new message$/i.test(subject);
+
+    // Build Pre-Flight Warning HTML
+    let preFlightWarningsHtml = '';
+    if (exceedsSheetLimit) {
+      preFlightWarningsHtml +=
+        '<div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; font-size: 12px; color: #991b1b;">' +
+          '<div style="font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">' +
+            '<span>⛔</span> Exceeds Safe Batch Limit (' + recipientCount + ' / ' + safeguardSettings.maxRecipientsPerSheet + ')' +
+          '</div>' +
+          '<div style="margin-bottom: 8px; color: #7f1d1d; line-height: 1.4;">' +
+            'This sheet contains <strong>' + recipientCount + ' rows</strong>. If you only meant 25, delete empty formatted rows 26-1000 in Google Sheets so you don\'t burn daily quota on ghost rows.' +
+          '</div>' +
+          '<div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">' +
+            (meta.sheetUrl ? '<a href="' + meta.sheetUrl + '" target="_blank" style="background: #ffffff; border: 1px solid #f87171; color: #dc2626; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; text-decoration: none; display: inline-flex; align-items: center; gap: 4px;">📄 Open Sheet ↗</a>' : '') +
+            '<button type="button" id="mmBtnRecheckSheet" style="background: #fee2e2; border: 1px solid #ef4444; color: #991b1b; padding: 4px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; cursor: pointer;">🔄 Re-check Sheet</button>' +
+            '<label style="display: inline-flex; align-items: center; gap: 4px; font-size: 11px; cursor: pointer; color: #7f1d1d; margin-left: auto;">' +
+              '<input type="checkbox" id="mmOverrideLimit" style="cursor: pointer; width: 13px; height: 13px;"> Override limit' +
+            '</label>' +
+          '</div>' +
+        '</div>';
+    }
+
+    if (exceedsQuota) {
+      preFlightWarningsHtml +=
+        '<div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px; padding: 10px 12px; margin-bottom: 14px; font-size: 12px; color: #991b1b;">' +
+          '<div style="font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 6px;">' +
+            '<span>⛔</span> 24h Quota Ceiling Reached' +
+          '</div>' +
+          '<div style="color: #7f1d1d; line-height: 1.4;">' +
+            'This account has used/queued <strong>' + quotaStatus.used + ' / ' + quotaStatus.ceiling + '</strong> emails in the last 24 hours. Adding ' + recipientCount + ' more will exceed Google\'s 1,500 daily limit! Please switch to another account (/u/1/) or wait.' +
+          '</div>' +
+        '</div>';
+    }
+
+    if (hasNoSubject) {
+      preFlightWarningsHtml +=
+        '<div style="background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 8px 10px; margin-bottom: 14px; font-size: 12px; color: #92400e;">' +
+          '⚠️ <strong>Subject Missing:</strong> Please enter an email subject before scheduling.' +
+        '</div>';
     }
 
     // Compute default time: Real-time current local time
@@ -757,10 +827,17 @@
         '</div>' +
 
         // Child-Simple Readiness Status Badges
-        '<div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">' +
-          '<span id="mmBadgeSheet" style="font-size: 11px; font-weight: 600; padding: 4px 8px; border-radius: 6px; ' + (meta.sheetTitle || meta.recipientCount ? 'background: #dcfce7; color: #15803d; border: 1px solid #86efac;' : 'background: #fef3c7; color: #92400e; border: 1px solid #fcd34d;') + '">' +
-            (meta.sheetTitle || meta.recipientCount ? '✅ Sheet Connected' + (meta.recipientCount ? ' (' + meta.recipientCount + ')' : '') : '⚠️ Connect Sheet First') +
-          '</span>' +
+        '<div style="display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap;">' +
+          (exceedsSheetLimit
+            ? '<span id="mmBadgeSheet" style="font-size: 11px; font-weight: 700; padding: 4px 8px; border-radius: 6px; background: #fee2e2; color: #991b1b; border: 1px solid #f87171;">⛔ ' + recipientCount + ' Emails (Max ' + safeguardSettings.maxRecipientsPerSheet + ')</span>'
+            : (meta.sheetTitle || meta.recipientCount
+              ? '<span id="mmBadgeSheet" style="font-size: 11px; font-weight: 600; padding: 4px 8px; border-radius: 6px; background: #dcfce7; color: #15803d; border: 1px solid #86efac;">✅ Sheet Connected' + (recipientCount ? ' (' + recipientCount + ')' : '') + '</span>'
+              : '<span id="mmBadgeSheet" style="font-size: 11px; font-weight: 600; padding: 4px 8px; border-radius: 6px; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d;">⚠️ Connect Sheet First</span>')
+          ) +
+          (exceedsQuota
+            ? '<span id="mmBadgeQuota" style="font-size: 11px; font-weight: 700; padding: 4px 8px; border-radius: 6px; background: #fee2e2; color: #991b1b; border: 1px solid #f87171;">⛔ 24h Quota Full (' + quotaStatus.used + '/' + quotaStatus.ceiling + ')</span>'
+            : '<span id="mmBadgeQuota" style="font-size: 11px; font-weight: 600; padding: 4px 8px; border-radius: 6px; background: ' + (quotaStatus.used > 1000 ? '#fef3c7; color: #92400e; border: 1px solid #fcd34d;' : '#f0fdf4; color: #166534; border: 1px solid #bbf7d0;') + '">🔋 24h Fuel: ' + quotaStatus.used + '/' + quotaStatus.ceiling + '</span>'
+          ) +
           '<span id="mmBadgeTime" style="font-size: 11px; font-weight: 600; padding: 4px 8px; border-radius: 6px; background: #e0f2fe; color: #0284c7; border: 1px solid #bae6fd;">' +
             '⏰ Time Selected' +
           '</span>' +
@@ -775,6 +852,8 @@
           sheetInfoHtml +
           tagsHtml +
         '</div>' +
+
+        preFlightWarningsHtml +
 
         // Reusable Template Quick-Load Bar
         '<div style="background: #faf5ff; border: 1px solid #e9d5ff; border-radius: 8px; padding: 10px 12px; margin-bottom: 14px;">' +
@@ -1062,12 +1141,70 @@
       if (e.target === overlay) closePopover();
     });
 
-    // Confirmation Handler
+    // In-Place Sheet Re-check Button Handler
+    const btnRecheck = overlay.querySelector('#mmBtnRecheckSheet');
+    if (btnRecheck) {
+      btnRecheck.addEventListener('click', async () => {
+        btnRecheck.textContent = 'Checking...';
+        btnRecheck.disabled = true;
+        await new Promise((r) => setTimeout(r, 400));
+        overlay.remove();
+        openScheduleDialog(anchorElement);
+      });
+    }
+
+    // Confirmation Handler & Override Safeguard
     const confirmBtn = overlay.querySelector('#mmPopoverConfirm');
     const dtInput = overlay.querySelector('#mmDateTimeInput');
     const alertBox = overlay.querySelector('#mmAlertBox');
+    const chkOverride = overlay.querySelector('#mmOverrideLimit');
+
+    if (chkOverride && confirmBtn) {
+      if (exceedsSheetLimit || exceedsQuota) {
+        confirmBtn.disabled = true;
+        confirmBtn.style.opacity = '0.5';
+        confirmBtn.style.cursor = 'not-allowed';
+      }
+
+      chkOverride.addEventListener('change', () => {
+        if (chkOverride.checked) {
+          const confirmed = window.confirm('⚠️ WARNING: Overriding this limit risks Google Workspace account suspension or daily quota exhaustion due to ghost rows. Are you absolutely sure you want to proceed?');
+          if (confirmed) {
+            confirmBtn.disabled = false;
+            confirmBtn.style.opacity = '1';
+            confirmBtn.style.cursor = 'pointer';
+          } else {
+            chkOverride.checked = false;
+          }
+        } else {
+          confirmBtn.disabled = true;
+          confirmBtn.style.opacity = '0.5';
+          confirmBtn.style.cursor = 'not-allowed';
+        }
+      });
+    } else if ((exceedsSheetLimit || exceedsQuota) && confirmBtn) {
+      confirmBtn.disabled = true;
+      confirmBtn.style.opacity = '0.5';
+      confirmBtn.style.cursor = 'not-allowed';
+    }
 
     confirmBtn.addEventListener('click', async () => {
+      // Pre-Flight Safety Guard: Prevent bypass if limit exceeded
+      if (exceedsSheetLimit && (!chkOverride || !chkOverride.checked)) {
+        alertBox.textContent = '⛔ Sheet exceeds safe limit (' + recipientCount + ' / ' + safeguardSettings.maxRecipientsPerSheet + '). Please delete ghost rows or check override.';
+        alertBox.style.display = 'block';
+        alertBox.style.background = '#fce8e6';
+        alertBox.style.color = '#c5221f';
+        return;
+      }
+      if (exceedsQuota && (!chkOverride || !chkOverride.checked)) {
+        alertBox.textContent = '⛔ 24-hour quota ceiling reached (' + quotaStatus.used + ' / ' + quotaStatus.ceiling + '). Switch account to continue.';
+        alertBox.style.display = 'block';
+        alertBox.style.background = '#fce8e6';
+        alertBox.style.color = '#c5221f';
+        return;
+      }
+
       const val = dtInput.value;
       if (!val) {
         alertBox.textContent = 'Please choose a date and time.';

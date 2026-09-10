@@ -40,6 +40,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const diagStatTemplates = document.getElementById('diagStatTemplates');
   const diagStatLogs = document.getElementById('diagStatLogs');
   const btnLaunchGmailTab = document.getElementById('btnLaunchGmailTab');
+  const diagQuotaFuel = document.getElementById('diagQuotaFuel');
+  const btnToggleSafeguardSettings = document.getElementById('btnToggleSafeguardSettings');
+  const safeguardSettingsDrawer = document.getElementById('safeguardSettingsDrawer');
+  const cfgMaxRecipients = document.getElementById('cfgMaxRecipients');
+  const cfgDailyQuotaCeiling = document.getElementById('cfgDailyQuotaCeiling');
+  const btnSaveSafeguards = document.getElementById('btnSaveSafeguards');
 
   // Campaigns Tab elements
   const campaignsTableBody = document.getElementById('campaignsTableBody');
@@ -258,6 +264,75 @@ document.addEventListener('DOMContentLoaded', async () => {
           btnReloadGmailTabs.disabled = false;
           btnReloadGmailTabs.textContent = '🔄 Refresh Tabs';
         }, 1500);
+      });
+    }
+
+    // Safeguard Settings & Daily Quota Fuel
+    async function updateQuotaFuelDisplay() {
+      if (!diagQuotaFuel || !window.IDBStore) return;
+      try {
+        const primaryEmail = allCampaigns.find((c) => c.accountEmail)?.accountEmail || '';
+        const quota = await window.IDBStore.getRolling24hQuota(primaryEmail);
+        const used = quota.used || 0;
+        const ceiling = quota.ceiling || 1450;
+        const pct = Math.min(100, Math.round((used / ceiling) * 100));
+
+        if (quota.isExceeded) {
+          diagQuotaFuel.textContent = `${used} / ${ceiling} (Full 100%)`;
+          diagQuotaFuel.style.color = 'var(--rose)';
+        } else if (quota.level === 'WARNING') {
+          diagQuotaFuel.textContent = `${used} / ${ceiling} (${pct}% Used)`;
+          diagQuotaFuel.style.color = 'var(--amber)';
+        } else {
+          diagQuotaFuel.textContent = `${used} / ${ceiling} (${100 - pct}% Safe)`;
+          diagQuotaFuel.style.color = 'var(--emerald)';
+        }
+        diagQuotaFuel.title = `Rolling 24-hour quota: ${used} emails sent/queued in last 24h for ${primaryEmail || 'active accounts'} (Limit: ${ceiling}).`;
+      } catch (e) {
+        console.warn('[Dashboard] Error updating quota fuel display:', e);
+      }
+    }
+
+    async function loadSafeguardSettingsIntoUI() {
+      if (!cfgMaxRecipients || !cfgDailyQuotaCeiling || !window.IDBStore) return;
+      try {
+        const s = await window.IDBStore.getSafeguardSettings();
+        if (s) {
+          if (s.maxRecipientsPerSheet) cfgMaxRecipients.value = s.maxRecipientsPerSheet;
+          if (s.dailyQuotaCeiling) cfgDailyQuotaCeiling.value = s.dailyQuotaCeiling;
+        }
+      } catch (_) {}
+    }
+
+    if (btnToggleSafeguardSettings && safeguardSettingsDrawer) {
+      btnToggleSafeguardSettings.addEventListener('click', () => {
+        const isClosed = safeguardSettingsDrawer.style.display === 'none' || !safeguardSettingsDrawer.style.display;
+        safeguardSettingsDrawer.style.display = isClosed ? 'block' : 'none';
+        if (isClosed) loadSafeguardSettingsIntoUI();
+      });
+    }
+
+    if (btnSaveSafeguards) {
+      btnSaveSafeguards.addEventListener('click', async () => {
+        const maxRecipients = parseInt(cfgMaxRecipients?.value, 10) || 25;
+        const dailyCeiling = parseInt(cfgDailyQuotaCeiling?.value, 10) || 1450;
+        const newSettings = { maxRecipientsPerSheet: maxRecipients, dailyQuotaCeiling: dailyCeiling };
+
+        btnSaveSafeguards.disabled = true;
+        try {
+          if (window.IDBStore) {
+            await window.IDBStore.saveSafeguardSettings(newSettings);
+          }
+          if (chrome.runtime && chrome.runtime.sendMessage) {
+            await chrome.runtime.sendMessage({ action: 'SAVE_SAFEGUARD_SETTINGS', settings: newSettings }).catch(() => {});
+          }
+          showToast(`💾 Safeguards saved: Max ${maxRecipients} per sheet, ${dailyCeiling} quota ceiling.`);
+          await updateQuotaFuelDisplay();
+        } catch (err) {
+          showToast('Error saving safeguards: ' + err.message);
+        } finally {
+          btnSaveSafeguards.disabled = false;
+        }
       });
     }
 
@@ -1053,6 +1128,7 @@ pause
       renderCampaignsTable();
       updateQueueStatusWidget();
       await checkAndRenderQuotaBanner();
+      await updateQuotaFuelDisplay();
     } catch (err) {
       console.error('[Dashboard] Error loading campaigns:', err);
       campaignsTableBody.innerHTML = `<tr><td colspan="7" class="table-empty" style="color: var(--rose);">Error loading campaigns: ${escapeHtml(err.message)}</td></tr>`;
