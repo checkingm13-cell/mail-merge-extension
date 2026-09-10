@@ -160,27 +160,85 @@ document.addEventListener('DOMContentLoaded', async () => {
   // =========================================================================
 
   function setupEventListeners() {
-    // Tab Switching
+    // 1. Tab Switching with Immediate Persistence
     tabButtons.forEach((btn) => {
       btn.addEventListener('click', () => {
         const targetId = btn.getAttribute('data-tab');
-        switchTab(targetId);
+        switchTab(targetId, true);
       });
     });
 
-    // Direct hash navigation (e.g. #tab-templates)
+    // 2. Restore exact tab across normal refresh (F5) and hard refresh (Ctrl+F5 / Ctrl+Shift+R)
+    let initialTab = '';
     if (window.location.hash) {
-      const initialTab = window.location.hash.replace('#', '');
-      if (document.getElementById(initialTab)) {
-        switchTab(initialTab);
+      const hashTab = window.location.hash.replace('#', '').trim();
+      if (document.getElementById(hashTab)) {
+        initialTab = hashTab;
       }
     }
+    if (!initialTab) {
+      try {
+        const savedTab = localStorage.getItem('mail_merge_active_dashboard_tab');
+        if (savedTab && document.getElementById(savedTab)) {
+          initialTab = savedTab;
+        }
+      } catch (_) {}
+    }
+
+    if (initialTab && document.getElementById(initialTab)) {
+      switchTab(initialTab, true);
+    } else {
+      switchTab('tab-campaigns', false);
+    }
+
     window.addEventListener('hashchange', () => {
-      const hashTab = window.location.hash.replace('#', '');
-      if (document.getElementById(hashTab)) {
-        switchTab(hashTab);
+      const hashTab = window.location.hash.replace('#', '').trim();
+      if (hashTab && document.getElementById(hashTab)) {
+        switchTab(hashTab, false);
       }
     });
+
+    // 3. Restore saved Campaign Status filter
+    try {
+      const savedCampaignFilter = localStorage.getItem('mail_merge_campaign_filter');
+      if (savedCampaignFilter) {
+        const matchingPill = document.querySelector(`[data-status="${savedCampaignFilter}"]`);
+        if (matchingPill) {
+          campaignFilterPills.forEach((p) => p.classList.remove('active'));
+          matchingPill.classList.add('active');
+          currentCampaignFilter = savedCampaignFilter;
+        }
+      }
+    } catch (_) {}
+
+    // 4. Restore saved Log Level filter
+    try {
+      const savedLogFilter = localStorage.getItem('mail_merge_log_filter');
+      if (savedLogFilter) {
+        const matchingLogPill = document.querySelector(`[data-logfilter="${savedLogFilter}"]`);
+        if (matchingLogPill) {
+          logFilterPills.forEach((p) => p.classList.remove('active'));
+          matchingLogPill.classList.add('active');
+          currentLogFilter = savedLogFilter;
+        }
+      }
+    } catch (_) {}
+
+    // 5. Scroll position preservation across hard/normal refresh
+    window.addEventListener('beforeunload', () => {
+      try {
+        const activeTab = localStorage.getItem('mail_merge_active_dashboard_tab') || 'tab-campaigns';
+        sessionStorage.setItem('dashboard_scroll_' + activeTab, String(window.scrollY));
+      } catch (_) {}
+    });
+
+    try {
+      const curTab = initialTab || 'tab-campaigns';
+      const savedScroll = sessionStorage.getItem('dashboard_scroll_' + curTab);
+      if (savedScroll) {
+        setTimeout(() => window.scrollTo({ top: parseInt(savedScroll, 10), behavior: 'instant' }), 60);
+      }
+    } catch (_) {}
 
     if (btnJumpToQueue) btnJumpToQueue.addEventListener('click', openGmailTab);
 
@@ -286,6 +344,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         campaignFilterPills.forEach((p) => p.classList.remove('active'));
         pill.classList.add('active');
         currentCampaignFilter = pill.getAttribute('data-status');
+        try { localStorage.setItem('mail_merge_campaign_filter', currentCampaignFilter); } catch (_) {}
         currentCampaignPage = 1;
         renderCampaignsTable();
       });
@@ -676,6 +735,7 @@ pause
         logFilterPills.forEach((p) => p.classList.remove('active'));
         pill.classList.add('active');
         currentLogFilter = pill.getAttribute('data-logfilter');
+        try { localStorage.setItem('mail_merge_log_filter', currentLogFilter); } catch (_) {}
         renderLogsConsole();
       });
     });
@@ -705,7 +765,23 @@ pause
   // TABS NAVIGATION
   // =========================================================================
 
-  function switchTab(targetTabId) {
+  function switchTab(targetTabId, updateUrl = true) {
+    if (!targetTabId) return;
+
+    // 1. Remember in localStorage so hard refresh (Ctrl+F5 / Ctrl+Shift+R) and normal refresh (F5) always stay here
+    try {
+      localStorage.setItem('mail_merge_active_dashboard_tab', targetTabId);
+    } catch (_) {}
+
+    // 2. Keep URL hash updated without causing unwanted jumping
+    if (updateUrl && window.location.hash !== '#' + targetTabId) {
+      try {
+        history.replaceState(null, null, '#' + targetTabId);
+      } catch (_) {
+        window.location.hash = targetTabId;
+      }
+    }
+
     tabButtons.forEach((btn) => {
       if (btn.getAttribute('data-tab') === targetTabId) {
         btn.classList.add('active');
