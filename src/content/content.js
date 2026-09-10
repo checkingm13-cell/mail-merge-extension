@@ -449,9 +449,95 @@
     } catch (_) {}
   }
 
+  // Synchronize any templates created in Gmail's local origin up to the central extension store
+  async function syncTemplatesToBackground() {
+    try {
+      if (!root.IDBStore || typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) return;
+      const localTemplates = await root.IDBStore.getTemplates();
+      if (Array.isArray(localTemplates) && localTemplates.length > 0) {
+        chrome.runtime.sendMessage({
+          action: 'SYNC_TEMPLATES',
+          templates: localTemplates
+        }).catch(() => {});
+      }
+    } catch (_) {}
+  }
+
+  // Unified Template Fetcher: Reads from Central Store, chrome.storage, and local origin IDB
+  async function getUnifiedTemplates() {
+    let combined = [];
+    const seenIds = new Set();
+    const seenNames = new Set();
+
+    // 1. Fetch from Central Background Store (Service Worker)
+    try {
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        const resp = await chrome.runtime.sendMessage({ action: 'GET_TEMPLATES' });
+        if (resp && resp.success && Array.isArray(resp.templates)) {
+          for (const t of resp.templates) {
+            if (t && t.id && !seenIds.has(t.id)) {
+              seenIds.add(t.id);
+              if (t.name) seenNames.add(t.name.trim().toLowerCase());
+              combined.push(t);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[MailMerge ContentScript] Central template lookup note:', err.message);
+    }
+
+    // 2. Fetch from chrome.storage.local
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        const st = await chrome.storage.local.get(['mail_merge_templates']);
+        if (Array.isArray(st.mail_merge_templates)) {
+          for (const t of st.mail_merge_templates) {
+            if (t && t.id && !seenIds.has(t.id)) {
+              seenIds.add(t.id);
+              if (t.name) seenNames.add(t.name.trim().toLowerCase());
+              combined.push(t);
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 3. Fetch from Gmail page local IDB & sync any legacy templates to Central
+    try {
+      if (root.IDBStore) {
+        const localTpls = await root.IDBStore.getTemplates();
+        if (Array.isArray(localTpls) && localTpls.length > 0) {
+          const missingInCentral = [];
+          for (const t of localTpls) {
+            if (t && t.id) {
+              const nameKey = (t.name || '').trim().toLowerCase();
+              if (!seenIds.has(t.id) && (!nameKey || !seenNames.has(nameKey))) {
+                seenIds.add(t.id);
+                if (nameKey) seenNames.add(nameKey);
+                combined.push(t);
+                missingInCentral.push(t);
+              }
+            }
+          }
+          if (missingInCentral.length > 0 && typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+            chrome.runtime.sendMessage({
+              action: 'SYNC_TEMPLATES',
+              templates: missingInCentral
+            }).catch(() => {});
+          }
+        }
+      }
+    } catch (_) {}
+
+    return combined;
+  }
+
   // Run immediately and periodically
   syncCampaignsToBackground();
+  syncTemplatesToBackground();
   setInterval(syncCampaignsToBackground, 10000);
+  setInterval(syncTemplatesToBackground, 15000);
 
   // =========================================================================
   // INJECTION LOGIC
@@ -814,14 +900,22 @@
       });
     });
 
-    // Template Dropdown Population & Loading
+    // Template Dropdown Population & Loading (Unified Central + Local Templates)
     const templateSelect = overlay.querySelector('#mmTemplateSelectDropdown');
     const btnOpenDash = overlay.querySelector('#mmBtnOpenTemplatesDashboard');
+    let loadedTemplates = [];
 
-    if (templateSelect && root.IDBStore) {
-      root.IDBStore.getTemplates().then((tpls) => {
-        if (tpls && tpls.length > 0) {
-          tpls.forEach((t) => {
+    if (templateSelect) {
+      getUnifiedTemplates().then((tpls) => {
+        loadedTemplates = tpls || [];
+        templateSelect.innerHTML = '';
+        const defaultOpt = document.createElement('option');
+        defaultOpt.value = '';
+        defaultOpt.textContent = '-- Choose Template to Load into Draft --';
+        templateSelect.appendChild(defaultOpt);
+
+        if (loadedTemplates.length > 0) {
+          loadedTemplates.forEach((t) => {
             const opt = document.createElement('option');
             opt.value = t.id;
             opt.textContent = (t.name || 'Untitled Template') + (t.subject ? ' — "' + t.subject + '"' : '');
@@ -843,8 +937,11 @@
           return;
         }
         try {
-          const tpls = await root.IDBStore.getTemplates();
-          const chosen = tpls.find((t) => t.id === tplId);
+          let chosen = loadedTemplates.find((t) => t.id === tplId);
+          if (!chosen) {
+            const allTpls = await getUnifiedTemplates();
+            chosen = allTpls.find((t) => t.id === tplId);
+          }
           if (chosen) {
             selectedTemplate = chosen;
 
@@ -940,15 +1037,13 @@
 
         try {
           if (root.IDBStore) {
-            await root.IDBStore.saveTemplate(newTpl);
-            closePopover();
-            showToast('💾 Template "' + chosenName + '" saved with all formatting & hyperlinks!');
-            try {
-              if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-                chrome.runtime.sendMessage({ action: 'TEMPLATE_SAVED', template: newTpl });
-              }
-            } catch (_) {}
+            await root.IDBStore.saveTemplate(newTpl).catch(() => {});
           }
+          if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+            await chrome.runtime.sendMessage({ action: 'SAVE_TEMPLATE', template: newTpl });
+          }
+          closePopover();
+          showToast('💾 Template "' + chosenName + '" saved to Dashboard & ready to reuse!');
         } catch (saveErr) {
           alert('Failed to save template: ' + saveErr.message);
         }
@@ -1100,14 +1195,14 @@
               mergeTags: meta.mergeTags || [],
               createdAt: new Date().toISOString()
             };
-            await root.IDBStore.saveTemplate(newTpl);
+            if (root.IDBStore) {
+              await root.IDBStore.saveTemplate(newTpl).catch(() => {});
+            }
+            if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+              await chrome.runtime.sendMessage({ action: 'SAVE_TEMPLATE', template: newTpl });
+            }
             templateSaved = true;
             console.log('[MailMerge ContentScript] Saved reusable template with rich formatting to Dashboard:', newTpl.name);
-            try {
-              if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-                chrome.runtime.sendMessage({ action: 'TEMPLATE_SAVED', template: newTpl });
-              }
-            } catch (_) {}
           } catch (tplErr) {
             console.warn('[MailMerge ContentScript] Error saving template:', tplErr.message);
           }
@@ -1508,6 +1603,41 @@
       if (message.action === 'REQUEST_CAMPAIGN_SYNC') {
         syncCampaignsToBackground().then(() => sendResponse({ success: true }));
         return true;
+      }
+
+      if (message.action === 'DELETE_LOCAL_TEMPLATE') {
+        if (root.IDBStore && message.templateId) {
+          root.IDBStore.deleteTemplate(message.templateId).catch(() => {});
+        }
+        sendResponse({ success: true });
+        return true;
+      }
+
+      if (message.action === 'REQUEST_SYNC_TEMPLATES' || message.action === 'REQUEST_TEMPLATE_SYNC') {
+        syncTemplatesToBackground().then(() => sendResponse({ success: true }));
+        return true;
+      }
+
+      if (message.action === 'TEMPLATES_UPDATED') {
+        // If template select dropdown is currently open on screen, refresh its options
+        const tplSelect = document.getElementById('mmTemplateSelectDropdown');
+        if (tplSelect) {
+          getUnifiedTemplates().then((tpls) => {
+            const currentVal = tplSelect.value;
+            tplSelect.innerHTML = '';
+            const defOpt = document.createElement('option');
+            defOpt.value = '';
+            defOpt.textContent = '-- Choose Template to Load into Draft --';
+            tplSelect.appendChild(defOpt);
+            (tpls || []).forEach((t) => {
+              const opt = document.createElement('option');
+              opt.value = t.id;
+              opt.textContent = (t.name || 'Untitled Template') + (t.subject ? ' — "' + t.subject + '"' : '');
+              tplSelect.appendChild(opt);
+            });
+            if (currentVal) tplSelect.value = currentVal;
+          }).catch(() => {});
+        }
       }
 
       if (message.action === 'EXECUTE_CAMPAIGN') {

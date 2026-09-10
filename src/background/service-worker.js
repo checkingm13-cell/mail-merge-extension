@@ -1419,6 +1419,136 @@ async function handleRuntimeMessage(message, sender) {
       return { success: true };
     }
 
+    // Central Template Synchronization & Storage API
+    case 'GET_TEMPLATES': {
+      try {
+        let templates = [];
+        if (self.IDBStore) {
+          templates = await self.IDBStore.getTemplates();
+        }
+        if (!templates || templates.length === 0) {
+          const st = await chrome.storage.local.get(['mail_merge_templates']);
+          if (Array.isArray(st.mail_merge_templates) && st.mail_merge_templates.length > 0) {
+            templates = st.mail_merge_templates;
+          }
+        }
+        return { success: true, templates: templates || [] };
+      } catch (err) {
+        console.error('[ServiceWorker] GET_TEMPLATES error:', err);
+        return { success: false, templates: [], error: err.message };
+      }
+    }
+
+    case 'TEMPLATE_SAVED':
+    case 'SAVE_TEMPLATE': {
+      try {
+        const tpl = message.template;
+        if (!tpl || !tpl.id) {
+          return { success: false, error: 'Missing template or template.id' };
+        }
+        if (self.IDBStore) {
+          await self.IDBStore.saveTemplate(tpl);
+        }
+        // Mirror to chrome.storage.local for instantaneous cross-context access
+        const st = await chrome.storage.local.get(['mail_merge_templates']);
+        const existing = Array.isArray(st.mail_merge_templates) ? st.mail_merge_templates : [];
+        const idx = existing.findIndex((t) => t.id === tpl.id);
+        if (idx >= 0) {
+          existing[idx] = tpl;
+        } else {
+          existing.unshift(tpl);
+        }
+        await chrome.storage.local.set({ mail_merge_templates: existing });
+
+        // Broadcast to Dashboard
+        broadcastToViews('TEMPLATE_SAVED', { template: tpl, action: 'TEMPLATE_SAVED' });
+
+        // Notify open Gmail tabs to update dropdown
+        try {
+          const openTabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
+          for (const tab of openTabs) {
+            chrome.tabs.sendMessage(tab.id, {
+              action: 'TEMPLATES_UPDATED',
+              template: tpl
+            }).catch(() => {});
+          }
+        } catch (_) {}
+
+        console.log(`[ServiceWorker] 💾 Template "${tpl.name}" persisted to Central Store & broadcasted to Dashboard.`);
+        return { success: true, template: tpl };
+      } catch (err) {
+        console.error('[ServiceWorker] SAVE_TEMPLATE error:', err);
+        return { success: false, error: err.message };
+      }
+    }
+
+    case 'SYNC_TEMPLATES': {
+      try {
+        const tpls = message.templates;
+        if (!Array.isArray(tpls) || tpls.length === 0) {
+          return { success: true, count: 0 };
+        }
+        let addedCount = 0;
+        let centralTpls = self.IDBStore ? await self.IDBStore.getTemplates() : [];
+        const existingIds = new Set(centralTpls.map((t) => t.id));
+        const existingNames = new Set(centralTpls.map((t) => (t.name || '').trim().toLowerCase()));
+
+        for (const tpl of tpls) {
+          if (!tpl || (!tpl.id && !tpl.name)) continue;
+          const nameKey = (tpl.name || '').trim().toLowerCase();
+          if (existingIds.has(tpl.id) || (nameKey && existingNames.has(nameKey))) {
+            continue;
+          }
+          if (!tpl.id) tpl.id = 'tpl_' + Date.now() + '_' + Math.random().toString(36).substr(2, 4);
+          if (self.IDBStore) {
+            await self.IDBStore.saveTemplate(tpl);
+          }
+          existingIds.add(tpl.id);
+          if (nameKey) existingNames.add(nameKey);
+          centralTpls.push(tpl);
+          addedCount++;
+        }
+
+        if (addedCount > 0) {
+          await chrome.storage.local.set({ mail_merge_templates: centralTpls });
+          broadcastToViews('TEMPLATE_SAVED', { action: 'TEMPLATE_SAVED', count: addedCount });
+          console.log(`[ServiceWorker] 🔄 Successfully imported ${addedCount} template(s) from Gmail tab into Central Dashboard!`);
+        }
+        return { success: true, count: addedCount };
+      } catch (err) {
+        console.error('[ServiceWorker] SYNC_TEMPLATES error:', err);
+        return { success: false, error: err.message };
+      }
+    }
+
+    case 'DELETE_TEMPLATE': {
+      try {
+        const tplId = message.templateId;
+        if (!tplId) return { success: false, error: 'Missing templateId' };
+        if (self.IDBStore) {
+          await self.IDBStore.deleteTemplate(tplId);
+        }
+        const st = await chrome.storage.local.get(['mail_merge_templates']);
+        if (Array.isArray(st.mail_merge_templates)) {
+          const filtered = st.mail_merge_templates.filter((t) => t.id !== tplId);
+          await chrome.storage.local.set({ mail_merge_templates: filtered });
+        }
+        broadcastToViews('REFRESH_TEMPLATES', { action: 'REFRESH_TEMPLATES', templateId: tplId });
+        try {
+          const openTabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
+          for (const tab of openTabs) {
+            chrome.tabs.sendMessage(tab.id, {
+              action: 'DELETE_LOCAL_TEMPLATE',
+              templateId: tplId
+            }).catch(() => {});
+          }
+        } catch (_) {}
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
+    }
+
     case 'REFRESH_BADGE': {
       await refreshBadge();
       return { success: true };

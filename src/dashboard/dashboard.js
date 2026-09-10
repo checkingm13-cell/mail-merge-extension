@@ -365,8 +365,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       btnRefreshTemplates.addEventListener('click', async () => {
         btnRefreshTemplates.disabled = true;
         try {
+          if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
+            try {
+              const openTabs = await chrome.tabs.query({ url: 'https://mail.google.com/*' });
+              for (const tab of openTabs) {
+                chrome.tabs.sendMessage(tab.id, { action: 'REQUEST_SYNC_TEMPLATES' }).catch(() => {});
+              }
+            } catch (_) {}
+          }
+          await new Promise((r) => setTimeout(r, 500));
           await loadTemplates();
-          showToast('🔄 Templates refreshed from database');
+          showToast('🔄 Templates refreshed & synchronized from Gmail');
         } catch (err) {
           showToast('Failed to refresh: ' + err.message);
         } finally {
@@ -714,6 +723,15 @@ pause
     });
 
     if (targetTabId === 'tab-templates') {
+      try {
+        if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
+          chrome.tabs.query({ url: 'https://mail.google.com/*' }).then((tabs) => {
+            for (const t of tabs) {
+              chrome.tabs.sendMessage(t.id, { action: 'REQUEST_SYNC_TEMPLATES' }).catch(() => {});
+            }
+          }).catch(() => {});
+        }
+      } catch (_) {}
       loadTemplates().catch(() => {});
     } else if (targetTabId === 'tab-campaigns') {
       loadCampaigns().catch(() => {});
@@ -2066,6 +2084,28 @@ pause
         allTemplates = [];
       }
 
+      // Check chrome.storage.local to merge any freshly synced templates
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        const st = await chrome.storage.local.get(['mail_merge_templates']);
+        if (Array.isArray(st.mail_merge_templates) && st.mail_merge_templates.length > 0) {
+          const idSet = new Set(allTemplates.map((t) => t.id));
+          const nameSet = new Set(allTemplates.map((t) => (t.name || '').trim().toLowerCase()));
+          for (const t of st.mail_merge_templates) {
+            if (t && t.id && !idSet.has(t.id)) {
+              const nameKey = (t.name || '').trim().toLowerCase();
+              if (!nameKey || !nameSet.has(nameKey)) {
+                allTemplates.push(t);
+                idSet.add(t.id);
+                if (nameKey) nameSet.add(nameKey);
+                if (window.IDBStore) {
+                  window.IDBStore.saveTemplate(t).catch(() => {});
+                }
+              }
+            }
+          }
+        }
+      }
+
       tabBadgeTemplates.textContent = String(allTemplates.length);
       renderTemplatesGrid();
     } catch (err) {
@@ -2149,6 +2189,9 @@ pause
       card.querySelector('.btn-del-template').addEventListener('click', async () => {
         if (confirm(`Delete template "${tpl.name}"?`)) {
           await window.IDBStore.deleteTemplate(tpl.id);
+          if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+            chrome.runtime.sendMessage({ action: 'DELETE_TEMPLATE', templateId: tpl.id }).catch(() => {});
+          }
           showToast('Template deleted');
           await loadTemplates();
         }
@@ -2197,6 +2240,9 @@ pause
       };
 
       await window.IDBStore.saveTemplate(template);
+      if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
+        chrome.runtime.sendMessage({ action: 'SAVE_TEMPLATE', template }).catch(() => {});
+      }
       closeModal('modalTemplate');
       showToast('Template saved successfully');
       await loadTemplates();
