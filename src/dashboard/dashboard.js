@@ -161,6 +161,43 @@ document.addEventListener('DOMContentLoaded', async () => {
     ]);
   }
 
+  // Safeguard Settings & Daily Quota Fuel
+  async function updateQuotaFuelDisplay() {
+    if (!diagQuotaFuel || !window.IDBStore) return;
+    try {
+      const primaryEmail = allCampaigns.find((c) => c.accountEmail)?.accountEmail || '';
+      const quota = await window.IDBStore.getRolling24hQuota(primaryEmail);
+      const used = quota.used || 0;
+      const ceiling = quota.ceiling || 1450;
+      const pct = Math.min(100, Math.round((used / ceiling) * 100));
+
+      if (quota.isExceeded) {
+        diagQuotaFuel.textContent = `${used} / ${ceiling} (Full 100%)`;
+        diagQuotaFuel.style.color = 'var(--rose)';
+      } else if (quota.level === 'WARNING') {
+        diagQuotaFuel.textContent = `${used} / ${ceiling} (${pct}% Used)`;
+        diagQuotaFuel.style.color = 'var(--amber)';
+      } else {
+        diagQuotaFuel.textContent = `${used} / ${ceiling} (${100 - pct}% Safe)`;
+        diagQuotaFuel.style.color = 'var(--emerald)';
+      }
+      diagQuotaFuel.title = `Rolling 24-hour quota: ${used} emails sent/queued in last 24h for ${primaryEmail || 'active accounts'} (Limit: ${ceiling}).`;
+    } catch (e) {
+      console.warn('[Dashboard] Error updating quota fuel display:', e);
+    }
+  }
+
+  async function loadSafeguardSettingsIntoUI() {
+    if (!cfgMaxRecipients || !cfgDailyQuotaCeiling || !window.IDBStore) return;
+    try {
+      const s = await window.IDBStore.getSafeguardSettings();
+      if (s) {
+        if (s.maxRecipientsPerSheet) cfgMaxRecipients.value = s.maxRecipientsPerSheet;
+        if (s.dailyQuotaCeiling) cfgDailyQuotaCeiling.value = s.dailyQuotaCeiling;
+      }
+    } catch (_) {}
+  }
+
   // =========================================================================
   // EVENT LISTENERS SETUP
   // =========================================================================
@@ -267,42 +304,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     }
 
-    // Safeguard Settings & Daily Quota Fuel
-    async function updateQuotaFuelDisplay() {
-      if (!diagQuotaFuel || !window.IDBStore) return;
-      try {
-        const primaryEmail = allCampaigns.find((c) => c.accountEmail)?.accountEmail || '';
-        const quota = await window.IDBStore.getRolling24hQuota(primaryEmail);
-        const used = quota.used || 0;
-        const ceiling = quota.ceiling || 1450;
-        const pct = Math.min(100, Math.round((used / ceiling) * 100));
-
-        if (quota.isExceeded) {
-          diagQuotaFuel.textContent = `${used} / ${ceiling} (Full 100%)`;
-          diagQuotaFuel.style.color = 'var(--rose)';
-        } else if (quota.level === 'WARNING') {
-          diagQuotaFuel.textContent = `${used} / ${ceiling} (${pct}% Used)`;
-          diagQuotaFuel.style.color = 'var(--amber)';
-        } else {
-          diagQuotaFuel.textContent = `${used} / ${ceiling} (${100 - pct}% Safe)`;
-          diagQuotaFuel.style.color = 'var(--emerald)';
-        }
-        diagQuotaFuel.title = `Rolling 24-hour quota: ${used} emails sent/queued in last 24h for ${primaryEmail || 'active accounts'} (Limit: ${ceiling}).`;
-      } catch (e) {
-        console.warn('[Dashboard] Error updating quota fuel display:', e);
-      }
-    }
-
-    async function loadSafeguardSettingsIntoUI() {
-      if (!cfgMaxRecipients || !cfgDailyQuotaCeiling || !window.IDBStore) return;
-      try {
-        const s = await window.IDBStore.getSafeguardSettings();
-        if (s) {
-          if (s.maxRecipientsPerSheet) cfgMaxRecipients.value = s.maxRecipientsPerSheet;
-          if (s.dailyQuotaCeiling) cfgDailyQuotaCeiling.value = s.dailyQuotaCeiling;
-        }
-      } catch (_) {}
-    }
+    // Safeguard Settings Controls
 
     if (btnToggleSafeguardSettings && safeguardSettingsDrawer) {
       btnToggleSafeguardSettings.addEventListener('click', () => {
