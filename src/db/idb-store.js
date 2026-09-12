@@ -15,24 +15,96 @@
   let dbInstance = null;
   let initPromise = null;
 
-  const DEFAULT_TEMPLATES = [
-    {
-      id: 'template-ijsr-submission',
-      name: 'IJSR Research Paper Submission',
-      subject: 'Submit your Valuable Research for October issue',
-      body: 'If your paper is ready, you can begin the submission process below.\n\nSubmit your Valuable Research for October issue:\nhttps://{{senderDomain}}/international-journal-of-scientific-research-(IJSR)/page/p/upload-your-article\n\nTo Opt Out:\nhttps://{{senderDomain}}/international-journal-of-scientific-research-(IJSR)/page/p/OptOut',
-      bodyHtml: '<p style="margin: 0 0 12pt 0; font-size: 12pt; line-height: 1.15; font-family: Arial, sans-serif;">If your paper is ready, you can begin the submission process below.</p><p style="margin: 0 0 12pt 0; font-size: 12pt; line-height: 1.15; font-family: Arial, sans-serif;"><b><a href="https://{{senderDomain}}/international-journal-of-scientific-research-(IJSR)/page/p/upload-your-article" style="color: #0563c1; text-decoration: underline;"><span style="color: #3300ff;">Submit your Valuable Research for October issue</span></a></b></p><p style="margin: 0; font-size: 12pt; line-height: 1.15; font-family: Arial, sans-serif;"><a href="https://{{senderDomain}}/international-journal-of-scientific-research-(IJSR)/page/p/OptOut" style="color: #0563c1; text-decoration: underline;"><span style="color: #3300ff;">To Opt Out</span></a></p>',
-      createdAt: new Date().toISOString()
+  const DEFAULT_SUBJECTS = [
+    "Submit your Valuable Research for October issue",
+    "Publish Your Research in a UGC CARE & NMC Recognized Journal",
+    "Call for Papers – UGC CARE & NMC Recognized Peer-Reviewed Journal",
+    "Submit Your Research – UGC CARE & NMC Recognized Journal",
+    "Advance Your Academic Profile with UGC CARE & NMC Recognition",
+    "Peer-Reviewed Publication Opportunity – UGC CARE & NMC",
+    "Research Publication Invitation – UGC CARE & NMC Recognized Journal",
+    "Give Your Research Global Visibility – UGC CARE & NMC Journal",
+    "Now Accepting Research Papers – UGC CARE & NMC Recognized Journal",
+    "Publish with Confidence – UGC CARE & NMC Recognized Journal",
+    "Strengthen Your Academic Profile – UGC CARE & NMC Publication",
+    "Scholarly Publication Opportunity – UGC CARE & NMC Journal",
+    "Submit Your Manuscript – Peer-Reviewed UGC CARE & NMC Journal",
+    "Your Research Deserves Recognition – UGC CARE & NMC Journal",
+    "Expand Your Research Impact – UGC CARE & NMC Recognized Publication",
+    "Invitation for Researchers – UGC CARE & NMC Peer-Reviewed Journal",
+    "Research to Publication – UGC CARE & NMC Recognized Journal",
+    "Call for Quality Research – UGC CARE & NMC Journal",
+    "Publish Your Next Research Paper – UGC CARE & NMC",
+    "Academic Publishing Opportunity – UGC CARE & NMC Recognized Journal",
+    "Share Your Research with a UGC CARE & NMC Recognized Journal",
+    "Enhance your API score and secure promotion with UGC & NMC approved journals",
+    "Journal approved by UGC and NMC for career advancement",
+    "Achieve promotion through UGC & NMC approved peer-reviewed journals",
+    "Peer-reviewed and UGC & NMC endorsed journals for researchers",
+    "UGC & NMC approved publications for career progression",
+    "Secure promotion with UGC & NMC endorsed journals",
+    "Journal indexed according to UGC and NMC regulations",
+    "Obtain thesis submission through UGC & NMC approved publications"
+  ];
+
+  const JOURNALS = [
+    { 
+      name: 'International Journal of Scientific Research (IJSR)', 
+      shortName: 'IJSR',
+      slug: 'international-journal-of-scientific-research', 
+      urlSlug: 'international-journal-of-scientific-research-(IJSR)',
+      issn: '2277-8179',
+      displayName: 'International journal of scientific research'
     },
-    {
-      id: 'template-starter',
-      name: 'Welcome & Introduction',
-      subject: 'Hello {{First Name}}, quick update on {{Project}}',
-      body: 'Hi {{First Name}},\n\nI wanted to reach out regarding {{Project}}.\n\nYou can check our details on our website (https://workspace.google.com).\n\nBest regards,\n{{Sender Name}}',
-      bodyHtml: '<div style="font-family: Roboto, Arial, sans-serif; font-size: 14px; color: #202124; line-height: 1.6;"><p>Hi <b>{{First Name}}</b>,</p><p>I wanted to reach out regarding <span style="color: #1a73e8; font-weight: 600;">{{Project}}</span>.</p><p>You can check our details on <a href="https://workspace.google.com" target="_blank" style="color: #1a73e8; text-decoration: underline; font-weight: 500;">our website</a>.</p><p>Best regards,<br><b>{{Sender Name}}</b></p></div>',
-      createdAt: new Date().toISOString()
+    { 
+      name: 'Indian Journal of Applied Research (IJAR)', 
+      shortName: 'IJAR',
+      slug: 'indian-journal-of-applied-research', 
+      urlSlug: 'indian-journal-of-applied-research-(IJAR)',
+      issn: '2249-555X',
+      displayName: 'Indian Journal of Applied Research'
+    },
+    { 
+      name: 'Global Journal For Research Analysis (GJRA)', 
+      shortName: 'GJRA',
+      slug: 'global-journal-for-research-analysis', 
+      urlSlug: 'global-journal-for-research-analysis-(GJRA)',
+      issn: '2277-8160',
+      displayName: 'Global Journal For Research Analysis'
+    },
+    { 
+      name: 'Paripex Indian Journal of Research (PIJR)', 
+      shortName: 'PIJR',
+      slug: 'paripex-indian-journal-of-research', 
+      urlSlug: 'paripex-indian-journal-of-research-(PIJR)',
+      issn: '2250-1991',
+      displayName: 'Paripex Indian Journal of Research'
     }
   ];
+
+  // Automatically generates 4 x 29 = 116 combinations
+  const DEFAULT_TEMPLATES = JOURNALS.flatMap(journal => 
+    DEFAULT_SUBJECTS.map((subject, index) => {
+      const urlSlug = journal.urlSlug || journal.slug;
+      const targetUrl = `https://{{senderDomain}}/${urlSlug}/page/p/upload-your-article`;
+      return {
+        id: `tmpl_${journal.slug.replace(/-/g, '_')}_sub_${index}`,
+        journalName: journal.name,
+        journalShort: journal.shortName,
+        name: `[${journal.name}] ${subject}`, // Dropdown mein dikhega: [IJSR] Submit your Valuable...
+        subject: subject,
+        body: `Dear @name,\n\n${journal.displayName}\n\nPeer Reviewed Journal Accepted by UGC & NMC\n\nJournal ISSN ${journal.issn}\n\nPubMed Index Journal\n\nIf your paper is ready, you can begin the submission process below.\n\n${subject}:\n${targetUrl}`,
+        bodyHtml: `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">Dear @name,</p>` +
+          `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;"><b>${journal.displayName}</b></p>` +
+          `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">Peer Reviewed Journal Accepted by UGC &amp; NMC</p>` +
+          `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">Journal ISSN ${journal.issn}</p>` +
+          `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">PubMed Index Journal</p>` +
+          `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">If your paper is ready, you can begin the submission process below.</p>` +
+          `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;"><b>${subject}:</b><br><a href="${targetUrl}" style="color: #0563c1; text-decoration: underline; word-break: break-all;">${targetUrl}</a></p>`,
+        createdAt: new Date().toISOString()
+      };
+    })
+  );
 
   function generateId(prefix = 'id') {
     const randomSuffix = Math.random().toString(36).substring(2, 7);
@@ -138,13 +210,18 @@
         const tx = db.transaction('templates', 'readwrite');
         const store = tx.objectStore('templates');
 
+        const legacyIds = [
+          'template-ijsr-submission',
+          'template-ijar-submission',
+          'template-gjra-submission',
+          'template-pijr-submission'
+        ];
+        for (const oldId of legacyIds) {
+          try { store.delete(oldId); } catch (_) {}
+        }
+
         for (const tpl of DEFAULT_TEMPLATES) {
-          const req = store.get(tpl.id);
-          req.onsuccess = () => {
-            if (!req.result) {
-              store.put(tpl);
-            }
-          };
+          store.put(tpl);
         }
 
         tx.oncomplete = () => resolve();
@@ -941,12 +1018,25 @@
     }
   };
 
+  IDBStore.JOURNALS = JOURNALS;
+  IDBStore.DEFAULT_SUBJECTS = DEFAULT_SUBJECTS;
+  IDBStore.DEFAULT_TEMPLATES = DEFAULT_TEMPLATES;
+
   // Expose to window / globalThis / self / module
+  root.JOURNALS = JOURNALS;
+  root.DEFAULT_SUBJECTS = DEFAULT_SUBJECTS;
+  root.DEFAULT_TEMPLATES = DEFAULT_TEMPLATES;
   root.IDBStore = IDBStore;
   if (typeof window !== 'undefined') {
+    window.JOURNALS = JOURNALS;
+    window.DEFAULT_SUBJECTS = DEFAULT_SUBJECTS;
+    window.DEFAULT_TEMPLATES = DEFAULT_TEMPLATES;
     window.IDBStore = IDBStore;
   }
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = IDBStore;
+    IDBStore.JOURNALS = JOURNALS;
+    IDBStore.DEFAULT_SUBJECTS = DEFAULT_SUBJECTS;
+    IDBStore.DEFAULT_TEMPLATES = DEFAULT_TEMPLATES;
   }
 })(typeof globalThis !== 'undefined' ? globalThis : (typeof self !== 'undefined' ? self : this));

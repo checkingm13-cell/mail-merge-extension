@@ -463,6 +463,93 @@
     } catch (_) {}
   }
 
+  const DEFAULT_TEMPLATES = (root.IDBStore && Array.isArray(root.IDBStore.DEFAULT_TEMPLATES)) ? root.IDBStore.DEFAULT_TEMPLATES : (root.DEFAULT_TEMPLATES || []);
+  const DEFAULT_SUBJECTS = (root.IDBStore && Array.isArray(root.IDBStore.DEFAULT_SUBJECTS)) ? root.IDBStore.DEFAULT_SUBJECTS : [
+    "Submit your Valuable Research for October issue",
+    "Publish Your Research in a UGC CARE & NMC Recognized Journal",
+    "Call for Papers – UGC CARE & NMC Recognized Peer-Reviewed Journal",
+    "Submit Your Research – UGC CARE & NMC Recognized Journal",
+    "Advance Your Academic Profile with UGC CARE & NMC Recognition",
+    "Peer-Reviewed Publication Opportunity – UGC CARE & NMC",
+    "Research Publication Invitation – UGC CARE & NMC Recognized Journal",
+    "Give Your Research Global Visibility – UGC CARE & NMC Journal",
+    "Now Accepting Research Papers – UGC CARE & NMC Recognized Journal",
+    "Publish with Confidence – UGC CARE & NMC Recognized Journal",
+    "Strengthen Your Academic Profile – UGC CARE & NMC Publication",
+    "Scholarly Publication Opportunity – UGC CARE & NMC Journal",
+    "Submit Your Manuscript – Peer-Reviewed UGC CARE & NMC Journal",
+    "Your Research Deserves Recognition – UGC CARE & NMC Journal",
+    "Expand Your Research Impact – UGC CARE & NMC Recognized Publication",
+    "Invitation for Researchers – UGC CARE & NMC Peer-Reviewed Journal",
+    "Research to Publication – UGC CARE & NMC Recognized Journal",
+    "Call for Quality Research – UGC CARE & NMC Journal",
+    "Publish Your Next Research Paper – UGC CARE & NMC",
+    "Academic Publishing Opportunity – UGC CARE & NMC Recognized Journal",
+    "Share Your Research with a UGC CARE & NMC Recognized Journal",
+    "Enhance your API score and secure promotion with UGC & NMC  approved journals",
+    "Journal approved by UGC and NMC for career advancement",
+    "Achieve promotion through UGC & NMC   approved peer-reviewed journals",
+    "Peer-reviewed and UGC & NMC   endorsed journals for researchers",
+    "UGC & NMC approved publications for career progression",
+    "Secure promotion with UGC & NMC endorsed journals",
+    "Journal indexed according to UGC and NMC regulations",
+    "Obtain thesis submission through UGC & NMC approved publications"
+  ];
+
+  /**
+   * Inserts template body into the compose editor while strictly preserving
+   * any existing Gmail native Mail Merge unsubscribe link, block, or footer.
+   */
+  function insertBodyPreservingUnsubscribe(bodyEl, resolvedBodyHtml, resolvedBodyText) {
+    if (!bodyEl) return;
+
+    let unsubscribeNode = null;
+    const candidates = Array.from(bodyEl.querySelectorAll('a, div, p, span, table, font'));
+    for (let i = candidates.length - 1; i >= 0; i--) {
+      const el = candidates[i];
+      const href = (el.getAttribute('href') || '').toLowerCase();
+      const text = (el.textContent || '').trim().toLowerCase();
+      const cls = (el.className || '').toString().toLowerCase();
+
+      const isUnsubLink = href.includes('unsubscribe') || href.includes('optout') || href.includes('opt-out');
+      const isUnsubText = (text.includes('unsubscribe') || text.includes('opt-out') || text.includes('opt out')) && text.length < 300;
+      const isGmailMergeFooter = cls.includes('unsubscribe') || cls.includes('gmail_signature');
+
+      if (isUnsubLink || isUnsubText || isGmailMergeFooter) {
+        let parent = el;
+        while (parent.parentElement && parent.parentElement !== bodyEl) {
+          parent = parent.parentElement;
+        }
+        unsubscribeNode = parent;
+        break;
+      }
+    }
+
+    let htmlToInsert = resolvedBodyHtml;
+    if (!htmlToInsert) {
+      if (resolvedBodyText && (resolvedBodyText.includes('<p') || resolvedBodyText.includes('<br') || resolvedBodyText.includes('<a '))) {
+        htmlToInsert = resolvedBodyText;
+      } else {
+        htmlToInsert = `<p style="font-family: Arial, sans-serif; font-size: 11pt;">${escapeHtml(resolvedBodyText || '').replace(/\n/g, '<br>')}</p>`;
+      }
+    }
+
+    if (unsubscribeNode && bodyEl.contains(unsubscribeNode)) {
+      const unsubHtml = unsubscribeNode.outerHTML;
+      bodyEl.innerHTML = htmlToInsert + '<br><br>' + unsubHtml;
+    } else {
+      bodyEl.innerHTML = htmlToInsert;
+    }
+
+    try {
+      bodyEl.focus();
+      bodyEl.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertHTML' }));
+      bodyEl.dispatchEvent(new Event('input', { bubbles: true }));
+      bodyEl.dispatchEvent(new Event('change', { bubbles: true }));
+      bodyEl.dispatchEvent(new Event('blur', { bubbles: true }));
+    } catch (_) {}
+  }
+
   // Unified Template Fetcher: Reads from Central Store, chrome.storage, and local origin IDB
   async function getUnifiedTemplates() {
     let combined = [];
@@ -707,14 +794,10 @@
       }
     }
 
-    // Detect sender account email from Gmail UI header
+    // Detect sender account email using unified detector
     let accountEmail = '';
     try {
-      const accountEl = document.querySelector('header a[aria-label*="@"], div[aria-label*="@"], a[aria-label*="Google Account"]');
-      if (accountEl) {
-        const emailMatch = /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/.exec(accountEl.getAttribute('aria-label') || '');
-        if (emailMatch) accountEmail = emailMatch[0];
-      }
+      accountEmail = detectActiveSenderEmail(composeDialog);
     } catch (_) {}
 
     // Fetch safeguard settings & 24h quota from IndexedDB
@@ -855,19 +938,20 @@
 
         preFlightWarningsHtml +
 
-        // Reusable Template Quick-Load Bar
-        '<div style="background: #faf5ff; border: 1px solid #e9d5ff; border-radius: 8px; padding: 10px 12px; margin-bottom: 14px;">' +
-          '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">' +
-            '<label for="mmTemplateSelectDropdown" style="font-size: 11px; font-weight: 700; color: #7e22ce; text-transform: uppercase;">' +
-              '⚡ Load Saved Template' +
+        // ⚡ Load Pre-Generated Combination (116 Combinations: 4 Journals × 29 Subjects)
+        '<div style="background: #f0f4ff; border: 1px solid #4a3aff; border-radius: 8px; padding: 12px; margin-bottom: 14px; font-family: inherit;">' +
+          '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">' +
+            '<label for="mm-combo-dropdown" style="font-size: 11px; font-weight: 700; color: #4a3aff; text-transform: uppercase;">' +
+              '⚡ Load Combination (Journal + Subject)' +
             '</label>' +
-            '<button type="button" id="mmBtnOpenTemplatesDashboard" style="background: transparent; border: none; color: #9333ea; font-size: 11px; font-weight: 600; cursor: pointer; text-decoration: underline; padding: 0;">' +
+            '<button type="button" id="mmBtnOpenTemplatesDashboard" style="background: transparent; border: none; color: #4a3aff; font-size: 11px; font-weight: 600; cursor: pointer; text-decoration: underline; padding: 0;">' +
               '📋 Manage Templates' +
             '</button>' +
           '</div>' +
-          '<select id="mmTemplateSelectDropdown" style="width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #d8b4fe; border-radius: 6px; font-size: 12px; outline: none; background: #ffffff; color: #374151; cursor: pointer;">' +
-            '<option value="">-- Choose Template to Load into Draft --</option>' +
+          '<select id="mm-combo-dropdown" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #4a3aff; border-radius: 6px; font-size: 12px; outline: none; background: #ffffff; color: #1e1b4b; cursor: pointer; font-weight: 500;">' +
+            '<option value="">-- Select a Journal &amp; Subject Combination (116) --</option>' +
           '</select>' +
+          '<div id="mm-combo-status" style="margin-top: 6px; font-size: 11px; font-weight: 600; display: none;"></div>' +
         '</div>' +
 
         '<div style="margin-bottom: 14px;">' +
@@ -979,87 +1063,122 @@
       });
     });
 
-    // Template Dropdown Population & Loading (Unified Central + Local Templates)
-    const templateSelect = overlay.querySelector('#mmTemplateSelectDropdown');
+    // ⚡ Combination Dropdown Population & Loading (4 Journals × 29 Subjects = 116)
+    const comboSelect = overlay.querySelector('#mm-combo-dropdown');
+    const comboStatus = overlay.querySelector('#mm-combo-status');
     const btnOpenDash = overlay.querySelector('#mmBtnOpenTemplatesDashboard');
     let loadedTemplates = [];
 
-    if (templateSelect) {
-      getUnifiedTemplates().then((tpls) => {
-        loadedTemplates = tpls || [];
-        templateSelect.innerHTML = '';
-        const defaultOpt = document.createElement('option');
-        defaultOpt.value = '';
-        defaultOpt.textContent = '-- Choose Template to Load into Draft --';
-        templateSelect.appendChild(defaultOpt);
+    function populateComboDropdown(templatesToRender) {
+      if (!comboSelect) return;
+      const currentVal = comboSelect.value;
+      comboSelect.innerHTML = '<option value="">-- Select a Journal & Subject Combination (' + templatesToRender.length + ') --</option>';
 
-        if (loadedTemplates.length > 0) {
-          loadedTemplates.forEach((t) => {
+      // Group by journal name if present
+      const groups = {};
+      templatesToRender.forEach((t) => {
+        let groupName = t.journalName;
+        if (!groupName) {
+          const match = /^\[([^\]]+)\]/.exec(t.name || '');
+          groupName = match ? match[1] : 'Saved Templates';
+        }
+        if (!groups[groupName]) groups[groupName] = [];
+        groups[groupName].push(t);
+      });
+
+      const groupKeys = Object.keys(groups);
+      if (groupKeys.length > 1) {
+        groupKeys.forEach((grp) => {
+          const optGroup = document.createElement('optgroup');
+          optGroup.label = `${grp} (${groups[grp].length})`;
+          groups[grp].forEach((t) => {
             const opt = document.createElement('option');
             opt.value = t.id;
-            opt.textContent = (t.name || 'Untitled Template') + (t.subject ? ' — "' + t.subject + '"' : '');
-            templateSelect.appendChild(opt);
+            opt.textContent = t.name || t.subject || 'Untitled Template';
+            optGroup.appendChild(opt);
           });
-        } else {
+          comboSelect.appendChild(optGroup);
+        });
+      } else {
+        templatesToRender.forEach((t) => {
           const opt = document.createElement('option');
-          opt.value = '';
-          opt.textContent = '(No saved templates yet)';
-          opt.disabled = true;
-          templateSelect.appendChild(opt);
-        }
-      }).catch((e) => console.warn('[MailMerge ContentScript] Error fetching templates for dialog:', e));
+          opt.value = t.id;
+          opt.textContent = t.name || t.subject || 'Untitled Template';
+          comboSelect.appendChild(opt);
+        });
+      }
 
-      templateSelect.addEventListener('change', async () => {
-        const tplId = templateSelect.value;
-        if (!tplId) {
-          selectedTemplate = null;
-          return;
+      if (currentVal) comboSelect.value = currentVal;
+    }
+
+    // Load templates from unified store or fallback to DEFAULT_TEMPLATES
+    getUnifiedTemplates().then((tpls) => {
+      loadedTemplates = (tpls && tpls.length > 0) ? tpls : (root.DEFAULT_TEMPLATES || root.IDBStore?.DEFAULT_TEMPLATES || []);
+      populateComboDropdown(loadedTemplates);
+    }).catch(() => {
+      loadedTemplates = root.DEFAULT_TEMPLATES || root.IDBStore?.DEFAULT_TEMPLATES || [];
+      populateComboDropdown(loadedTemplates);
+    });
+
+
+
+    // Single combination selection handler (1-Click Apply for Subject + Body with Unsubscribe Safe)
+    if (comboSelect) {
+      comboSelect.addEventListener('change', async (e) => {
+        const selectedId = e.target.value;
+        if (!selectedId) return;
+
+        const freshDefault = (root.DEFAULT_TEMPLATES || root.IDBStore?.DEFAULT_TEMPLATES || []).find((t) => t.id === selectedId);
+        let template = freshDefault || loadedTemplates.find((t) => t.id === selectedId);
+        if (!template) {
+          const allTpls = await getUnifiedTemplates().catch(() => []);
+          template = allTpls.find((t) => t.id === selectedId) || freshDefault;
         }
-        try {
-          let chosen = loadedTemplates.find((t) => t.id === tplId);
-          if (!chosen) {
-            const allTpls = await getUnifiedTemplates();
-            chosen = allTpls.find((t) => t.id === tplId);
+        if (!template) return;
+
+        selectedTemplate = template;
+
+        const activeCompose = (composeDialog && (composeDialog.querySelector('input[name="subjectbox"]') || composeDialog.querySelector('[aria-label="Message Body"]')))
+          ? composeDialog
+          : (getComposeDialog() || composeDialog);
+
+        const resolvedSubject = resolveDynamicTemplate(template.subject || '', activeCompose);
+        const resolvedBodyHtml = template.bodyHtml ? resolveDynamicTemplate(template.bodyHtml, activeCompose) : resolveDynamicTemplate(template.body || '', activeCompose);
+        const resolvedBodyText = resolveDynamicTemplate(template.body || '', activeCompose);
+
+        // 1. Apply Subject to active compose window
+        const subjectInput = activeCompose?.querySelector('input[name="subjectbox"], input[name="subject"]') || document.querySelector('input[name="subjectbox"]') || document.querySelector('.aoT');
+        if (subjectInput) {
+          subjectInput.value = resolvedSubject;
+          subjectInput.dispatchEvent(new Event('input', { bubbles: true }));
+          subjectInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        // 2. Apply Body Safely (Preserving Unsubscribe)
+        const bodyEl = activeCompose?.querySelector('div[aria-label="Message Body"], div[role="textbox"], div.Am') || document.querySelector('[role="textbox"][g_editable="true"]') || document.querySelector('.Am.Al.editable.LW-avf');
+        if (bodyEl) {
+          insertBodyPreservingUnsubscribe(bodyEl, resolvedBodyHtml, resolvedBodyText);
+          if (comboStatus) {
+            comboStatus.style.display = 'block';
+            comboStatus.style.color = '#15803d';
+            comboStatus.textContent = '✅ Combination applied! Unsubscribe link preserved.';
           }
-          if (chosen) {
-            selectedTemplate = chosen;
-
-            const resolvedSubject = resolveDynamicTemplate(chosen.subject || '', composeDialog);
-            const resolvedBodyHtml = chosen.bodyHtml ? resolveDynamicTemplate(chosen.bodyHtml, composeDialog) : null;
-            const resolvedBodyText = resolveDynamicTemplate(chosen.body || '', composeDialog);
-
-            // Apply subject to compose dialog
-            if (chosen.subject !== undefined && composeDialog) {
-              const subInput = composeDialog.querySelector('input[name="subjectbox"], input[name="subject"]');
-              if (subInput) {
-                subInput.value = resolvedSubject;
-                subInput.dispatchEvent(new Event('input', { bubbles: true }));
-                subInput.dispatchEvent(new Event('change', { bubbles: true }));
-              }
-            }
-            // Apply body to compose dialog with full rich text & links
-            if ((chosen.bodyHtml !== undefined || chosen.body !== undefined) && composeDialog) {
-              const bodyEl = composeDialog.querySelector('div[aria-label="Message Body"], div[role="textbox"], div.Am');
-              if (bodyEl) {
-                if (resolvedBodyHtml) {
-                  bodyEl.innerHTML = resolvedBodyHtml;
-                } else {
-                  bodyEl.innerText = resolvedBodyText || '';
-                }
-                bodyEl.dispatchEvent(new Event('input', { bubbles: true }));
-                bodyEl.dispatchEvent(new Event('change', { bubbles: true }));
-              }
-            }
-            // Update preview in popup if present
-            const subPreview = overlay.querySelector('.mm-subject-preview');
-            if (subPreview && chosen.subject) {
-              subPreview.textContent = resolvedSubject;
-            }
-            showToast('⚡ Template "' + (chosen.name || 'Template') + '" loaded with dynamic domain links!');
+        } else {
+          if (comboStatus) {
+            comboStatus.style.display = 'block';
+            comboStatus.style.color = '#dc2626';
+            comboStatus.textContent = '⚠️ Compose window body not found.';
           }
-        } catch (err) {
-          console.error('[MailMerge ContentScript] Error loading template into compose:', err);
         }
+
+        // Update preview in popup if present
+        const subPreview = overlay.querySelector('.mm-subject-preview');
+        if (subPreview && resolvedSubject) {
+          subPreview.textContent = resolvedSubject;
+        }
+
+        showToast('⚡ Loaded combination: "' + (template.name || 'Template') + '"');
+        e.target.value = '';
       });
     }
 
@@ -1276,11 +1395,7 @@
         // 3. Detect current account email
         let accountEmail = '';
         try {
-          const accountEl = document.querySelector('header a[aria-label*="@"], div[aria-label*="@"], a[aria-label*="Google Account"]');
-          if (accountEl) {
-            const emailMatch = /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/.exec(accountEl.getAttribute('aria-label') || '');
-            if (emailMatch) accountEmail = emailMatch[0];
-          }
+          accountEmail = detectActiveSenderEmail(composeDialog);
         } catch (_) {}
 
         // 4. Build comprehensive campaign record
@@ -1408,51 +1523,112 @@
       .replace(/'/g, '&#039;');
   }
 
-  // Extracts sender email and sender domain from Compose From field or active Google profile
-  function getSenderEmailAndDomain(composeDialog) {
-    let senderEmail = '';
+  // Default journal submission portal domain when sender email is generic (gmail.com, etc.)
+  const DEFAULT_JOURNAL_PORTAL_DOMAIN = 'worldwidejournals.co.in';
 
-    // 1. Check Compose window's 'From:' selector (handles aliases / Send-as)
-    const fromInput = composeDialog?.querySelector('input[name="from"]');
-    if (fromInput && fromInput.value && fromInput.value.includes('@')) {
-      senderEmail = fromInput.value.trim();
+  function getEffectiveSenderDomain(senderEmail, rawDomain) {
+    if (!rawDomain) return DEFAULT_JOURNAL_PORTAL_DOMAIN;
+
+    const lowerDomain = rawDomain.toLowerCase().trim();
+    // Generic webmail / corporate internal mail domains that don't host the public journal portal
+    const genericHosts = [
+      'gmail.com',
+      'googlemail.com',
+      'google.com',
+      'yahoo.com',
+      'yahoo.co.in',
+      'outlook.com',
+      'hotmail.com',
+      'icloud.com',
+      'aol.com',
+      'protonmail.com'
+    ];
+
+    if (genericHosts.includes(lowerDomain)) {
+      return DEFAULT_JOURNAL_PORTAL_DOMAIN;
     }
 
+    return lowerDomain;
+  }
+
+  // Bulletproof detection of logged-in sender account email in Gmail
+  function detectActiveSenderEmail(composeDialog) {
+    let senderEmail = '';
     const emailPattern = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
 
-    // 2. Check top-right Google Account avatar
-    if (!senderEmail) {
-      const avatarEl = document.querySelector('header a[aria-label*="@"], div[aria-label*="@"], a[aria-label*="Google Account"]');
-      if (avatarEl) {
-        const match = emailPattern.exec(avatarEl.getAttribute('aria-label') || '');
-        if (match) senderEmail = match[0];
+    // 1. Check Compose window's 'From:' field strictly (avoid picking recipients)
+    if (composeDialog) {
+      const fromInput = composeDialog.querySelector('input[name="from"]');
+      if (fromInput && fromInput.value) {
+        const match = emailPattern.exec(fromInput.value);
+        if (match) return match[0].trim().toLowerCase();
       }
-    }
-
-    // 3. Check SignOutOptions / Google profile buttons across all languages
-    if (!senderEmail) {
-      const profileLinks = document.querySelectorAll('a[href*="SignOutOptions"], a[href*="accounts.google.com"], [data-identifier]');
-      for (const el of profileLinks) {
-        const text = el.getAttribute('aria-label') || el.getAttribute('data-identifier') || el.title || '';
+      const fromContainer = composeDialog.querySelector('.az9, [aria-label^="From" i], [aria-label*="Send as" i], tr.agP, tr.agO');
+      if (fromContainer) {
+        const text = fromContainer.getAttribute('aria-label') || fromContainer.textContent || '';
         const match = emailPattern.exec(text);
-        if (match) {
-          senderEmail = match[0];
-          break;
-        }
+        if (match) return match[0].trim().toLowerCase();
       }
     }
 
-    // 4. Fallback: Check Gmail document title (e.g. "Inbox (3) - user@domain.com - Gmail")
-    if (!senderEmail) {
-      const titleMatch = emailPattern.exec(document.title || '');
-      if (titleMatch) senderEmail = titleMatch[0];
+    // 2. Google Top Bar / Profile Avatar (The most reliable native Google source)
+    const avatarSelectors = [
+      '#gb a[aria-label*="@"]',
+      '#gb button[aria-label*="@"]',
+      '#gb [data-identifier*="@"]',
+      '[role="banner"] a[aria-label*="@"]',
+      '[role="banner"] button[aria-label*="@"]',
+      'a[aria-label*="Google Account" i]',
+      'a[aria-label*="Google account" i]',
+      'a[href*="accounts.google.com"][aria-label*="@"]',
+      'a[href*="SignOutOptions"]',
+      '.gb_d[aria-label*="@"]',
+      '.gb_A[aria-label*="@"]'
+    ];
+    for (const sel of avatarSelectors) {
+      const elements = document.querySelectorAll(sel);
+      for (const el of elements) {
+        const text = (el.getAttribute('aria-label') || '') + ' ' +
+                     (el.getAttribute('data-identifier') || '') + ' ' +
+                     (el.getAttribute('title') || '') + ' ' +
+                     (el.textContent || '');
+        const match = emailPattern.exec(text);
+        if (match) return match[0].trim().toLowerCase();
+      }
     }
 
+    // 3. Gmail Document Title (e.g. "Inbox (3) - editor@worldwidejournals.co.in - Gmail")
+    if (document.title) {
+      const match = emailPattern.exec(document.title);
+      if (match) return match[0].trim().toLowerCase();
+    }
+
+    // 4. URL parameters (authuser=...)
+    if (window.location.href) {
+      const urlMatch = /authuser=([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i.exec(window.location.href);
+      if (urlMatch) return urlMatch[1].trim().toLowerCase();
+    }
+
+    // 5. Fallback: Any element in header/banner with an email in aria-label
+    const bannerElements = document.querySelectorAll('#gb [aria-label], [role="banner"] [aria-label], header [aria-label]');
+    for (const el of bannerElements) {
+      const label = el.getAttribute('aria-label') || '';
+      if (label && label.includes('@')) {
+        const match = emailPattern.exec(label);
+        if (match) return match[0].trim().toLowerCase();
+      }
+    }
+
+    return '';
+  }
+
+  // Extracts sender email and sender domain from Compose From field or active Google profile
+  function getSenderEmailAndDomain(composeDialog) {
+    const senderEmail = detectActiveSenderEmail(composeDialog);
     let senderDomain = '';
     if (senderEmail && senderEmail.includes('@')) {
       senderDomain = senderEmail.split('@')[1].trim().toLowerCase();
     }
-
     return { senderEmail, senderDomain };
   }
 
@@ -1460,17 +1636,16 @@
   function resolveDynamicTemplate(rawContent, composeDialog) {
     if (!rawContent || typeof rawContent !== 'string') return rawContent;
 
-    const { senderEmail, senderDomain } = getSenderEmailAndDomain(composeDialog);
+    const { senderEmail, senderDomain: rawDomain } = getSenderEmailAndDomain(composeDialog);
+    const senderDomain = getEffectiveSenderDomain(senderEmail, rawDomain);
     let resolved = rawContent;
 
     // 1. Replace domain placeholders: {{senderDomain}}, {senderdomain}, {{sender_domain}}
-    if (senderDomain) {
-      resolved = resolved
-        .replace(/\{\{\s*senderDomain\s*\}\}/gi, senderDomain)
-        .replace(/\{\s*senderDomain\s*\}/gi, senderDomain)
-        .replace(/\{\{\s*sender_domain\s*\}\}/gi, senderDomain)
-        .replace(/\{\s*sender_domain\s*\}/gi, senderDomain);
-    }
+    resolved = resolved
+      .replace(/\{\{\s*senderDomain\s*\}\}/gi, senderDomain)
+      .replace(/\{\s*senderDomain\s*\}/gi, senderDomain)
+      .replace(/\{\{\s*sender_domain\s*\}\}/gi, senderDomain)
+      .replace(/\{\s*sender_domain\s*\}/gi, senderDomain);
 
     // 2. Replace email placeholders: {{senderEmail}}, {senderemail}, {{sender_email}}
     if (senderEmail) {
@@ -1479,13 +1654,20 @@
         .replace(/\{\s*senderEmail\s*\}/gi, senderEmail)
         .replace(/\{\{\s*sender_email\s*\}\}/gi, senderEmail)
         .replace(/\{\s*sender_email\s*\}/gi, senderEmail);
+    } else {
+      resolved = resolved
+        .replace(/\{\{\s*senderEmail\s*\}\}/gi, '')
+        .replace(/\{\s*senderEmail\s*\}/gi, '');
     }
 
     // 3. Auto-convert relative links: href="/path..." -> href="https://${senderDomain}/path..."
-    if (senderDomain) {
-      resolved = resolved.replace(/href=(["'])\/([^"'>\s]+)(["'])/gi, (match, p1, p2, p3) => {
-        return `href=${p1}https://${senderDomain}/${p2}${p3}`;
-      });
+    resolved = resolved.replace(/href=(["'])\/([^"'>\s]+)(["'])/gi, (match, p1, p2, p3) => {
+      return `href=${p1}https://${senderDomain}/${p2}${p3}`;
+    });
+
+    // 4. Adapt any worldwidejournals.com to sender domain if sender domain is worldwidejournals.co.in
+    if (senderDomain && senderDomain.includes('worldwidejournals.co.in')) {
+      resolved = resolved.replace(/https?:\/\/(?:www\.)?worldwidejournals\.com/gi, `https://${senderDomain}`);
     }
 
     return resolved;
@@ -1712,11 +1894,7 @@
       if (message.action === 'GET_TAB_ACCOUNT_INFO') {
         let email = '';
         try {
-          const accountEl = document.querySelector('header a[aria-label*="@"], div[aria-label*="@"], a[aria-label*="Google Account"]');
-          if (accountEl) {
-            const emailMatch = /[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}/.exec(accountEl.getAttribute('aria-label') || '');
-            if (emailMatch) email = emailMatch[0];
-          }
+          email = detectActiveSenderEmail();
         } catch (_) {}
         const userMatch = /\/u\/(\d+)/.exec(window.location.pathname);
         sendResponse({
@@ -1756,23 +1934,35 @@
       }
 
       if (message.action === 'TEMPLATES_UPDATED') {
-        // If template select dropdown is currently open on screen, refresh its options
-        const tplSelect = document.getElementById('mmTemplateSelectDropdown');
-        if (tplSelect) {
+        // If template/combination select dropdown is currently open on screen, refresh its options
+        const comboDropdown = document.getElementById('mm-combo-dropdown');
+        if (comboDropdown) {
           getUnifiedTemplates().then((tpls) => {
-            const currentVal = tplSelect.value;
-            tplSelect.innerHTML = '';
-            const defOpt = document.createElement('option');
-            defOpt.value = '';
-            defOpt.textContent = '-- Choose Template to Load into Draft --';
-            tplSelect.appendChild(defOpt);
-            (tpls || []).forEach((t) => {
-              const opt = document.createElement('option');
-              opt.value = t.id;
-              opt.textContent = (t.name || 'Untitled Template') + (t.subject ? ' — "' + t.subject + '"' : '');
-              tplSelect.appendChild(opt);
+            const list = (tpls && tpls.length > 0) ? tpls : (root.DEFAULT_TEMPLATES || []);
+            const currentVal = comboDropdown.value;
+            comboDropdown.innerHTML = '<option value="">-- Select a Journal & Subject Combination (' + list.length + ') --</option>';
+            const groups = {};
+            list.forEach((t) => {
+              let groupName = t.journalName;
+              if (!groupName) {
+                const match = /^\[([^\]]+)\]/.exec(t.name || '');
+                groupName = match ? match[1] : 'Saved Templates';
+              }
+              if (!groups[groupName]) groups[groupName] = [];
+              groups[groupName].push(t);
             });
-            if (currentVal) tplSelect.value = currentVal;
+            Object.keys(groups).forEach((grp) => {
+              const optGroup = document.createElement('optgroup');
+              optGroup.label = `${grp} (${groups[grp].length})`;
+              groups[grp].forEach((t) => {
+                const opt = document.createElement('option');
+                opt.value = t.id;
+                opt.textContent = t.name || t.subject || 'Untitled Template';
+                optGroup.appendChild(opt);
+              });
+              comboDropdown.appendChild(optGroup);
+            });
+            if (currentVal) comboDropdown.value = currentVal;
           }).catch(() => {});
         }
       }
