@@ -52,7 +52,8 @@
       name: 'International Journal of Scientific Research (IJSR)', 
       shortName: 'IJSR',
       slug: 'international-journal-of-scientific-research', 
-      urlSlug: 'international-journal-of-scientific-research-(IJSR)',
+      uploadPath: 'international-journal-of-scientific-research-(IJSR)/page/p/upload-your-article',
+      optOutPath: 'international-journal-of-scientific-research-(IJSR)/page/p/OptOut',
       issn: '2277-8179',
       displayName: 'International journal of scientific research'
     },
@@ -60,7 +61,8 @@
       name: 'Indian Journal of Applied Research (IJAR)', 
       shortName: 'IJAR',
       slug: 'indian-journal-of-applied-research', 
-      urlSlug: 'indian-journal-of-applied-research-(IJAR)',
+      uploadPath: 'indian-journal-of-applied-research-(IJAR)/page/u/upload-your-article',
+      optOutPath: 'indian-journal-of-applied-research-(IJAR)/page/u/OptOut',
       issn: '2249-555X',
       displayName: 'Indian Journal of Applied Research'
     },
@@ -68,7 +70,8 @@
       name: 'Global Journal For Research Analysis (GJRA)', 
       shortName: 'GJRA',
       slug: 'global-journal-for-research-analysis', 
-      urlSlug: 'global-journal-for-research-analysis-(GJRA)',
+      uploadPath: 'global-journal-for-research-analysis-GJRA/page/p/upload-your-article',
+      optOutPath: 'global-journal-for-research-analysis-GJRA/page/p/OptOut',
       issn: '2277-8160',
       displayName: 'Global Journal For Research Analysis'
     },
@@ -76,7 +79,8 @@
       name: 'Paripex Indian Journal of Research (PIJR)', 
       shortName: 'PIJR',
       slug: 'paripex-indian-journal-of-research', 
-      urlSlug: 'paripex-indian-journal-of-research-(PIJR)',
+      uploadPath: 'paripex/page/p/upload-your-article',
+      optOutPath: 'paripex/page/p/OptOut',
       issn: '2250-1991',
       displayName: 'Paripex Indian Journal of Research'
     }
@@ -85,8 +89,7 @@
   // Automatically generates 4 x 29 = 116 combinations
   const DEFAULT_TEMPLATES = JOURNALS.flatMap(journal => 
     DEFAULT_SUBJECTS.map((subject, index) => {
-      const urlSlug = journal.urlSlug || journal.slug;
-      const targetUrl = `https://{{senderDomain}}/${urlSlug}/page/p/upload-your-article`;
+      const targetUrl = `https://{{senderDomain}}/${journal.uploadPath}`;
       return {
         id: `tmpl_${journal.slug.replace(/-/g, '_')}_sub_${index}`,
         journalName: journal.name,
