@@ -93,14 +93,14 @@
         journalShort: journal.shortName,
         name: `[${journal.name}] ${subject}`, // Dropdown mein dikhega: [IJSR] Submit your Valuable...
         subject: subject,
-        body: `Dear @name,\n\n${journal.displayName}\n\nPeer Reviewed Journal Accepted by UGC & NMC\n\nJournal ISSN ${journal.issn}\n\nPubMed Index Journal\n\nIf your paper is ready, you can begin the submission process below.\n\n${subject}:\n${targetUrl}`,
+        body: `Dear @name,\n\n${journal.displayName}\n\nPeer Reviewed Journal Accepted by UGC & NMC\n\nJournal ISSN ${journal.issn}\n\nPubMed Index Journal\n\nIf your paper is ready, you can begin the submission process below.\n\nSubmit your Valuable Research for October issue:\n${targetUrl}`,
         bodyHtml: `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">Dear @name,</p>` +
           `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;"><b>${journal.displayName}</b></p>` +
           `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">Peer Reviewed Journal Accepted by UGC &amp; NMC</p>` +
           `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">Journal ISSN ${journal.issn}</p>` +
           `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">PubMed Index Journal</p>` +
           `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">If your paper is ready, you can begin the submission process below.</p>` +
-          `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;"><b>${subject}:</b><br><a href="${targetUrl}" style="color: #0563c1; text-decoration: underline; word-break: break-all;">${targetUrl}</a></p>`,
+          `<p style="margin: 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;"><b><a href="${targetUrl}" style="color: #0563c1; text-decoration: underline;"><span style="color: #3300ff;">Submit your Valuable Research for October issue</span></a></b></p>`,
         createdAt: new Date().toISOString()
       };
     })
