@@ -51,7 +51,9 @@ SETUP_FRESH_PC.bat
 
 ## 🛠️ Maintenance & Useful Scripts
 
-- `SETUP_FRESH_PC.bat` — Run once on any new PC to configure Chrome performance policies.
+- `LAUNCH_CHROME_247.bat` — Primary 24/7 high-performance launcher with auto-retry watchdog across Windows 7-11.
+- `SETUP_FRESH_PC.bat` — Run once on any new PC to configure Windows power and Chrome performance policies.
+- `CLEAN_CACHE.bat` — 1-click utility to purge temporary test profiles, keeping folder size under 600 KB.
 - `RELOAD_EXTENSION.bat` — Quickly opens Chrome extensions page with reload instructions.
 - `RUN_LIVE_GMAIL.bat` — Runs a safe dry-run test against live Gmail.
 - `RUN_TESTS.bat` — Executes the automated end-to-end test suite.

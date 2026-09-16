@@ -1,9 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
-title Gmail Mail Merge - 24/7 Fresh PC & Chrome Configurator
+title "Gmail Mail Merge - 24/7 Fresh PC and Chrome Configurator"
 
 echo =======================================================================
-echo   GMAIL NATIVE MAIL MERGE - 24/7 FRESH PC & CHROME CONFIGURATOR
+echo   GMAIL NATIVE MAIL MERGE - 24/7 FRESH PC ^& CHROME CONFIGURATOR
 echo =======================================================================
 echo.
 
@@ -11,28 +11,18 @@ echo.
 net session >nul 2>&1
 if %errorLevel% neq 0 (
     echo [INFO] Administrator privileges required to configure system policies.
-    echo [ELEVATING] Prompting for Administrator approval (UAC)...
-    powershell -Command "Start-Process cmd -ArgumentList '/c \"\"%~f0\"\"' -Verb RunAs" 2>nul
-    if %errorLevel% equ 0 exit /b
-    echo.
-    echo =======================================================================
-    echo  [!] ELEVATION FAILED OR CANCELLED
-    echo =======================================================================
-    echo  Please right-click "SETUP_FRESH_PC.bat" and choose:
-    echo  "Run as administrator"
-    echo =======================================================================
-    echo.
-    pause
-    exit /b 1
+    echo [ELEVATING] Prompting for Administrator approval UAC...
+    powershell -NoProfile -Command "Start-Process cmd -ArgumentList '/k', '\"\"%~f0\"\"' -Verb RunAs"
+    exit /b
 )
 
 echo [OK] Running with Administrator Privileges.
 echo.
 
 :: =======================================================================
-:: [1/3] APPLY CHROME ENTERPRISE POLICIES (Never Sleep Tabs & Timers)
+:: [1/3] APPLY CHROME ENTERPRISE POLICIES (Never Sleep Tabs and Timers)
 :: =======================================================================
-echo [1/3] Configuring Chrome Policies (Memory Saver & Background Execution)...
+echo [1/3] Configuring Chrome Policies (Memory Saver ^& Background Execution)...
 
 :: Exempt Gmail, Google Sheets, and Google Drive from Chrome Memory Saver / Tab Discarding
 reg add "HKLM\Software\Policies\Google\Chrome\TabDiscardingExceptions" /v 1 /t REG_SZ /d "mail.google.com" /f >nul 2>&1
@@ -88,7 +78,7 @@ echo       - Display Sleep: Turns off screen after 15 mins to protect monitor [A
 echo.
 
 :: =======================================================================
-:: [3/4] CREATE 24/7 CHROME HIGH-PERFORMANCE LAUNCHER & DESKTOP SHORTCUT
+:: [3/4] CREATE 24/7 CHROME HIGH-PERFORMANCE LAUNCHER ^& DESKTOP SHORTCUT
 :: =======================================================================
 echo [3/4] Creating 24/7 Desktop Shortcut with High-Performance Flags...
 
@@ -104,16 +94,20 @@ if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" (
     set "CHROME_EXE=chrome.exe"
 )
 
-:: Create Desktop Shortcut via PowerShell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=(New-Object -COM WScript.Shell).CreateShortcut([Environment]::GetFolderPath('Desktop') + '\Chrome (24-7 Mail Merge).lnk'); $s.TargetPath='%CHROME_EXE%'; $s.Arguments='--profile-directory=\"Default\" --user-data-dir=\"%LOCALAPPDATA%\Google\Chrome\User Data\" --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-features=CalculateNativeWinOcclusion,TabFreezing,PageLifecycle,HighEfficiencyMode,TranslateUI,PrivacySandboxSettings4 --disable-background-timer-throttling --disable-background-timer-throttling-when-occluded --disable-background-timer-throttling-for-pause-after-tabs-hide --disable-ipc-flooding-protection --js-flags=--max-old-space-size=4096'; $s.Description='Launch Chrome optimized for 24/7 Mail Merge Automation'; $s.Save()" >nul 2>&1
+:: Normalize Extension Path without trailing backslash
+set "LAUNCHER_PATH=%~dp0LAUNCH_CHROME_247.bat"
+
+:: Create Desktop Shortcut via PowerShell (Windows 7/8/10/11 compatible)
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws = New-Object -COM WScript.Shell; $desktop = [Environment]::GetFolderPath('Desktop'); $s = $ws.CreateShortcut($desktop + '\Chrome (24-7 Mail Merge).lnk'); $s.TargetPath = '%LAUNCHER_PATH%'; $s.WorkingDirectory = '%~dp0'; if (Test-Path '%CHROME_EXE%') { $s.IconLocation = '%CHROME_EXE%,0' }; $s.Description = 'Launch Chrome 24/7 Mail Merge Automation with Auto-Retry & Guardian'; $s.Save()" >nul 2>&1
 
 echo       - Desktop Shortcut: "Chrome (24-7 Mail Merge)" [CREATED]
-echo       - Launch Flags: Anti-Occlusion, No-Renderer-Backgrounding,
-echo                       No-TabFreezing, No-TimerThrottling, 4GB RAM Heap [APPLIED]
+echo       - Target Launcher : LAUNCH_CHROME_247.bat [LINKED]
+echo       - Launch Flags    : Anti-Occlusion, No-Renderer-Backgrounding,
+echo                           No-TabFreezing, Auto-Retry, 4GB RAM Heap [APPLIED]
 echo.
 
 :: =======================================================================
-:: [4/4] VERIFICATION & SUMMARY
+:: [4/4] VERIFICATION ^& SUMMARY
 :: =======================================================================
 echo [4/4] Verifying Applied Settings...
 reg query "HKLM\Software\Policies\Google\Chrome\TabDiscardingExceptions" >nul 2>&1
@@ -125,17 +119,18 @@ if %errorLevel% equ 0 (
 
 echo.
 echo =======================================================================
-echo  [SUCCESS] FRESH PC & CHROME ENVIRONMENT READY FOR 24/7 UNATTENDED RUN!
+echo  [SUCCESS] FRESH PC ^& CHROME ENVIRONMENT READY FOR 24/7 UNATTENDED RUN!
 echo =======================================================================
 echo.
 echo  QUICK OPERATOR CHECKLIST:
 echo   1. Restart Google Chrome completely.
 echo   2. You can launch Chrome using your new Desktop shortcut:
-echo      "Chrome (24-7 Mail Merge)" (has 4GB RAM & all speed flags enabled).
+echo      "Chrome (24-7 Mail Merge)" (has 4GB RAM ^& all speed flags enabled).
 echo   3. Open "chrome://policy" in Chrome to confirm policies are ACTIVE.
 echo   4. Open "chrome://extensions", enable "Developer mode", and click
 echo      "Load unpacked" if this is your very first time setting up.
 echo   5. Keep your PC plugged into power during scheduled overnight campaigns.
 echo =======================================================================
 echo.
-pause
+echo Press any key to exit this window...
+pause >nul
