@@ -10,7 +10,7 @@
   }
 
   const DB_NAME = 'GmailMailMergeDB';
-  const DB_VERSION = 4;
+  const DB_VERSION = 5;
 
   let dbInstance = null;
   let initPromise = null;
@@ -106,35 +106,65 @@
     }
   ];
 
-  // Automatically generates 4 x 29 = 116 combinations
-  const DEFAULT_TEMPLATES = JOURNALS.flatMap(journal => 
-    DEFAULT_SUBJECTS.map((subject, index) => {
-      const uploadUrl = `https://{{senderDomain}}/${journal.uploadPath}`;
-      const optOutUrl = `https://{{senderDomain}}/${journal.optOutPath}`;
-      return {
-        id: `tmpl_${journal.slug.replace(/-/g, '_')}_sub_${index}`,
-        journalName: journal.name,
-        journalShort: journal.shortName,
-        name: `[${journal.shortName}] ${subject}`,
-        subject: subject,
-        body: `Dear [FNAME]\n\n${journal.displayName}\n\nPeer Reviewed Journal Accepted by UGC & NMC\n\nJournal ISSN ${journal.issn}\n\nPubMed Index Journal\n\n${journal.hookText1}\n\n${journal.hookText2}\n\n${journal.ctaIntro}\n\n${journal.ctaText}:\n${uploadUrl}\n\n${journal.closingText}\n\nTo Opt Out:\n${optOutUrl}`,
-        bodyHtml: `<span style="font-size:22px;"><span style="font-family:Verdana,Geneva,sans-serif;">` +
-          `Dear [FNAME]<br><br>` +
-          `<span style="line-height:115%">${journal.displayName}</span><br><br>` +
-          `<span style="line-height:115%">Peer Reviewed Journal Accepted by UGC &amp; NMC</span><br><br>` +
-          `<span style="line-height:115%">Journal ISSN ${journal.issn}</span><br><br>` +
-          `<span style="line-height:115%">PubMed Index Journal</span><br><br>` +
-          `<span style="line-height:115%">${journal.hookText1}</span><br><br>` +
-          `<span style="line-height:115%">${journal.hookText2}</span><br><br>` +
-          `<span style="line-height:115%">${journal.ctaIntro}</span><br><br>` +
-          `<span style="line-height:115%"><a href="${uploadUrl}" style="color:#0563c1; text-decoration:underline;"><b>${journal.ctaText}</b></a></span><br><br>` +
-          `<span style="line-height:115%">${journal.closingText}</span><br><br>` +
-          `<span style="line-height:115%"><a href="${optOutUrl}" style="color:#0563c1; text-decoration:underline;">To Opt Out</a></span><br>` +
-          `</span></span>`,
-        createdAt: new Date().toISOString()
-      };
-    })
-  );
+  // Generates 8 template families × 29 subjects = 232 combinations
+  // (4 Journals × 29 Short format + 4 Journals × 29 Detailed format)
+  const DEFAULT_TEMPLATES = [
+    // 1. Detailed Format (October Issue with custom copy, 22px Verdana & OptOut)
+    ...JOURNALS.flatMap(journal => 
+      DEFAULT_SUBJECTS.map((subject, index) => {
+        const uploadUrl = `https://{{senderDomain}}/${journal.uploadPath}`;
+        const optOutUrl = `https://{{senderDomain}}/${journal.optOutPath}`;
+        return {
+          id: `tmpl_${journal.slug.replace(/-/g, '_')}_detailed_sub_${index}`,
+          journalName: `${journal.name} (Detailed)`,
+          journalShort: `${journal.shortName} (Detailed)`,
+          formatType: 'detailed',
+          name: `[${journal.shortName} - Detailed] ${subject}`,
+          subject: subject,
+          body: `Dear [FNAME]\n\n${journal.displayName}\n\nPeer Reviewed Journal Accepted by UGC & NMC\n\nJournal ISSN ${journal.issn}\n\nPubMed Index Journal\n\n${journal.hookText1}\n\n${journal.hookText2}\n\n${journal.ctaIntro}\n\n${journal.ctaText}:\n${uploadUrl}\n\n${journal.closingText}\n\nTo Opt Out:\n${optOutUrl}`,
+          bodyHtml: `<span style="font-size:22px;"><span style="font-family:Verdana,Geneva,sans-serif;">` +
+            `Dear [FNAME]<br><br>` +
+            `<span style="line-height:115%">${journal.displayName}</span><br><br>` +
+            `<span style="line-height:115%">Peer Reviewed Journal Accepted by UGC &amp; NMC</span><br><br>` +
+            `<span style="line-height:115%">Journal ISSN ${journal.issn}</span><br><br>` +
+            `<span style="line-height:115%">PubMed Index Journal</span><br><br>` +
+            `<span style="line-height:115%">${journal.hookText1}</span><br><br>` +
+            `<span style="line-height:115%">${journal.hookText2}</span><br><br>` +
+            `<span style="line-height:115%">${journal.ctaIntro}</span><br><br>` +
+            `<span style="line-height:115%"><a href="${uploadUrl}" style="color:#0563c1; text-decoration:underline;"><b>${journal.ctaText}</b></a></span><br><br>` +
+            `<span style="line-height:115%">${journal.closingText}</span><br><br>` +
+            `<span style="line-height:115%"><a href="${optOutUrl}" style="color:#0563c1; text-decoration:underline;">To Opt Out</a></span><br>` +
+            `</span></span>`,
+          createdAt: new Date().toISOString()
+        };
+      })
+    ),
+    // 2. Short / Original Format (Concise prompt directly to upload link)
+    ...JOURNALS.flatMap(journal => 
+      DEFAULT_SUBJECTS.map((subject, index) => {
+        const uploadUrl = `https://{{senderDomain}}/${journal.uploadPath}`;
+        const optOutUrl = `https://{{senderDomain}}/${journal.optOutPath}`;
+        return {
+          id: `tmpl_${journal.slug.replace(/-/g, '_')}_short_sub_${index}`,
+          journalName: `${journal.name} (Short)`,
+          journalShort: `${journal.shortName} (Short)`,
+          formatType: 'short',
+          name: `[${journal.shortName} - Short] ${subject}`,
+          subject: subject,
+          body: `Dear [FNAME],\n\n${journal.displayName}\n\nPeer Reviewed Journal Accepted by UGC & NMC\n\nJournal ISSN ${journal.issn}\n\nPubMed Index Journal\n\nIf your paper is ready, you can begin the submission process below.\n\nSubmit your Valuable Research for October issue:\n${uploadUrl}\n\nTo Opt Out:\n${optOutUrl}`,
+          bodyHtml: `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">Dear [FNAME],</p>` +
+            `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;"><b>${journal.displayName}</b></p>` +
+            `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">Peer Reviewed Journal Accepted by UGC &amp; NMC</p>` +
+            `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">Journal ISSN ${journal.issn}</p>` +
+            `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">PubMed Index Journal</p>` +
+            `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">If your paper is ready, you can begin the submission process below.</p>` +
+            `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;"><b><a href="${uploadUrl}" style="color: #0563c1; text-decoration: underline;"><span style="color: #3300ff;">Submit your Valuable Research for October issue</span></a></b></p>` +
+            `<p style="margin: 0; font-size: 10pt; line-height: 1.25; font-family: Arial, sans-serif;"><a href="${optOutUrl}" style="color: #0563c1; text-decoration: underline;">To Opt Out</a></p>`,
+          createdAt: new Date().toISOString()
+        };
+      })
+    )
+  ];
 
   function generateId(prefix = 'id') {
     const randomSuffix = Math.random().toString(36).substring(2, 7);
