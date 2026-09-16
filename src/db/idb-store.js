@@ -59,7 +59,8 @@
       hookText1: 'Are you working on a research study or have a completed manuscript ready for publication?',
       hookText2: 'IJSR welcomes original academic and scientific research that can add meaningful value to the research community.',
       ctaIntro: 'You may submit your manuscript for consideration in the upcoming October issue.',
-      ctaText: 'Send Your Research for the October Issue'
+      ctaText: 'Send Your Research for the October Issue',
+      closingText: 'We look forward to receiving your scholarly contribution.'
     },
     { 
       name: 'Indian Journal of Applied Research (IJAR)', 
@@ -72,7 +73,8 @@
       hookText1: 'We are inviting researchers, authors, and academicians to share their latest research work with our journal.',
       hookText2: 'Original studies, applied research, and valuable academic findings are encouraged for submission.',
       ctaIntro: 'If you have an article ready, you can submit it for review for our October issue.',
-      ctaText: 'Submit Your Article for the October Issue'
+      ctaText: 'Submit Your Article for the October Issue',
+      closingText: 'Give your research an opportunity to reach an academic audience.'
     },
     { 
       name: 'Global Journal For Research Analysis (GJRA)', 
@@ -85,7 +87,8 @@
       hookText1: 'Your research and academic work can help contribute to the growing body of knowledge in your field.',
       hookText2: 'GJRA invites original manuscripts presenting useful research, new findings, and relevant academic insights.',
       ctaIntro: 'If you have a completed paper, consider submitting it for the upcoming October publication.',
-      ctaText: 'Share Your Research for the October Issue'
+      ctaText: 'Share Your Research for the October Issue',
+      closingText: 'We welcome your research contribution and academic perspective.'
     },
     { 
       name: 'Paripex Indian Journal of Research (PIJR)', 
@@ -98,7 +101,8 @@
       hookText1: 'Have you recently completed a research project or prepared a manuscript for publication?',
       hookText2: 'Paripex welcomes original research and academic contributions from researchers and professionals across different fields.',
       ctaIntro: 'You can submit your completed manuscript for consideration in the October issue.',
-      ctaText: 'Submit Your Manuscript for the October Issue'
+      ctaText: 'Submit Your Manuscript for the October Issue',
+      closingText: 'We appreciate your interest and look forward to your valuable contribution.'
     }
   ];
 
@@ -113,7 +117,7 @@
         journalShort: journal.shortName,
         name: `[${journal.shortName}] ${subject}`,
         subject: subject,
-        body: `Dear [FNAME]\n\n${journal.displayName}\n\nPeer Reviewed Journal Accepted by UGC & NMC\n\nJournal ISSN ${journal.issn}\n\nPubMed Index Journal\n\n${journal.hookText1}\n\n${journal.hookText2}\n\n${journal.ctaIntro}\n\n${journal.ctaText}:\n${uploadUrl}\n\nWe look forward to receiving your research contribution.\n\nTo Opt Out:\n${optOutUrl}`,
+        body: `Dear [FNAME]\n\n${journal.displayName}\n\nPeer Reviewed Journal Accepted by UGC & NMC\n\nJournal ISSN ${journal.issn}\n\nPubMed Index Journal\n\n${journal.hookText1}\n\n${journal.hookText2}\n\n${journal.ctaIntro}\n\n${journal.ctaText}:\n${uploadUrl}\n\n${journal.closingText}\n\nTo Opt Out:\n${optOutUrl}`,
         bodyHtml: `<span style="font-size:22px;"><span style="font-family:Verdana,Geneva,sans-serif;">` +
           `Dear [FNAME]<br><br>` +
           `<span style="line-height:115%">${journal.displayName}</span><br><br>` +
@@ -123,9 +127,9 @@
           `<span style="line-height:115%">${journal.hookText1}</span><br><br>` +
           `<span style="line-height:115%">${journal.hookText2}</span><br><br>` +
           `<span style="line-height:115%">${journal.ctaIntro}</span><br><br>` +
-          `<a href="${uploadUrl}" style="color:#0563c1; text-decoration:underline;"><b>${journal.ctaText}</b></a><br><br>` +
-          `<span style="line-height:115%">We look forward to receiving your research contribution.</span><br><br>` +
-          `<a href="${optOutUrl}" style="color:#0563c1; text-decoration:underline;">To Opt Out</a><br>` +
+          `<span style="line-height:115%"><a href="${uploadUrl}" style="color:#0563c1; text-decoration:underline;"><b>${journal.ctaText}</b></a></span><br><br>` +
+          `<span style="line-height:115%">${journal.closingText}</span><br><br>` +
+          `<span style="line-height:115%"><a href="${optOutUrl}" style="color:#0563c1; text-decoration:underline;">To Opt Out</a></span><br>` +
           `</span></span>`,
         createdAt: new Date().toISOString()
       };
