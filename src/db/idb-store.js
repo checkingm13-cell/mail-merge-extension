@@ -10,7 +10,7 @@
   }
 
   const DB_NAME = 'GmailMailMergeDB';
-  const DB_VERSION = 3;
+  const DB_VERSION = 4;
 
   let dbInstance = null;
   let initPromise = null;
@@ -55,7 +55,11 @@
       uploadPath: 'international-journal-of-scientific-research-(IJSR)/page/p/upload-your-article',
       optOutPath: 'international-journal-of-scientific-research-(IJSR)/page/p/OptOut',
       issn: '2277-8179',
-      displayName: 'International journal of scientific research'
+      displayName: 'International Journal of Scientific Research',
+      hookText1: 'Are you working on a research study or have a completed manuscript ready for publication?',
+      hookText2: 'IJSR welcomes original academic and scientific research that can add meaningful value to the research community.',
+      ctaIntro: 'You may submit your manuscript for consideration in the upcoming October issue.',
+      ctaText: 'Send Your Research for the October Issue'
     },
     { 
       name: 'Indian Journal of Applied Research (IJAR)', 
@@ -64,7 +68,11 @@
       uploadPath: 'indian-journal-of-applied-research-(IJAR)/page/u/upload-your-article',
       optOutPath: 'indian-journal-of-applied-research-(IJAR)/page/u/OptOut',
       issn: '2249-555X',
-      displayName: 'Indian Journal of Applied Research'
+      displayName: 'Indian Journal of Applied Research',
+      hookText1: 'We are inviting researchers, authors, and academicians to share their latest research work with our journal.',
+      hookText2: 'Original studies, applied research, and valuable academic findings are encouraged for submission.',
+      ctaIntro: 'If you have an article ready, you can submit it for review for our October issue.',
+      ctaText: 'Submit Your Article for the October Issue'
     },
     { 
       name: 'Global Journal For Research Analysis (GJRA)', 
@@ -73,7 +81,11 @@
       uploadPath: 'global-journal-for-research-analysis-GJRA/page/p/upload-your-article',
       optOutPath: 'global-journal-for-research-analysis-GJRA/page/p/OptOut',
       issn: '2277-8160',
-      displayName: 'Global Journal For Research Analysis'
+      displayName: 'Global Journal For Research Analysis',
+      hookText1: 'Your research and academic work can help contribute to the growing body of knowledge in your field.',
+      hookText2: 'GJRA invites original manuscripts presenting useful research, new findings, and relevant academic insights.',
+      ctaIntro: 'If you have a completed paper, consider submitting it for the upcoming October publication.',
+      ctaText: 'Share Your Research for the October Issue'
     },
     { 
       name: 'Paripex Indian Journal of Research (PIJR)', 
@@ -82,28 +94,39 @@
       uploadPath: 'paripex/page/p/upload-your-article',
       optOutPath: 'paripex/page/p/OptOut',
       issn: '2250-1991',
-      displayName: 'Paripex Indian Journal of Research'
+      displayName: 'Paripex Indian Journal of Research',
+      hookText1: 'Have you recently completed a research project or prepared a manuscript for publication?',
+      hookText2: 'Paripex welcomes original research and academic contributions from researchers and professionals across different fields.',
+      ctaIntro: 'You can submit your completed manuscript for consideration in the October issue.',
+      ctaText: 'Submit Your Manuscript for the October Issue'
     }
   ];
 
   // Automatically generates 4 x 29 = 116 combinations
   const DEFAULT_TEMPLATES = JOURNALS.flatMap(journal => 
     DEFAULT_SUBJECTS.map((subject, index) => {
-      const targetUrl = `https://{{senderDomain}}/${journal.uploadPath}`;
+      const uploadUrl = `https://{{senderDomain}}/${journal.uploadPath}`;
+      const optOutUrl = `https://{{senderDomain}}/${journal.optOutPath}`;
       return {
         id: `tmpl_${journal.slug.replace(/-/g, '_')}_sub_${index}`,
         journalName: journal.name,
         journalShort: journal.shortName,
-        name: `[${journal.name}] ${subject}`, // Dropdown mein dikhega: [IJSR] Submit your Valuable...
+        name: `[${journal.shortName}] ${subject}`,
         subject: subject,
-        body: `Dear @name,\n\n${journal.displayName}\n\nPeer Reviewed Journal Accepted by UGC & NMC\n\nJournal ISSN ${journal.issn}\n\nPubMed Index Journal\n\nIf your paper is ready, you can begin the submission process below.\n\nSubmit your Valuable Research for October issue:\n${targetUrl}`,
-        bodyHtml: `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">Dear @name,</p>` +
-          `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;"><b>${journal.displayName}</b></p>` +
-          `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">Peer Reviewed Journal Accepted by UGC &amp; NMC</p>` +
-          `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">Journal ISSN ${journal.issn}</p>` +
-          `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">PubMed Index Journal</p>` +
-          `<p style="margin: 0 0 10pt 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;">If your paper is ready, you can begin the submission process below.</p>` +
-          `<p style="margin: 0; font-size: 11pt; line-height: 1.25; font-family: Arial, sans-serif;"><b><a href="${targetUrl}" style="color: #0563c1; text-decoration: underline;"><span style="color: #3300ff;">Submit your Valuable Research for October issue</span></a></b></p>`,
+        body: `Dear [FNAME]\n\n${journal.displayName}\n\nPeer Reviewed Journal Accepted by UGC & NMC\n\nJournal ISSN ${journal.issn}\n\nPubMed Index Journal\n\n${journal.hookText1}\n\n${journal.hookText2}\n\n${journal.ctaIntro}\n\n${journal.ctaText}:\n${uploadUrl}\n\nWe look forward to receiving your research contribution.\n\nTo Opt Out:\n${optOutUrl}`,
+        bodyHtml: `<span style="font-size:22px;"><span style="font-family:Verdana,Geneva,sans-serif;">` +
+          `Dear [FNAME]<br><br>` +
+          `<span style="line-height:115%">${journal.displayName}</span><br><br>` +
+          `<span style="line-height:115%">Peer Reviewed Journal Accepted by UGC &amp; NMC</span><br><br>` +
+          `<span style="line-height:115%">Journal ISSN ${journal.issn}</span><br><br>` +
+          `<span style="line-height:115%">PubMed Index Journal</span><br><br>` +
+          `<span style="line-height:115%">${journal.hookText1}</span><br><br>` +
+          `<span style="line-height:115%">${journal.hookText2}</span><br><br>` +
+          `<span style="line-height:115%">${journal.ctaIntro}</span><br><br>` +
+          `<a href="${uploadUrl}" style="color:#0563c1; text-decoration:underline;"><b>${journal.ctaText}</b></a><br><br>` +
+          `<span style="line-height:115%">We look forward to receiving your research contribution.</span><br><br>` +
+          `<a href="${optOutUrl}" style="color:#0563c1; text-decoration:underline;">To Opt Out</a><br>` +
+          `</span></span>`,
         createdAt: new Date().toISOString()
       };
     })
