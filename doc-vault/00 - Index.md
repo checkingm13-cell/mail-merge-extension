@@ -14,6 +14,9 @@ Welcome to the comprehensive technical documentation and operator guide for the 
 | [[04 - 24-7 Automation & Chrome Watchdog]] | **24/7 Launcher & Watchdog** | Windows 7–11 launcher script, multi-tier Chrome detection, auto-retry loops, and keep-alive alarms. |
 | [[05 - Database Schema & IDBStore Engine]] | **IndexedDB v5 Storage Engine** | Complete schema of `campaigns`, `templates`, `logs`, `settings`, and `forensics` object stores. |
 | [[06 - Operator Runbook & Troubleshooting]] | **Operator Runbook** | Daily workflows, queueing campaigns, clearing test cache, and resolving Gmail DOM updates. |
+| [[07 - Codebase Intelligence & Dependency Graph Analysis]] | **Codebase Intelligence** | Role map, dependency graph, component boundaries, and blast radius analysis. |
+| [[08 - Ponytail Complexity Audit & Optimization Review]] | **Ponytail Review** | Complexity audit, over-engineering scan, 1-line findings, and dead-code reduction. |
+| [[09 - Get Shit Done (GSD) Execution Spec & System State]] | **GSD Execution Spec** | Spec-driven goals, atomic verification checklist, and active system state. |
 
 ---
 
